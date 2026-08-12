@@ -21,6 +21,16 @@ const initialize = async () => {
 
 module.exports = async (req, res) => {
   try {
+    // Vercel rewrites all API paths to this serverless function. Restore the
+    // original Express path so routes such as /api/products/public work.
+    const incomingUrl = new URL(req.url || "/", "http://localhost");
+    const rewrittenRoute = incomingUrl.searchParams.get("__route");
+    if (rewrittenRoute) {
+      incomingUrl.searchParams.delete("__route");
+      const normalizedRoute = String(rewrittenRoute).replace(/^\/+/, "");
+      req.url = `/api/${normalizedRoute}${incomingUrl.search}`;
+    }
+
     await initialize();
     const path = new URL(req.url || "/", "http://localhost").pathname;
     if (["/", "/api", "/api/index"].includes(path)) {
