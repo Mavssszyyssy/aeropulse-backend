@@ -5,10 +5,16 @@ let cachedTransporter = null;
 
 const canSendEmail = () => {
   return Boolean(
-    env.infobipApiKey ||
+    (env.infobipApiKey && env.infobipBaseUrl && env.infobipEmailSender) ||
     (env.smtpHost && env.smtpUser && env.smtpPass && env.smtpFrom),
   );
 };
+
+const infobipBaseUrl = () =>
+  String(env.infobipBaseUrl || "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
 
 const getTransporter = () => {
   if (!env.smtpHost || !env.smtpUser || !env.smtpPass || !env.smtpFrom)
@@ -29,7 +35,7 @@ const getTransporter = () => {
 };
 
 const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
-  const url = `https://${env.infobipBaseUrl}/email/4/messages`;
+  const url = `https://${infobipBaseUrl()}/email/4/messages`;
   const headers = {
     Authorization: `App ${env.infobipApiKey}`,
     "Content-Type": "application/json",
@@ -39,8 +45,12 @@ const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
   const body = JSON.stringify({
     messages: [
       {
-        destinations: [{ to }],
-        from: env.infobipSender || "no-reply@infobip.com",
+        sender: env.infobipEmailSender,
+        destinations: [
+          {
+            to: [{ destination: to }],
+          },
+        ],
         content: {
           subject,
           text,
@@ -68,7 +78,7 @@ const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
 
 const sendEmail = async ({ to, subject, text, html }) => {
   // 1. Try Infobip first if API Key is present
-  if (env.infobipApiKey) {
+  if (env.infobipApiKey && env.infobipBaseUrl && env.infobipEmailSender) {
     try {
       await sendEmailViaInfobip({ to, subject, text, html });
       console.log(`[INFOBIP] Email dispatched to ${to}`);

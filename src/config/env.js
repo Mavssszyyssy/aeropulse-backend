@@ -87,6 +87,7 @@ const env = {
   infobipApiKey: process.env.INFOBIP_API_KEY || "",
   infobipBaseUrl: process.env.INFOBIP_BASE_URL || "",
   infobipSender: process.env.INFOBIP_SENDER || "",
+  infobipEmailSender: process.env.INFOBIP_EMAIL_SENDER || "",
 };
 
 module.exports = env;

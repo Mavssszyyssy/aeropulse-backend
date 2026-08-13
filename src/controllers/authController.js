@@ -108,16 +108,15 @@ const sendOtpMessage = async ({ recipient, channel, action, code }) => {
   const message = `Your AeroPulse ${action.replace("_", " ")} code is ${code}. It expires in ${OTP_TTL_MINUTES} minutes.`;
 
   if (channel === "email") {
-    if (canSendEmail()) {
-      await sendEmail({
-        to: recipient,
-        subject,
-        text: `${message}\n\nIf you did not request this, ignore this message.`,
-        html: `<p>${message}</p><p>If you did not request this, ignore this message.</p>`,
-      });
-    } else {
-      console.log("[OTP] Email code:", code, "for", recipient);
+    if (!canSendEmail()) {
+      throw new Error("Email delivery is not configured. Add an Infobip verified email sender and email API permission.");
     }
+    await sendEmail({
+      to: recipient,
+      subject,
+      text: `${message}\n\nIf you did not request this, ignore this message.`,
+      html: `<p>${message}</p><p>If you did not request this, ignore this message.</p>`,
+    });
     return;
   }
 
@@ -300,19 +299,35 @@ const verifyOtp = async (req, res) => {
       return res.status(400).json({ message: "Invalid or expired code." });
     }
 
-    // Persistent Session Sync
-    if (req.session.registrationProgress) {
-      const data = req.session.registrationProgress.formData;
-      if (action === "register_phone") {
+    // Keep registration verification progress resumable for both web and mobile.
+    if (action.startsWith("register_")) {
+      const existing = req.session.registrationProgress || {};
+      const data = existing.formData || {};
+      if (action === "register_email") {
+        data.email = normalizeEmail(email);
+        data.emailVerified = true;
+      } else if (action === "register_phone") {
         data.phone = canonicalizePhMobile(phone);
         data.phoneVerified = true;
       } else if (action === "register_messenger") {
         data.messengerHandle = messenger_handle;
         data.messengerVerified = true;
       }
+      req.session.registrationProgress = {
+        ...existing,
+        email: normalizeEmail(email || existing.email || data.email),
+        stepIndex: Math.max(1, Number(existing.stepIndex) || 0),
+        formData: data,
+      };
     }
 
-    return res.json({ message: "Verification successful." });
+    return req.session.save((error) => {
+      if (error) return res.status(500).json({ message: "Unable to save verification progress." });
+      return res.json({
+        message: "Verification successful.",
+        registrationProgress: req.session.registrationProgress || null,
+      });
+    });
   } catch (err) {
     console.error("[OTP] Verify Error:", err);
     return res.status(500).json({ message: "Error verifying OTP." });
