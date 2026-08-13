@@ -35,6 +35,67 @@ const toInternationalFormat = (phone = "") => {
   return digits;
 };
 
+const infobipBaseUrl = () =>
+  String(env.infobipBaseUrl || "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
+
+const sendSmsViaInfobip = async ({ recipient, message }) => {
+  const baseUrl = infobipBaseUrl();
+  const sender = String(env.infobipSender || "").trim();
+  const destination = toInternationalFormat(recipient);
+
+  if (!env.infobipApiKey || !baseUrl || !sender) {
+    throw new Error("SMS delivery is not configured. Add the Infobip API key, base URL, and sender.");
+  }
+  if (!/^\d{8,15}$/.test(destination)) {
+    throw new Error("Enter a valid mobile number, including the country code.");
+  }
+
+  let response;
+  try {
+    response = await fetch(`https://${baseUrl}/sms/3/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `App ${env.infobipApiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            sender,
+            destinations: [{ to: destination }],
+            content: { text: message },
+          },
+        ],
+      }),
+    });
+  } catch (error) {
+    throw new Error(`SMS provider could not be reached: ${error.message}`);
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data?.requestError?.serviceException?.text || data?.message || "Infobip rejected the SMS request.";
+    console.error("[INFOBIP] SMS dispatch failed", {
+      status: response.status,
+      detail,
+      destination,
+    });
+    throw new Error(`SMS could not be sent: ${detail}`);
+  }
+
+  const accepted = data?.messages?.[0] || {};
+  console.log("[INFOBIP] SMS accepted", {
+    messageId: accepted.messageId || "",
+    to: destination,
+    status: accepted.status?.name || "PENDING",
+  });
+  return accepted;
+};
+
 const generateOtpCode = () =>
   String(Math.floor(100000 + Math.random() * 900000)).padStart(6, "0");
 const hashValue = (value = "") =>
@@ -61,45 +122,7 @@ const sendOtpMessage = async ({ recipient, channel, action, code }) => {
   }
 
   if (channel === "sms") {
-    console.log("[OTP] SMS code:", code, "for", recipient);
-
-    if (env.infobipApiKey) {
-      try {
-        const intlRecipient = toInternationalFormat(recipient);
-        const res = await fetch(
-          `https://${env.infobipBaseUrl}/sms/2/text/advanced`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `App ${env.infobipApiKey}`,
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            body: JSON.stringify({
-              messages: [
-                {
-                  from: env.infobipSender,
-                  destinations: [{ to: intlRecipient }],
-                  text: message,
-                },
-              ],
-            }),
-          },
-        );
-
-        const data = await res.json();
-        if (res.ok) {
-          console.log(
-            `[INFOBIP] SMS dispatched to ${intlRecipient}. ID:`,
-            data.messages?.[0]?.messageId,
-          );
-        } else {
-          console.error(`[INFOBIP] Dispatch failed:`, data);
-        }
-      } catch (err) {
-        console.error("[INFOBIP] Error:", err.message);
-      }
-    }
+    await sendSmsViaInfobip({ recipient, message });
     return;
   }
 
@@ -137,27 +160,23 @@ const createOtpRequest = async ({
     metadata,
   });
 
-  await sendOtpMessage({
-    recipient: email || phone || messenger_handle,
-    channel,
-    action,
-    code,
-  });
+  try {
+    await sendOtpMessage({
+      recipient: email || phone || messenger_handle,
+      channel,
+      action,
+      code,
+    });
+  } catch (error) {
+    await OtpRequest.deleteOne({ _id: otpRequest._id });
+    throw error;
+  }
 
-  console.log("\n╔══════════════════════════════════════════════════════╗");
-  console.log(
-    "║ [OTP] GENERATED FOR:",
-    channel.toUpperCase().padEnd(26, " "),
-    "║",
-  );
-  console.log("║ ACTION:   ", action.padEnd(42, " "), "║");
-  console.log(
-    "║ RECIPIENT:",
-    (email || phone || messenger_handle).padEnd(42, " "),
-    "║",
-  );
-  console.log("║ CODE:     ", code.padEnd(42, " "), "║");
-  console.log("╚══════════════════════════════════════════════════════╝\n");
+  console.log("[OTP] Verification request created", {
+    action,
+    channel,
+    recipient: email || phone || messenger_handle,
+  });
 
   return { otpRequest, code };
 };
@@ -248,10 +267,15 @@ const requestOtp = async (req, res) => {
       channel,
     });
 
-    return res.json({ message: "Code sent successfully.", debugCode: code });
+    return res.json({
+      message: "Code sent successfully.",
+      ...(env.nodeEnv === "production" ? {} : { debugCode: code }),
+    });
   } catch (err) {
     console.error("[OTP] Error:", err);
-    return res.status(500).json({ message: "Error processing OTP request." });
+    return res.status(502).json({
+      message: err?.message || "SMS delivery could not be completed. Please try again.",
+    });
   }
 };
 
