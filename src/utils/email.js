@@ -5,13 +5,14 @@ let cachedTransporter = null;
 
 const canSendEmail = () => {
   return Boolean(
-    (env.infobipApiKey && env.infobipBaseUrl && env.infobipEmailSender) ||
+    (env.infobipEmailApiKey && env.infobipBaseUrl && env.infobipEmailSender) ||
     (env.smtpHost && env.smtpUser && env.smtpPass && env.smtpFrom),
   );
 };
 
 const getInfobipEmailConfiguration = () => ({
-  apiKey: Boolean(env.infobipApiKey),
+  apiKey: Boolean(env.infobipEmailApiKey),
+  dedicatedApiKey: Boolean(process.env.INFOBIP_EMAIL_API_KEY),
   baseUrl: Boolean(env.infobipBaseUrl),
   sender: Boolean(env.infobipEmailSender),
 });
@@ -22,7 +23,7 @@ const getMissingInfobipSettings = () =>
     .map(
       ([key]) =>
         ({
-          apiKey: "INFOBIP_API_KEY",
+          apiKey: "INFOBIP_EMAIL_API_KEY or INFOBIP_API_KEY",
           baseUrl: "INFOBIP_BASE_URL",
           sender: "INFOBIP_EMAIL_SENDER",
         }[key]),
@@ -55,7 +56,7 @@ const getTransporter = () => {
 const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
   const url = `https://${infobipBaseUrl()}/email/4/messages`;
   const headers = {
-    Authorization: `App ${env.infobipApiKey}`,
+    Authorization: `App ${env.infobipEmailApiKey}`,
     "Content-Type": "application/json",
     Accept: "application/json",
   };
@@ -97,7 +98,7 @@ const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
 const sendEmail = async ({ to, subject, text, html }) => {
   // 1. Try Infobip first if API Key is present
   let infobipError = null;
-  if (env.infobipApiKey && env.infobipBaseUrl && env.infobipEmailSender) {
+  if (env.infobipEmailApiKey && env.infobipBaseUrl && env.infobipEmailSender) {
     try {
       await sendEmailViaInfobip({ to, subject, text, html });
       console.log(`[INFOBIP] Email dispatched to ${to}`);

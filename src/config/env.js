@@ -85,6 +85,11 @@ const env = {
   ),
   accountDeleteMode: process.env.ACCOUNT_DELETE_MODE || "soft",
   infobipApiKey: process.env.INFOBIP_API_KEY || "",
+  // Email can use a separate, least-privilege key while SMS continues to use
+  // INFOBIP_API_KEY. Fall back for installations that intentionally use one
+  // key for both channels.
+  infobipEmailApiKey:
+    process.env.INFOBIP_EMAIL_API_KEY || process.env.INFOBIP_API_KEY || "",
   infobipBaseUrl: process.env.INFOBIP_BASE_URL || "",
   infobipSender: process.env.INFOBIP_SENDER || "",
   infobipEmailSender: process.env.INFOBIP_EMAIL_SENDER || "",
