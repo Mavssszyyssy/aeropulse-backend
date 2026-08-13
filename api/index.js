@@ -1,5 +1,6 @@
 const app = require("../src/app");
 const connectDb = require("../src/config/db");
+const env = require("../src/config/env");
 const { seedDemoUsers } = require("../src/seed/seedDemoUsers");
 const { seedDashboardData } = require("../src/seed/seedDashboardData");
 
@@ -9,8 +10,10 @@ const initialize = async () => {
   if (!initialization) {
     initialization = (async () => {
       await connectDb();
-      await seedDemoUsers();
-      await seedDashboardData();
+      if (env.nodeEnv !== "production" && process.env.SEED_DEMO_DATA !== "false") {
+        await seedDemoUsers();
+        await seedDashboardData();
+      }
     })().catch((error) => {
       initialization = null;
       throw error;

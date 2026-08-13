@@ -8,6 +8,7 @@ const MongoStore = require("connect-mongo");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const env = require("./config/env");
+const { getInfobipEmailConfiguration } = require("./utils/email");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -76,6 +77,12 @@ app.get("/api/health", (_req, res) => {
     status: "ok",
     service: "aeropulse-api",
     environment: env.nodeEnv,
+    email: {
+      infobip: getInfobipEmailConfiguration(),
+      smtpConfigured: Boolean(
+        env.smtpHost && env.smtpUser && env.smtpPass && env.smtpFrom,
+      ),
+    },
   });
 });
 

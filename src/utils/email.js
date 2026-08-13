@@ -10,6 +10,24 @@ const canSendEmail = () => {
   );
 };
 
+const getInfobipEmailConfiguration = () => ({
+  apiKey: Boolean(env.infobipApiKey),
+  baseUrl: Boolean(env.infobipBaseUrl),
+  sender: Boolean(env.infobipEmailSender),
+});
+
+const getMissingInfobipSettings = () =>
+  Object.entries(getInfobipEmailConfiguration())
+    .filter(([, configured]) => !configured)
+    .map(
+      ([key]) =>
+        ({
+          apiKey: "INFOBIP_API_KEY",
+          baseUrl: "INFOBIP_BASE_URL",
+          sender: "INFOBIP_EMAIL_SENDER",
+        }[key]),
+    );
+
 const infobipBaseUrl = () =>
   String(env.infobipBaseUrl || "")
     .trim()
@@ -78,6 +96,7 @@ const sendEmailViaInfobip = async ({ to, subject, text, html }) => {
 
 const sendEmail = async ({ to, subject, text, html }) => {
   // 1. Try Infobip first if API Key is present
+  let infobipError = null;
   if (env.infobipApiKey && env.infobipBaseUrl && env.infobipEmailSender) {
     try {
       await sendEmailViaInfobip({ to, subject, text, html });
@@ -85,6 +104,7 @@ const sendEmail = async ({ to, subject, text, html }) => {
       return;
     } catch (err) {
       console.error("[INFOBIP] Email dispatch error:", err.message);
+      infobipError = err;
       // Fall through to SMTP if configured
     }
   }
@@ -92,7 +112,18 @@ const sendEmail = async ({ to, subject, text, html }) => {
   // 2. Fallback to Nodemailer SMTP
   const transporter = getTransporter();
   if (!transporter) {
-    throw new Error("No email transport configured (Infobip or SMTP).");
+    if (infobipError) {
+      throw new Error(
+        `Infobip rejected the email request: ${infobipError.message}. ` +
+          "Check the API key's email:message:send permission, account status, and verified email sender.",
+      );
+    }
+    const missing = getMissingInfobipSettings();
+    throw new Error(
+      missing.length
+        ? `Email delivery is not configured. In Vercel, set: ${missing.join(", ")}.`
+        : "No email transport configured. Set Infobip Email or SMTP settings in Vercel.",
+    );
   }
 
   await transporter.sendMail({
@@ -107,5 +138,6 @@ const sendEmail = async ({ to, subject, text, html }) => {
 
 module.exports = {
   canSendEmail,
+  getInfobipEmailConfiguration,
   sendEmail,
 };
