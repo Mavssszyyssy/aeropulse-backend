@@ -25,13 +25,34 @@ const parseCorsOrigins = (value = "") => {
     .filter(Boolean);
 };
 
+// A configured HTTPS site may be opened with or without `www`. Accept only
+// that paired hostname, never arbitrary preview or third-party domains.
+const expandWebsiteAliases = (origins = []) => {
+  const allowed = new Set(origins);
+  origins.forEach((origin) => {
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== "https:") return;
+      const hostname = url.hostname.startsWith("www.")
+        ? url.hostname.slice(4)
+        : `www.${url.hostname}`;
+      allowed.add(`${url.protocol}//${hostname}${url.port ? `:${url.port}` : ""}`);
+    } catch (_error) {
+      // Invalid values remain excluded by the normal CORS check.
+    }
+  });
+  return Array.from(allowed);
+};
+
 const isPrivateLanOrigin = (origin = "") =>
   /^https?:\/\/(?:(?:localhost|127\.0\.0\.1)|(?:10\.)|(?:192\.168\.)|(?:172\.(?:1[6-9]|2\d|3[01])\.))[^/]*$/i.test(
     origin,
   );
 
 const buildCorsOrigin = () => {
-  const configuredOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
+  const configuredOrigins = expandWebsiteAliases(
+    parseCorsOrigins(process.env.CORS_ORIGIN),
+  );
   return (origin, callback) => {
     if (!origin) return callback(null, true);
     if (
