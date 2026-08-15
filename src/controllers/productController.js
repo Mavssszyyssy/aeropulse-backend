@@ -602,7 +602,13 @@ const getDesiredSerialBranches = (product, targetCount) => {
   );
 
   if (branchEntries.length > 0) {
-    return branchEntries.slice(0, targetCount);
+    return [
+      ...branchEntries.slice(0, targetCount),
+      ...Array.from(
+        { length: Math.max(0, targetCount - branchEntries.length) },
+        () => "",
+      ),
+    ];
   }
 
   return Array.from({ length: targetCount }, () => "");
@@ -638,11 +644,16 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
   }
 
   const desiredBranches = getDesiredSerialBranches(product, desiredCount);
-  const branchCounts = BRANCHES.reduce((acc, branch) => {
+  const availableBranchCounts = BRANCHES.reduce((acc, branch) => {
     acc[branch] = 0;
     return acc;
   }, {});
-  let blankCount = 0;
+  const desiredBranchCounts = BRANCHES.reduce((acc, branch) => {
+    acc[branch] = desiredBranches.filter((item) => item === branch).length;
+    return acc;
+  }, {});
+  const desiredBlankCount = desiredBranches.filter((item) => !item).length;
+  let availableBlankCount = 0;
   const seen = new Set();
   let changed = false;
 
@@ -657,43 +668,43 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
       unit.serialKind = "generated";
       changed = true;
     }
-    if (!unit.branch && desiredBranches[index]) {
+    const isAvailable = (unit.status || "available") === "available";
+    if (!unit.branch && isAvailable && desiredBranches[index]) {
       unit.branch = desiredBranches[index];
       changed = true;
     }
-    if (BRANCHES.includes(unit.branch)) {
-      branchCounts[unit.branch] = (branchCounts[unit.branch] || 0) + 1;
-    } else {
-      blankCount += 1;
+    // Sold and assigned serials remain as a permanent audit/warranty record,
+    // but must never satisfy the count of QR labels for stock that is currently
+    // available to sell in a branch.
+    if (isAvailable && BRANCHES.includes(unit.branch)) {
+      availableBranchCounts[unit.branch] =
+        (availableBranchCounts[unit.branch] || 0) + 1;
+    } else if (isAvailable) {
+      availableBlankCount += 1;
     }
   });
 
-  const getNextBranch = () => {
-    const countsNeeded = BRANCHES.reduce((acc, branch) => {
-      acc[branch] = desiredBranches.filter((item) => item === branch).length;
-      return acc;
-    }, {});
-    const branch = BRANCHES.find(
-      (name) => (branchCounts[name] || 0) < (countsNeeded[name] || 0),
-    );
-    if (branch) {
-      branchCounts[branch] = (branchCounts[branch] || 0) + 1;
-      return branch;
-    }
-    blankCount += 1;
-    return desiredBranches[blankCount - 1] || "";
-  };
-
-  while (product.serialUnits.length < desiredCount) {
+  const addAvailableSerial = async (branch = "") => {
     const serialNumber = await generateUniqueSerialNumber(product, seen);
     product.serialUnits.push({
       serialNumber,
       serialKind: "generated",
       qrCode: buildSerialQrCode(product, serialNumber),
-      branch: getNextBranch(),
+      branch,
       status: "available",
     });
     changed = true;
+  };
+
+  for (const branch of BRANCHES) {
+    while (availableBranchCounts[branch] < desiredBranchCounts[branch]) {
+      await addAvailableSerial(branch);
+      availableBranchCounts[branch] += 1;
+    }
+  }
+  while (availableBlankCount < desiredBlankCount) {
+    await addAvailableSerial();
+    availableBlankCount += 1;
   }
 
   if (changed) {
