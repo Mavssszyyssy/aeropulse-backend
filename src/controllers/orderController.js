@@ -35,6 +35,40 @@ const workflowLabel = (status) => {
   }
 };
 
+// Monetary amounts are calculated only on the server from the resolved
+// catalogue items and destination branch. Web and mobile may display an
+// estimate, but neither client is allowed to decide the stored transaction
+// amount.
+const DELIVERY_FEE_BY_BRANCH = {
+  Bulacan: 380,
+  Cavite: 350,
+  Laguna: 400,
+  Bataan: 420,
+  Pangasinan: 550,
+  Ilocos: 600,
+};
+const DEFAULT_DELIVERY_FEE = 400;
+const VAT_RATE = 0.12;
+const roundMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
+const calculateOrderTotals = (items = [], branch = "") => {
+  const subtotal = roundMoney(
+    items.reduce(
+      (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+      0,
+    ),
+  );
+  const discountAmount = 0;
+  const vatAmount = roundMoney((subtotal - discountAmount) * VAT_RATE);
+  const shippingFee = Number(DELIVERY_FEE_BY_BRANCH[branch] || DEFAULT_DELIVERY_FEE);
+  return {
+    subtotal,
+    vatAmount,
+    shippingFee,
+    discountAmount,
+    total: roundMoney(subtotal - discountAmount + vatAmount + shippingFee),
+  };
+};
+
 const normalizePhMobile = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
   if (/^09\d{9}$/.test(digits)) return digits;
@@ -427,6 +461,20 @@ const decrementProductStockForOrder = async (
   } catch (error) {
     console.error("Failed to create zero-stock notifications:", error);
   }
+};
+
+const restoreReservedProductStock = async (
+  productId,
+  branch,
+  quantity,
+  hasBranchSnapshot,
+  session = null,
+) => {
+  if (!productId || !branch || Number(quantity) < 1) return;
+  const increment = hasBranchSnapshot
+    ? { stock: Number(quantity), [`branchStock.${branch}`]: Number(quantity) }
+    : { stock: Number(quantity) };
+  await withOptionalSession(Product.updateOne({ _id: productId }, { $inc: increment }), session);
 };
 
 const lifecycleActions = {
@@ -1738,7 +1786,10 @@ const createOrder = async (req, res) => {
     });
   }
 
-  const orderCode = `ORD-${Date.now()}`;
+  // A timestamp alone can collide when two customers submit at the same
+  // millisecond. The suffix keeps every transaction and serial reservation
+  // independently traceable.
+  const orderCode = `ORD-${Date.now()}-${randomSerialToken()}`;
   const receiptNumber = `RCP-${Date.now()}`;
   const trackingNumber = `TRK-${Math.floor(Math.random() * 1000000000)}`;
   const eta = new Date();
@@ -1754,96 +1805,115 @@ const createOrder = async (req, res) => {
 
   const createOrderDocument = async (session = null) => {
     const resolvedItems = [];
+    const completedReservations = [];
     let lastSourceBranch = null;
+    try {
+      for (const item of items) {
+        const quantityNeeded = Number(item.quantity) || 0;
+        if (quantityNeeded < 1) {
+          throw new HttpError(400, "Invalid cart item payload.");
+        }
 
-    for (const item of items) {
-      const quantityNeeded = Number(item.quantity) || 0;
-      if (quantityNeeded < 1) {
-        throw new HttpError(400, "Invalid cart item payload.");
-      }
+        const product = await resolveProductForOrderItem(item, session);
+        if (!product) {
+          throw new HttpError(
+            404,
+            `Product not found: ${item.name || item.productId || item.id || item.model || item.sku}`,
+          );
+        }
 
-      const product = await resolveProductForOrderItem(item, session);
-      if (!product) {
-        throw new HttpError(
-          404,
-          `Product not found: ${item.name || item.productId || item.id || item.model || item.sku}`,
+        const selectedBranch = branchSearchOrder.find((branch) =>
+          Number(product.branchStock?.get(branch) || 0) >= quantityNeeded,
         );
-      }
-
-      const selectedBranch = branchSearchOrder.find((branch) => {
-        return Number(product.branchStock?.get(branch) || 0) >= quantityNeeded;
-      });
-
-      const hasBranchSnapshot = branchSearchOrder.some(
-        (branch) => Number(product.branchStock?.get(branch) || 0) > 0,
-      );
-      const fallbackBranch =
-        !hasBranchSnapshot && Number(product.stock || 0) >= quantityNeeded
-          ? preferredBranch
-          : null;
-      const finalBranch = selectedBranch || fallbackBranch;
-
-      if (!finalBranch) {
-        throw new HttpError(
-          409,
-          `Insufficient branch stock for ${product.name}. Tried preferred and nearby branches.`,
+        const hasBranchSnapshot = branchSearchOrder.some(
+          (branch) => Number(product.branchStock?.get(branch) || 0) > 0,
         );
-      }
+        const fallbackBranch =
+          !hasBranchSnapshot && Number(product.stock || 0) >= quantityNeeded
+            ? preferredBranch
+            : null;
+        const finalBranch = selectedBranch || fallbackBranch;
 
-      lastSourceBranch = finalBranch;
+        if (!finalBranch) {
+          throw new HttpError(
+            409,
+            `Insufficient branch stock for ${product.name}. Tried preferred and nearby branches.`,
+          );
+        }
 
-      const serialUnits = await reserveSerialUnitsForOrder(
-        product,
-        finalBranch,
-        quantityNeeded,
-        orderCode,
-        session,
-      );
-      const serialNumbers = serialUnits.map((unit) => unit.serialNumber);
-      try {
-        await decrementProductStockForOrder(
+        lastSourceBranch = finalBranch;
+        const serialUnits = await reserveSerialUnitsForOrder(
           product,
           finalBranch,
           quantityNeeded,
-          hasBranchSnapshot,
+          orderCode,
           session,
         );
-      } catch (error) {
-        await releaseReservedSerialUnits(product._id, serialNumbers, session);
-        throw error;
-      }
+        const serialNumbers = serialUnits.map((unit) => unit.serialNumber);
+        try {
+          await decrementProductStockForOrder(
+            product,
+            finalBranch,
+            quantityNeeded,
+            hasBranchSnapshot,
+            session,
+          );
+        } catch (error) {
+          await releaseReservedSerialUnits(product._id, serialNumbers, session);
+          throw error;
+        }
 
-      resolvedItems.push({
-        productId: String(product.id || ""),
-        name: product.name,
-        // The catalogue is the source of truth for every purchasable item.
-        // This prevents a stale test-cart price from becoming the payment
-        // amount while allowing any active product to be purchased.
-        price: Number(product.price || 0),
-        quantity: quantityNeeded,
-        specs: product.specs || "",
-        serialNumbers,
-        serialUnits,
-        sourceBranch: finalBranch,
-      });
+        completedReservations.push({
+          productId: product._id,
+          branch: finalBranch,
+          quantity: quantityNeeded,
+          hasBranchSnapshot,
+          serialNumbers,
+        });
+        resolvedItems.push({
+          productId: String(product.id || ""),
+          name: product.name,
+          price: Number(product.price || 0),
+          quantity: quantityNeeded,
+          specs: product.specs || "",
+          serialNumbers,
+          serialUnits,
+          sourceBranch: finalBranch,
+        });
+      }
+    } catch (error) {
+      // Atlas transactions roll back automatically. A development or legacy
+      // Mongo deployment may not support transactions, so compensate every
+      // earlier reservation before reporting a failed order.
+      if (!session) {
+        await Promise.allSettled(
+          completedReservations.reverse().map(async (reservation) => {
+            await restoreReservedProductStock(
+              reservation.productId,
+              reservation.branch,
+              reservation.quantity,
+              reservation.hasBranchSnapshot,
+            );
+            await releaseReservedSerialUnits(
+              reservation.productId,
+              reservation.serialNumbers,
+            );
+          }),
+        );
+      }
+      throw error;
     }
 
     const itemsSummary = resolvedItems
       .map((item) => `${item.name} x${item.quantity}`)
       .join(", ");
-    const resolvedSubtotal = resolvedItems.reduce(
-      (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
-      0,
-    );
-    const normalizedSubtotal = Number(subtotalAmount || subtotal || resolvedSubtotal || 0);
-    const normalizedVat = Number(vatAmount || taxAmount || 0);
-    const normalizedShipping = Number(shippingFee || deliveryFee || 0);
-    const normalizedDiscount = Number(discountAmount || 0);
-    const normalizedTotal =
-      Number(total || 0) ||
-      Math.max(0, normalizedSubtotal + normalizedVat + normalizedShipping - normalizedDiscount);
-
     const stockSourceBranch = lastSourceBranch || preferredBranch;
+    const serverTotals = calculateOrderTotals(resolvedItems, stockSourceBranch);
+    const normalizedSubtotal = serverTotals.subtotal;
+    const normalizedVat = serverTotals.vatAmount;
+    const normalizedShipping = serverTotals.shippingFee;
+    const normalizedDiscount = serverTotals.discountAmount;
+    const normalizedTotal = serverTotals.total;
     const orderPayload = {
       orderCode,
       customer: user._id,

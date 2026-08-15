@@ -850,6 +850,7 @@ const requireInventoryOwner = (req, res) => {
 };
 
 const listProducts = async (req, res) => {
+  res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
   const products = await Product.find({})
     .select("-imageData")
@@ -861,6 +862,10 @@ const listProducts = async (req, res) => {
 };
 
 const listPublicProducts = async (_req, res) => {
+  // Inventory must never be served from a stale CDN/browser response. Stock
+  // is reserved atomically by order creation, and clients always re-read this
+  // endpoint before checkout.
+  res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
   const products = await Product.find({ stock: { $gt: 0 } })
     .select("-imageData")
