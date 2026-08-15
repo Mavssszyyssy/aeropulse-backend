@@ -432,7 +432,14 @@ const buildSerialQrCode = (product, serialNumber) =>
     `AC_UNIT:${serialNumber}`,
     `PRODUCT:${product?._id || product?.id || ""}`,
     `SKU:${product?.sku || ""}`,
+    `MODEL:${String(product?.name || "").replace(/[|\r\n]+/g, " ").trim()}`,
   ].join("|");
+
+const normalizeManufacturerSerial = (value = "") =>
+  String(value || "").trim().toUpperCase();
+
+const isValidManufacturerSerial = (value = "") =>
+  /^[A-Z0-9][A-Z0-9._/-]{3,79}$/.test(value);
 
 const normalizeSerialLookupValue = (value = "") => {
   const raw = String(value || "").trim();
@@ -646,6 +653,10 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
       unit.qrCode = buildSerialQrCode(product, unit.serialNumber);
       changed = true;
     }
+    if (!unit.serialKind) {
+      unit.serialKind = "generated";
+      changed = true;
+    }
     if (!unit.branch && desiredBranches[index]) {
       unit.branch = desiredBranches[index];
       changed = true;
@@ -677,6 +688,7 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
     const serialNumber = await generateUniqueSerialNumber(product, seen);
     product.serialUnits.push({
       serialNumber,
+      serialKind: "generated",
       qrCode: buildSerialQrCode(product, serialNumber),
       branch: getNextBranch(),
       status: "available",
@@ -1148,6 +1160,7 @@ const getProductSerialUnit = async (req, res) => {
       brand: product.brand || "",
       model: model || product.sku || "",
       serialNumber: serialUnit.serialNumber,
+      serialKind: serialUnit.serialKind || "generated",
       status: serialUnit.status || "available",
       inventoryStatus: serialUnit.status || "available",
       orderFulfillmentStatus: orderFulfillment.state,
@@ -1171,6 +1184,52 @@ const getProductSerialUnit = async (req, res) => {
     },
     product: productJson,
   });
+};
+
+const updateProductSerialUnit = async (req, res) => {
+  if (!requireInventoryOwner(req, res)) return null;
+
+  const product = await Product.findById(req.params.productId);
+  if (!product) return res.status(404).json({ message: "Product not found" });
+
+  const currentSerial = normalizeSerialLookupValue(req.params.serialNumber);
+  const serialUnit = (product.serialUnits || []).find(
+    (unit) => String(unit.serialNumber || "").toLowerCase() === currentSerial.toLowerCase(),
+  );
+  if (!serialUnit) {
+    return res.status(404).json({ message: "Inventory unit serial not found" });
+  }
+  if ((serialUnit.status || "available") !== "available") {
+    return res.status(409).json({
+      message: "Only an available inventory unit can be assigned a manufacturer serial number.",
+    });
+  }
+
+  const serialNumber = normalizeManufacturerSerial(req.body?.serialNumber);
+  if (!isValidManufacturerSerial(serialNumber)) {
+    return res.status(400).json({
+      message: "Enter a manufacturer serial using 4-80 letters, numbers, dots, dashes, slashes, or underscores.",
+    });
+  }
+
+  const duplicate = await Product.exists({
+    "serialUnits.serialNumber": serialNumber,
+    _id: { $ne: product._id },
+  });
+  const duplicateOnProduct = (product.serialUnits || []).some(
+    (unit) =>
+      unit !== serialUnit &&
+      String(unit.serialNumber || "").toLowerCase() === serialNumber.toLowerCase(),
+  );
+  if (duplicate || duplicateOnProduct) {
+    return res.status(409).json({ message: "That serial number is already registered to another AC unit." });
+  }
+
+  serialUnit.serialNumber = serialNumber;
+  serialUnit.serialKind = "manufacturer";
+  serialUnit.qrCode = buildSerialQrCode(product, serialNumber);
+  await product.save();
+  return res.json({ product: toRoleAwareProduct(product, req), serialUnit });
 };
 
 const updateProduct = async (req, res) => {
@@ -1296,6 +1355,7 @@ module.exports = {
   listLowStockProducts,
   getProductImage,
   getProductSerialUnit,
+  updateProductSerialUnit,
   createProduct,
   restockProduct,
   updateBranchStock,

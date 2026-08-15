@@ -6,6 +6,7 @@ const {
   listLowStockProducts,
   getProductImage,
   getProductSerialUnit,
+  updateProductSerialUnit,
   createProduct,
   restockProduct,
   updateBranchStock,
@@ -26,6 +27,7 @@ router.get("/low-stock", listLowStockProducts);
 router.post("/", createProduct);
 router.patch("/:productId/restock", restockProduct);
 router.patch("/:productId/stock", updateBranchStock);
+router.patch("/:productId/serial-units/:serialNumber", updateProductSerialUnit);
 router.patch("/:productId", updateProduct);
 router.delete("/:productId", deleteProduct);
 

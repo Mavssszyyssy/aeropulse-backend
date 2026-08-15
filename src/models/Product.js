@@ -31,6 +31,11 @@ const productSchema = new mongoose.Schema(
           required: true,
           trim: true,
         },
+        serialKind: {
+          type: String,
+          enum: ["generated", "manufacturer"],
+          default: "generated",
+        },
         qrCode: { type: String, default: "", trim: true },
         branch: { type: String, default: "", trim: true },
         status: {
