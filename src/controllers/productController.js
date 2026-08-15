@@ -861,18 +861,39 @@ const listProducts = async (req, res) => {
   });
 };
 
-const listPublicProducts = async (_req, res) => {
+const listPublicProducts = async (req, res) => {
   // Inventory must never be served from a stale CDN/browser response. Stock
   // is reserved atomically by order creation, and clients always re-read this
   // endpoint before checkout.
   res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
+  const requestedBranch = String(req.query?.branch || "").trim();
+  const scopedBranch = BRANCHES.includes(requestedBranch) ? requestedBranch : "";
   const products = await Product.find({ stock: { $gt: 0 } })
     .select("-imageData")
     .sort({
       createdAt: -1,
     });
-  return res.json({ products: products.map((p) => p.toJSON()) });
+  const publicProducts = products.map((product) => {
+    const base = product.toJSON();
+    const branchStock = toBranchStockObject(product);
+    const totalStock = Number(product.stock || 0);
+
+    // A customer shop can ask for its delivery branch. In that case `stock`
+    // is deliberately branch-specific, matching what the branch inventory
+    // screen shows. Without a branch, retain total stock but label the scope
+    // clearly so clients never present it as a single branch quantity.
+    return {
+      ...base,
+      stock: scopedBranch ? Number(branchStock[scopedBranch] || 0) : totalStock,
+      totalStock,
+      branchStock,
+      inventoryBranch: scopedBranch || null,
+      stockScope: scopedBranch ? "branch" : "all_branches",
+    };
+  });
+
+  return res.json({ products: publicProducts });
 };
 
 const listLowStockProducts = async (req, res) => {
