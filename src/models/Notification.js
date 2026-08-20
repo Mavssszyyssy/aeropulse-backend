@@ -3,11 +3,23 @@ const mongoose = require("mongoose");
 const notificationSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    type: { type: String, enum: ["account", "order", "system"], default: "system", index: true },
+    type: {
+      type: String,
+      enum: ["account", "order", "system", "inventory", "technician", "delivery", "service", "warranty", "payment", "security", "report"],
+      default: "system",
+      index: true,
+    },
+    category: { type: String, default: "", index: true },
+    severity: { type: String, enum: ["info", "warning", "critical"], default: "info", index: true },
     title: { type: String, required: true },
     message: { type: String, required: true },
     route: { type: String, default: "" },
     targetId: { type: String, default: "" },
+    targetType: { type: String, default: "" },
+    // Dedupe keys are set by operational events. They make webhook retries,
+    // repeated status saves, and browser polling safe without hiding distinct
+    // business events.
+    dedupeKey: { type: String, default: "", index: true },
     status: { type: String, enum: ["unread", "read"], default: "unread", index: true },
     unread: { type: Boolean, default: true },
   },

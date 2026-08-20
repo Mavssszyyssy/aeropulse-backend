@@ -70,7 +70,7 @@ const buildChainReactionWarnings = (unit, zipClusterCounts) => {
   return warnings;
 };
 
-const getManagerServicePipeline = async ({ days = 30 } = {}) => {
+const getManagerServicePipeline = async ({ days = 30, branch = "" } = {}) => {
   const now = new Date();
   const windowEnd = addDays(now, Number(days || 30));
 
@@ -80,6 +80,9 @@ const getManagerServicePipeline = async ({ days = 30 } = {}) => {
       $match: {
         status: { $in: ["active", "service_due"] },
         "amp.nextIdealServiceDate": { $gte: now, $lte: windowEnd },
+        ...(branch
+          ? { $or: [{ serviceBranch: branch }, { serviceBranch: "" }, { serviceBranch: { $exists: false } }] }
+          : {}),
       },
     },
     {
@@ -131,6 +134,7 @@ const getManagerServicePipeline = async ({ days = 30 } = {}) => {
         serialNumber: unit.serialNumber,
         customerName: unit.customerName || "Customer",
         modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "AC Unit",
+        serviceBranch: unit.serviceBranch || "",
         zipCode: unit.installation?.zipCode || "",
         addressLine: unit.installation?.addressLine || "",
         nextIdealServiceDate: dueDate.toISOString(),

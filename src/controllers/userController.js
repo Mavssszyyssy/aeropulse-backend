@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const Order = require("../models/Order");
 const Notification = require("../models/Notification");
+const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const env = require("../config/env");
 const { canSendEmail, sendEmail } = require("../utils/email");
 
@@ -967,6 +968,17 @@ const unlockUser = async (req, res) => {
   user.failedLoginAttempts = 0;
   user.lockoutUntil = null;
   await user.save();
+  await notifyOperationalStaff({
+    title: "User account unlocked",
+    message: `${user.name || user.email || "A user"} was unlocked by ${req.authUser.name || req.authUser.email || "an administrator"}.`,
+    type: "security",
+    category: "account_access",
+    severity: "warning",
+    targetId: String(user._id),
+    targetType: "user",
+    dedupeKey: `user-unlocked:${user._id}:${Date.now()}`,
+    roles: ["superadmin"],
+  });
   return res.json({ user: user.toJSON() });
 };
 
@@ -989,6 +1001,17 @@ const updateUserStatus = async (req, res) => {
 
   user.accountStatus = nextStatus;
   await user.save();
+  await notifyOperationalStaff({
+    title: "User account status changed",
+    message: `${user.name || user.email || "A user"} was ${nextStatus} by ${req.authUser.name || req.authUser.email || "an administrator"}.`,
+    type: "security",
+    category: "account_access",
+    severity: nextStatus === "disabled" ? "warning" : "info",
+    targetId: String(user._id),
+    targetType: "user",
+    dedupeKey: `user-status:${user._id}:${nextStatus}:${Date.now()}`,
+    roles: ["superadmin"],
+  });
   return res.json({ user: user.toJSON() });
 };
 

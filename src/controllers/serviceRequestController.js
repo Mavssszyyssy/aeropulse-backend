@@ -4,6 +4,7 @@ const Task = require("../models/Task");
 const Unit = require("../models/Unit");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
+const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 
 const normalizeStatus = (value = "") => {
@@ -334,6 +335,16 @@ const createMyServiceRequest = async (req, res) => {
       title: "Service request submitted",
       message: `${request.issueType || "Service"} request for ${request.unitName || "your AC unit"} was submitted.`,
     });
+    await notifyOperationalStaff({
+      branch: request.branch,
+      title: "New service request",
+      message: `${request.customer || "A customer"} requested ${request.issueType || "AC service"}${request.unitName ? ` for ${request.unitName}` : ""}.`,
+      type: "service",
+      category: "service_request",
+      targetId: String(request._id || request.id || ""),
+      targetType: "service",
+      dedupeKey: `service-request:${request._id || request.id}`,
+    });
 
     return res.status(201).json({ request: hydrateRequestResponse(request) });
   } catch (error) {
@@ -445,6 +456,17 @@ const updateServiceRequestStatus = async (req, res) => {
         message: `Your service request is now ${request.status}.`,
       });
     }
+    await notifyOperationalStaff({
+      branch: request.branch,
+      title: "Service request updated",
+      message: `${request.issueType || "Service request"} for ${request.customer || "a customer"} is now ${request.status}.`,
+      type: "service",
+      category: "service_request",
+      severity: request.status === "Cancelled" ? "warning" : "info",
+      targetId: String(request._id || request.id || ""),
+      targetType: "service",
+      dedupeKey: `service-request:${request._id || request.id}:${request.status}`,
+    });
     return res.json({ request: hydrateRequestResponse(request) });
   } catch (error) {
     console.error("Failed to update service request status:", error);

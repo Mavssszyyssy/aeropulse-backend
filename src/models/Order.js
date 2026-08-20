@@ -82,6 +82,17 @@ const orderSchema = new mongoose.Schema(
     },
     dispatchedAt: { type: Date, default: null },
     dispatchedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    // This is the single customer-facing fulfillment record.  It is updated
+    // by order actions and technician task actions so receipt/tracking views
+    // never need to guess a different status from cached client state.
+    fulfillmentTimeline: [
+      {
+        stage: { type: String, required: true },
+        label: { type: String, required: true },
+        timestamp: { type: Date, default: Date.now },
+        detail: { type: String, default: "" },
+      },
+    ],
     customerBranch: { type: String, default: "" },
     stockSourceBranch: { type: String, default: "" },
     receipt: {

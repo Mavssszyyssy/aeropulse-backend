@@ -1,5 +1,7 @@
 const Product = require("../models/Product");
 const Order = require("../models/Order");
+const Unit = require("../models/Unit");
+const crypto = require("crypto");
 const { BRANCHES } = require("../domain/branchRouting");
 const { validateProductUniqueness } = require("../utils/productValidation");
 
@@ -427,9 +429,11 @@ const buildSerialNumber = (product) => {
   return `CAACT-${skuPart || "AC"}-${timePart}-${randomSerialToken()}`;
 };
 
-const buildSerialQrCode = (product, serialNumber) =>
+const buildQrUnitId = () => `QRU-${crypto.randomUUID().replace(/-/g, "").slice(0, 18).toUpperCase()}`;
+
+const buildSerialQrCode = (product, serialNumber, qrUnitId = "") =>
   [
-    `AC_UNIT:${serialNumber}`,
+    qrUnitId ? `QR_UNIT:${qrUnitId}` : `AC_UNIT:${serialNumber}`,
     `PRODUCT:${product?._id || product?.id || ""}`,
     `SKU:${product?.sku || ""}`,
     `MODEL:${String(product?.name || "").replace(/[|\r\n]+/g, " ").trim()}`,
@@ -448,7 +452,7 @@ const normalizeSerialLookupValue = (value = "") => {
   if (raw.startsWith("{")) {
     try {
       const parsed = JSON.parse(raw);
-      const serial = String(parsed.serialNumber || parsed.serial || "").trim();
+      const serial = String(parsed.serialNumber || parsed.serial || parsed.qrUnitId || parsed.unitId || "").trim();
       if (serial) return serial;
     } catch (_error) {
       // Fall through to tag parsing.
@@ -474,6 +478,15 @@ const normalizeSerialLookupValue = (value = "") => {
     return acUnitPart.slice("AC_UNIT:".length).trim();
   }
 
+  const qrUnitPart = raw
+    .split("|")
+    .map((part) => part.trim())
+    .find((part) => part.toUpperCase().startsWith("QR_UNIT:"));
+
+  if (qrUnitPart) {
+    return qrUnitPart.slice("QR_UNIT:".length).trim();
+  }
+
   const serialPart = raw
     .split("|")
     .map((part) => part.trim())
@@ -485,6 +498,10 @@ const normalizeSerialLookupValue = (value = "") => {
 
   if (raw.toUpperCase().startsWith("AC_UNIT:")) {
     return raw.slice("AC_UNIT:".length).trim();
+  }
+
+  if (raw.toUpperCase().startsWith("QR_UNIT:")) {
+    return raw.slice("QR_UNIT:".length).trim();
   }
 
   if (raw.toUpperCase().startsWith("SERIAL:")) {
@@ -660,8 +677,13 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
   product.serialUnits.forEach((unit, index) => {
     if (!unit.serialNumber) return;
     seen.add(unit.serialNumber);
-    if (!unit.qrCode) {
-      unit.qrCode = buildSerialQrCode(product, unit.serialNumber);
+    if (!unit.qrUnitId) {
+      unit.qrUnitId = buildQrUnitId();
+      changed = true;
+    }
+    const stableQrCode = buildSerialQrCode(product, unit.serialNumber, unit.qrUnitId);
+    if (unit.qrCode !== stableQrCode) {
+      unit.qrCode = stableQrCode;
       changed = true;
     }
     if (!unit.serialKind) {
@@ -687,12 +709,15 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
   const addAvailableSerial = async (branch = "") => {
     const serialNumber = await generateUniqueSerialNumber(product, seen);
     product.serialUnits.push({
+      qrUnitId: buildQrUnitId(),
       serialNumber,
       serialKind: "generated",
-      qrCode: buildSerialQrCode(product, serialNumber),
+      qrCode: "",
       branch,
       status: "available",
     });
+    const added = product.serialUnits[product.serialUnits.length - 1];
+    added.qrCode = buildSerialQrCode(product, serialNumber, added.qrUnitId);
     changed = true;
   };
 
@@ -1138,7 +1163,11 @@ const getProductSerialUnit = async (req, res) => {
 
   const serialRegex = new RegExp(`^${escapeRegExp(normalizedSerial)}$`, "i");
   const product = await Product.findOne({
-    serialUnits: { $elemMatch: { serialNumber: serialRegex } },
+    serialUnits: { $elemMatch: { $or: [
+      { serialNumber: serialRegex },
+      { qrUnitId: serialRegex },
+      { serialAliases: serialRegex },
+    ] } },
   }).select("-imageData");
 
   if (!product) {
@@ -1148,9 +1177,8 @@ const getProductSerialUnit = async (req, res) => {
   await ensureProductSerialUnits(product);
 
   const serialUnit = (product.serialUnits || []).find(
-    (unit) =>
-      String(unit.serialNumber || "").toLowerCase() ===
-      normalizedSerial.toLowerCase(),
+    (unit) => [unit.serialNumber, unit.qrUnitId, ...(unit.serialAliases || [])]
+      .some((value) => String(value || "").toLowerCase() === normalizedSerial.toLowerCase()),
   );
 
   if (!serialUnit) {
@@ -1166,7 +1194,8 @@ const getProductSerialUnit = async (req, res) => {
 
   return res.json({
     unit: {
-      id: serialUnit.serialNumber,
+      id: serialUnit.qrUnitId || serialUnit.serialNumber,
+      qrUnitId: serialUnit.qrUnitId || "",
       unitName: [product.name, product.specs].filter(Boolean).join(" "),
       brand: product.brand || "",
       model: model || product.sku || "",
@@ -1190,8 +1219,7 @@ const getProductSerialUnit = async (req, res) => {
       registeredAt: serialUnit.registeredAt || "",
       ampRegistration: serialUnit.ampRegistration || null,
       defectHold: serialUnit.defectHold || null,
-      qrCode:
-        serialUnit.qrCode || buildSerialQrCode(product, serialUnit.serialNumber),
+      qrCode: serialUnit.qrCode || buildSerialQrCode(product, serialUnit.serialNumber, serialUnit.qrUnitId),
     },
     product: productJson,
   });
@@ -1223,22 +1251,37 @@ const updateProductSerialUnit = async (req, res) => {
     });
   }
 
-  const duplicate = await Product.exists({
-    "serialUnits.serialNumber": serialNumber,
-    _id: { $ne: product._id },
-  });
+  const serialRegex = new RegExp(`^${escapeRegExp(serialNumber)}$`, "i");
+  const [duplicate, installedDuplicate] = await Promise.all([
+    Product.exists({
+      _id: { $ne: product._id },
+      $or: [
+        { "serialUnits.serialNumber": serialRegex },
+        { "serialUnits.serialAliases": serialRegex },
+      ],
+    }),
+    Unit.exists({ serialNumber: serialRegex }),
+  ]);
   const duplicateOnProduct = (product.serialUnits || []).some(
     (unit) =>
       unit !== serialUnit &&
       String(unit.serialNumber || "").toLowerCase() === serialNumber.toLowerCase(),
   );
-  if (duplicate || duplicateOnProduct) {
+  if (duplicate || installedDuplicate || duplicateOnProduct) {
     return res.status(409).json({ message: "That serial number is already registered to another AC unit." });
   }
 
+  const previousSerial = String(serialUnit.serialNumber || "").trim();
+  serialUnit.serialAliases = Array.from(new Set([
+    ...(serialUnit.serialAliases || []),
+    previousSerial,
+  ].filter(Boolean)));
+  serialUnit.qrUnitId = serialUnit.qrUnitId || buildQrUnitId();
   serialUnit.serialNumber = serialNumber;
   serialUnit.serialKind = "manufacturer";
-  serialUnit.qrCode = buildSerialQrCode(product, serialNumber);
+  // The QR Unit ID stays the same while the displayed serial changes. An old
+  // printed serial QR remains valid through serialAliases.
+  serialUnit.qrCode = buildSerialQrCode(product, serialNumber, serialUnit.qrUnitId);
   await product.save();
   return res.json({ product: toRoleAwareProduct(product, req), serialUnit });
 };

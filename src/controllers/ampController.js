@@ -1,15 +1,39 @@
 const Unit = require("../models/Unit");
+const ServiceHistory = require("../models/ServiceHistory");
 const { calculate_next_service_date } = require("../domain/ampDecayService");
 const {
   getManagerServicePipeline,
   getOwnerServiceForecast,
 } = require("../domain/ampDashboardService");
 const { completeServiceForUnit } = require("../domain/serviceCompletionService");
+const { effectiveWarrantyStatus } = require("../domain/warrantyService");
 
 const INTERNAL_AMP_ROLES = new Set(["technician", "manager", "owner", "admin", "superadmin"]);
 
-const serializeCustomerUnit = (unit) => {
+const getWarrantyRecommendation = (warranty = {}) => {
+  const status = effectiveWarrantyStatus(warranty);
+  const repairCount = (Array.isArray(warranty.serviceRecords) ? warranty.serviceRecords : [])
+    .filter((record) => /repair/i.test(String(record?.visitType || ""))).length;
+
+  if (status === "under_review") {
+    return "Your warranty claim is under review. Keep the unit available for service inspection.";
+  }
+  if (status === "approved") {
+    return "Warranty repair has been approved. Keep the scheduled technician appointment to complete the repair.";
+  }
+  if (status === "expired") {
+    return "Warranty coverage has expired. Continue preventive maintenance and request a paid service quote if needed.";
+  }
+  if (repairCount >= 2) {
+    return "Repeated warranty repairs were recorded. AMP recommends a full diagnostic inspection at the next service visit.";
+  }
+  return "Warranty is active. Use preventive maintenance records to protect coverage and AC health.";
+};
+
+const serializeCustomerUnit = (unit, serviceHistory = []) => {
   const json = unit.toJSON ? unit.toJSON() : unit;
+  const warranty = { ...(json.warranty || {}) };
+  warranty.status = effectiveWarrantyStatus(warranty);
   return {
     id: json.id || String(json._id || ""),
     userId: String(json.customer || ""),
@@ -18,6 +42,8 @@ const serializeCustomerUnit = (unit) => {
     model: json.modelName || "",
     serialNumber: json.serialNumber || "",
     qrCode: json.qrCode || "",
+    qrUnitId: json.qrUnitId || "",
+    serviceBranch: json.serviceBranch || "",
     status:
       json.status === "service_due"
         ? "Service Due"
@@ -39,6 +65,22 @@ const serializeCustomerUnit = (unit) => {
     ventilationQuality: "Good",
     lastMaintenanceDate: "",
     amp: json.amp || {},
+    warranty: {
+      ...warranty,
+      claims: Array.isArray(warranty.claims) ? warranty.claims : [],
+      serviceRecords: Array.isArray(warranty.serviceRecords) ? warranty.serviceRecords : [],
+      timeline: Array.isArray(warranty.timeline) ? warranty.timeline : [],
+    },
+    warrantyStatus: warranty.status || "pending_activation",
+    warrantyExpirationDate: warranty.expirationDate || "",
+    warrantyRecommendation: getWarrantyRecommendation(warranty),
+    serviceHistory: serviceHistory.map((service) => ({
+      id: String(service._id || service.id || ""),
+      date: service.serviceDate,
+      serviceType: service.visitType,
+      details: service.technicianInputs?.notes || "Service completed",
+      conditionRating: service.conditionRating,
+    })),
     nextIdealServiceDate: json.amp?.nextIdealServiceDate || "",
     nextIdealServicePeriod: json.amp?.nextIdealServicePeriod || "",
     createdAt: json.createdAt,
@@ -92,7 +134,22 @@ const listMyUnits = async (req, res) => {
       status: { $ne: "retired" },
     }).sort({ updatedAt: -1 });
 
-    return res.json({ units: units.map(serializeCustomerUnit) });
+    const histories = units.length
+      ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } })
+        .sort({ serviceDate: -1 })
+        .limit(500)
+      : [];
+    const historyByUnit = new Map();
+    histories.forEach((history) => {
+      const key = String(history.unit || "");
+      const current = historyByUnit.get(key) || [];
+      current.push(history);
+      historyByUnit.set(key, current);
+    });
+
+    return res.json({
+      units: units.map((unit) => serializeCustomerUnit(unit, historyByUnit.get(String(unit._id)) || [])),
+    });
   } catch (error) {
     console.error("Failed to list customer AMP units:", error);
     return res.status(500).json({
@@ -129,6 +186,7 @@ const getManagerPipeline = async (req, res) => {
   try {
     const result = await getManagerServicePipeline({
       days: req.query.days,
+      branch: req.authUser.role === "superadmin" ? "" : req.activeBranch,
     });
     return res.json(result);
   } catch (error) {

@@ -3,6 +3,7 @@ const Order = require("../models/Order");
 const Product = require("../models/Product");
 const Task = require("../models/Task");
 const Notification = require("../models/Notification");
+const { createDedupedNotification, notifyOperationalStaff } = require("../services/operationalNotificationService");
 const User = require("../models/User");
 const AuditLog = require("../models/AuditLog");
 const Unit = require("../models/Unit");
@@ -34,6 +35,80 @@ const workflowLabel = (status) => {
     default:
       return "CANCELLED";
   }
+};
+
+const fulfillmentStages = {
+  placed: "Order Placed",
+  confirmed: "Order Confirmed",
+  preparing: "Preparing",
+  dispatched: "Dispatched",
+  out_for_delivery: "Out for Delivery",
+  arrived: "Arrived",
+  installation: "Installation",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+const appendFulfillmentEvent = (order, stage, detail = "", timestamp = new Date()) => {
+  if (!order || !fulfillmentStages[stage]) return;
+  const existing = Array.isArray(order.fulfillmentTimeline)
+    ? order.fulfillmentTimeline
+    : [];
+  // A stage is a milestone, not an activity feed. Keeping one entry per
+  // stage prevents duplicate tracking tickets when a request is retried.
+  if (existing.some((event) => String(event?.stage || "") === stage)) return;
+  order.fulfillmentTimeline = [
+    ...existing,
+    { stage, label: fulfillmentStages[stage], detail: String(detail || ""), timestamp },
+  ];
+};
+
+const buildTrackingTimeline = (order = {}, task = null) => {
+  const stored = Array.isArray(order.fulfillmentTimeline)
+    ? order.fulfillmentTimeline.map((event) => ({
+        stage: String(event?.stage || ""),
+        label: String(event?.label || fulfillmentStages[event?.stage] || "Update"),
+        detail: String(event?.detail || ""),
+        timestamp: event?.timestamp || null,
+      })).filter((event) => event.stage)
+    : [];
+  const byStage = new Map(stored.map((event) => [event.stage, event]));
+  const ensure = (stage, timestamp, detail = "") => {
+    if (!timestamp || byStage.has(stage)) return;
+    byStage.set(stage, { stage, label: fulfillmentStages[stage], detail, timestamp });
+  };
+
+  ensure("placed", order.createdAt, "Order submitted");
+  if (["to_deliver", "to_install", "complete"].includes(order.workflowStatus)) {
+    ensure("confirmed", order.paymongo?.paidAt || order.updatedAt, "Order approved");
+    ensure("preparing", order.updatedAt, "Preparing your assigned unit");
+  }
+  if (["to_install", "complete"].includes(order.workflowStatus)) {
+    ensure("dispatched", order.dispatchedAt || order.updatedAt, "Order dispatched");
+  }
+  const taskStatus = String(task?.status || "").toLowerCase();
+  if (["on-the-way", "arrived", "installing", "in-progress", "completed"].includes(taskStatus)) {
+    ensure("out_for_delivery", task?.payload?.onTheWayAt || task?.updatedAt, "Technician is on the way");
+  }
+  if (["arrived", "installing", "in-progress", "completed"].includes(taskStatus)) {
+    ensure("arrived", task?.payload?.checkIn?.checkedInAt || task?.updatedAt, "Technician arrived at the address");
+  }
+  if (["installing", "in-progress", "completed"].includes(taskStatus)) {
+    ensure("installation", task?.payload?.installationStartedAt || task?.updatedAt, "Installation in progress");
+  }
+  if (order.workflowStatus === "complete") {
+    ensure("completed", task?.completedAt || order.updatedAt, "Installation completed");
+  }
+  if (order.workflowStatus === "cancelled") {
+    ensure("cancelled", order.cancelledAt || order.updatedAt, order.cancellationReason || "Order cancelled");
+  }
+
+  const orderedStages = Object.keys(fulfillmentStages);
+  const timeline = orderedStages
+    .filter((stage) => byStage.has(stage))
+    .map((stage) => byStage.get(stage));
+  const current = timeline[timeline.length - 1] || null;
+  return { timeline, currentStage: current?.stage || "placed", currentLabel: current?.label || "Order Placed" };
 };
 
 // Monetary amounts are calculated only on the server from the resolved
@@ -226,9 +301,11 @@ const buildSerialNumber = (product) => {
   return `CAACT-${skuPart || "AC"}-${timePart}-${randomSerialToken()}`;
 };
 
-const buildSerialQrCode = (product, serialNumber) =>
+const buildQrUnitId = () => `QRU-${crypto.randomUUID().replace(/-/g, "").slice(0, 18).toUpperCase()}`;
+
+const buildSerialQrCode = (product, serialNumber, qrUnitId = "") =>
   [
-    `AC_UNIT:${serialNumber}`,
+    qrUnitId ? `QR_UNIT:${qrUnitId}` : `AC_UNIT:${serialNumber}`,
     `PRODUCT:${product?._id || product?.id || ""}`,
     `SKU:${product?.sku || ""}`,
   ].join("|");
@@ -276,9 +353,11 @@ const ensureAvailableSerialUnits = async (
 
   for (let index = 0; index < missing; index += 1) {
     const serialNumber = await generateUniqueSerialNumber(product, seen, session);
+    const qrUnitId = buildQrUnitId();
     product.serialUnits.push({
       serialNumber,
-      qrCode: buildSerialQrCode(product, serialNumber),
+      qrUnitId,
+      qrCode: buildSerialQrCode(product, serialNumber, qrUnitId),
       branch,
       status: "available",
     });
@@ -434,34 +513,26 @@ const decrementProductStockForOrder = async (
   const remainingBranchStock = hasBranchSnapshot
     ? Number(updatedProduct?.branchStock?.get(branch) || 0)
     : Number(updatedProduct?.stock || 0);
-  if (remainingBranchStock !== 0) return;
+  const lowStockThreshold = Math.max(1, Number(updatedProduct?.threshold || 5));
+  if (remainingBranchStock > lowStockThreshold) return;
 
   try {
-    const recipients = await User.find({
-      role: { $in: ["admin", "superadmin"] },
-      accountStatus: { $ne: "disabled" },
-      $or: [
-        { role: "superadmin" },
-        { assignedBranch: branch },
-        { activeBranch: branch },
-        { assignedBranch: "" },
-        { activeBranch: "" },
-      ],
-    }).select("_id");
-    const title = "Out of stock";
-    const message = `${product.name} is now out of stock${branch ? ` at ${branch}` : ""}. SuperAdmin action is required.`;
-    if (recipients.length) {
-      await Notification.insertMany(
-        recipients.map((recipient) => ({
-          user: recipient._id,
-          type: "inventory",
-          title,
-          message,
-          unread: true,
-          status: "unread",
-        })),
-      );
-    }
+    const isOutOfStock = remainingBranchStock <= 0;
+    const title = isOutOfStock ? "Out of stock" : "Low stock";
+    const message = isOutOfStock
+      ? `${product.name} is now out of stock${branch ? ` at ${branch}` : ""}. SuperAdmin action is required.`
+      : `${product.name} has ${remainingBranchStock} unit(s) remaining${branch ? ` at ${branch}` : ""}. Reorder before it runs out.`;
+    await notifyOperationalStaff({
+      branch,
+      title,
+      message,
+      type: "inventory",
+      category: "stock",
+      severity: isOutOfStock ? "critical" : "warning",
+      targetId: String(productId),
+      targetType: "inventory",
+      dedupeKey: `${isOutOfStock ? "out-of-stock" : "low-stock"}:${productId}:${branch}`,
+    });
   } catch (error) {
     console.error("Failed to create zero-stock notifications:", error);
   }
@@ -715,6 +786,23 @@ const isOnlinePaymentMethod = (paymentMethod = "") =>
   ["gcash", "credit", "card", "maya", "paymaya", "online"].includes(
     String(paymentMethod || "").toLowerCase(),
   );
+
+// An invoice is a completed transaction record, not a record of every
+// checkout attempt. Keeping this rule in the API makes Mobile and Web show
+// the same primary receipt and hides legacy pending/failed attempt tickets.
+const hasPrimaryReceipt = (order = {}) => {
+  const isOnline =
+    isOnlinePaymentMethod(order.paymentMethod) ||
+    String(order.paymentProvider || "").toLowerCase() === "paymongo";
+  return isOnline
+    ? String(order.paymentStatus || "").toLowerCase() === "paid"
+    : Boolean(String(order.receipt?.receiptNumber || "").trim());
+};
+
+const primaryReceiptNumber = (order = {}) => {
+  const existing = String(order.receipt?.receiptNumber || "").trim();
+  return existing || `RCP-${String(order.orderCode || order.id || "").trim()}`;
+};
 
 const getPaymongoRuntimeStatus = () => {
   const configuredMode = String(env.paymongoMode || process.env.PAYMONGO_MODE || "").trim().toLowerCase();
@@ -1051,11 +1139,23 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
     order.status = "paid";
     order.paymongo.paidAt = order.paymongo.paidAt || new Date();
     if (wasAlreadyPaid) {
+      // Older paid orders may predate deterministic receipt issuance. Repair
+      // the missing primary receipt without issuing another one.
+      if (!String(order.receipt?.receiptNumber || "").trim()) {
+        order.receipt = {
+          ...(order.receipt?.toObject?.() || order.receipt || {}),
+          receiptNumber: primaryReceiptNumber(order),
+          issuedAt: order.receipt?.issuedAt || new Date().toISOString(),
+          paymentStatus: "paid",
+          amountPaid: Number(order.totalAmount || 0),
+        };
+      }
       await order.save();
       return order;
     }
     order.receipt = {
       ...(order.receipt?.toObject?.() || order.receipt || {}),
+      receiptNumber: primaryReceiptNumber(order),
       issuedAt: new Date().toISOString(),
       paymentMethod: order.paymentMethod,
       paymentProvider: "paymongo",
@@ -1081,6 +1181,11 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
       customerId: order.customer,
       title: "Payment received",
       message: `Your payment for order ${order.orderCode} was received through PayMongo.`,
+    });
+    await createStaffOrderNotification({
+      order,
+      title: "Payment completed",
+      message: `PayMongo confirmed payment for ${order.orderCode}. The order is ready for fulfilment.`,
     });
     return order;
   }
@@ -1130,6 +1235,11 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
       customerId: order.customer,
       title: "Payment not completed",
       message: `Payment for order ${order.orderCode} was not completed. You may try paying again from your order details.`,
+    });
+    await createStaffOrderNotification({
+      order,
+      title: "Payment requires attention",
+      message: `PayMongo marked payment for ${order.orderCode} as ${nextPaymentStatus}. Stock was released where applicable.`,
     });
     return order;
   }
@@ -1228,11 +1338,9 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
     });
   }
 
-  if (inventoryQueries.length === 0) return responses;
-
-  const products = await Product.find({ $or: inventoryQueries }).select(
-    "name sku serialUnits",
-  );
+  const products = inventoryQueries.length
+    ? await Product.find({ $or: inventoryQueries }).select("name sku serialUnits")
+    : [];
 
   const inventoryUnitBySerial = new Map();
   const assignedInventoryUnits = new Map();
@@ -1364,6 +1472,101 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
     });
   });
 
+  const tasks = orderCodes.length
+    ? await Task.find({ "payload.orderCode": { $in: orderCodes } })
+      .select("taskCode status assignedTechnicianName completedAt updatedAt proof payload")
+      .sort({ updatedAt: -1 })
+    : [];
+  const taskByOrderCode = new Map();
+  tasks.forEach((task) => {
+    const orderCode = String(task?.payload?.orderCode || "").trim();
+    if (orderCode && !taskByOrderCode.has(orderCode)) taskByOrderCode.set(orderCode, task);
+  });
+
+  const customerIds = responses
+    .map((order) => String(order.customer || "").trim())
+    .filter((id) => mongoose.Types.ObjectId.isValid(id));
+  const customers = customerIds.length
+    ? await User.find({ _id: { $in: customerIds } }).select("name email phone mobileNumber billingAddress")
+    : [];
+  const customerById = new Map(customers.map((customer) => [String(customer._id), customer]));
+
+  responses.forEach((order) => {
+    const task = taskByOrderCode.get(String(order.orderCode || "")) || null;
+    const customer = customerById.get(String(order.customer || ""));
+    const deliveryAddress = order.address || {};
+    const addressText = [
+      deliveryAddress.street,
+      deliveryAddress.barangay,
+      deliveryAddress.city,
+      deliveryAddress.province,
+      deliveryAddress.region,
+      deliveryAddress.postalCode,
+    ].filter(Boolean).join(", ");
+    const billingAddress = customer?.billingAddress?.toObject?.() || customer?.billingAddress || {};
+    const billingAddressText = [
+      billingAddress.street,
+      billingAddress.barangay,
+      billingAddress.city,
+      billingAddress.province,
+      billingAddress.region,
+      billingAddress.postalCode,
+    ].filter(Boolean).join(", ");
+    const paymentStatus = String(order.paymentStatus || order.receipt?.paymentStatus || "pending");
+    const tracking = buildTrackingTimeline(order, task);
+    order.tracking = {
+      trackingNumber: String(order.trackingNumber || ""),
+      estimatedDelivery: order.estimatedDelivery || "",
+      estimatedArrival: order.estimatedArrival || "",
+      currentStage: tracking.currentStage,
+      currentLabel: tracking.currentLabel,
+      timeline: tracking.timeline,
+    };
+    order.receiptAvailable = hasPrimaryReceipt(order);
+    if (!order.receiptAvailable) {
+      // Do not leak a historic placeholder receipt to the customer. Payment
+      // metadata remains available for the payment/retry workflow, but no
+      // invoice can be previewed or downloaded until it is official.
+      order.receipt = {
+        ...(order.receipt || {}),
+        receiptNumber: "",
+      };
+      order.invoice = null;
+      return;
+    }
+    const invoiceNumber = primaryReceiptNumber(order);
+    order.invoice = {
+      invoiceNumber,
+      orderNumber: String(order.orderCode || order.id || ""),
+      transactionDate: order.receipt?.issuedAt || order.createdAt || "",
+      customer: {
+        name: String(order.customerName || deliveryAddress.name || customer?.name || "Customer"),
+        phone: String(deliveryAddress.phone || customer?.phone || customer?.mobileNumber || ""),
+        email: String(customer?.email || ""),
+      },
+      billingAddress: billingAddressText
+        ? { ...billingAddress, formatted: billingAddressText, sameAsDelivery: false }
+        : { ...deliveryAddress, formatted: addressText, sameAsDelivery: true },
+      deliveryAddress: { ...deliveryAddress, formatted: addressText },
+      branch: String(order.stockSourceBranch || order.customerBranch || ""),
+      payment: {
+        method: String(order.paymentProvider || order.paymentMethod || ""),
+        status: paymentStatus,
+        reference: String(order.receipt?.paymentReference || order.paymongo?.paymentId || order.paymongo?.checkoutSessionId || ""),
+      },
+      orderStatus: String(order.workflowLabel || workflowLabel(order.workflowStatus)),
+      warranty: order.workflowStatus === "complete"
+        ? "Warranty is active for installed units."
+        : "Warranty activates after completed installation.",
+      technician: task ? {
+        name: String(task.assignedTechnicianName || order.assignedTechnician || ""),
+        taskCode: String(task.taskCode || ""),
+        status: String(task.status || ""),
+        installedAt: task.completedAt || null,
+      } : null,
+    };
+  });
+
   return responses;
 };
 
@@ -1388,13 +1591,13 @@ const createOrderNotification = async ({ customerId, title, message }) => {
       return;
     }
 
-    await Notification.create({
+    await createDedupedNotification({
       user: customerId,
       type: "order",
       title,
       message,
-      unread: true,
-      status: "unread",
+      targetType: "order",
+      dedupeKey: `customer-order:${customerId}:${title}:${message}`,
     });
   } catch (error) {
     console.error("Failed to create order notification:", error);
@@ -1404,36 +1607,17 @@ const createOrderNotification = async ({ customerId, title, message }) => {
 const createStaffOrderNotification = async ({ order, title, message }) => {
   if (!order || !title || !message) return;
   try {
-    const branch = String(order.stockSourceBranch || order.customerBranch || "").trim();
-    const branchFilter = branch
-      ? [
-          { role: "superadmin" },
-          { activeBranch: branch },
-          { assignedBranch: branch },
-          { activeBranch: "" },
-          { assignedBranch: "" },
-          { activeBranch: { $exists: false } },
-          { assignedBranch: { $exists: false } },
-        ]
-      : [{ role: { $in: ["admin", "superadmin", "manager", "owner"] } }];
-    const staff = await User.find({
-      role: { $in: ["admin", "superadmin", "manager", "owner"] },
-      isDeleted: { $ne: true },
-      accountStatus: { $ne: "deleted" },
-      $or: branchFilter,
-    }).select("_id notifications");
-    const notifications = staff
-      .filter((user) => {
-        const prefs = user.notifications?.toObject?.() || user.notifications || {};
-        return prefs.inApp !== false && prefs.push !== false && prefs.orderUpdates !== false;
-      })
-      .map((user) => ({
-        user: user._id,
-        type: "order",
-        title,
-        message,
-      }));
-    if (notifications.length > 0) await Notification.insertMany(notifications);
+    await notifyOperationalStaff({
+      branch: String(order.stockSourceBranch || order.customerBranch || "").trim(),
+      title,
+      message,
+      type: "order",
+      category: "order",
+      targetId: String(order._id || order.id || ""),
+      targetType: "order",
+      dedupeKey: `staff-order:${order._id || order.orderCode}:${title}`,
+      roles: ["admin", "superadmin", "manager", "owner"],
+    });
   } catch (error) {
     console.warn("Failed to notify staff about order:", error);
   }
@@ -1452,38 +1636,17 @@ const canReceiveNotification = (user, type = "system") => {
 const notifyBranchAdminsForOrder = async (order) => {
   if (!order?.orderCode) return;
   try {
-    const branch = order.stockSourceBranch || order.customerBranch || "";
-    const staffRoles = ["admin", "superadmin", "manager", "owner"];
-    const branchFilters = branch
-      ? [
-          { assignedBranch: branch },
-          { activeBranch: branch },
-          { assignedBranch: "" },
-          { activeBranch: "" },
-          { assignedBranch: { $exists: false } },
-          { activeBranch: { $exists: false } },
-        ]
-      : [{}];
-    const staff = await User.find({
-      role: { $in: staffRoles },
-      accountStatus: { $ne: "disabled" },
-      $or: [{ role: "superadmin" }, ...branchFilters],
-    }).select("_id notifications");
-
-    const notifications = staff
-      .filter((user) => canReceiveNotification(user, "order"))
-      .map((user) => ({
-        user: user._id,
-        type: "order",
-        title: "New customer order",
-        message: `Order ${order.orderCode} from ${order.customerName || "a customer"} is waiting in Admin Orders.`,
-        unread: true,
-        status: "unread",
-      }));
-
-    if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
-    }
+    await notifyOperationalStaff({
+      branch: order.stockSourceBranch || order.customerBranch || "",
+      title: "New customer order",
+      message: `Order ${order.orderCode} from ${order.customerName || "a customer"} is waiting in Admin Orders.`,
+      type: "order",
+      category: "order",
+      targetId: String(order._id || order.id || ""),
+      targetType: "order",
+      dedupeKey: `new-order:${order._id || order.orderCode}`,
+      roles: ["admin", "superadmin", "manager", "owner"],
+    });
   } catch (error) {
     console.error("Failed to notify branch admins:", error);
   }
@@ -1862,12 +2025,14 @@ const syncInstalledUnitsFromTask = async (task) => {
         $set: {
           serialNumber: serialUnit.serialNumber,
           qrCode: String(serialUnit.qrCode || ""),
+          qrUnitId: String(serialUnit.qrUnitId || ""),
           productId: String(product._id || product.id || ""),
           modelName: [product.name, product.specs].filter(Boolean).join(" ") || product.sku || "AC Unit",
           brand: String(product.brand || ""),
           capacityHp: parseCapacityHp(product.specs),
           customer: customerId,
           customerName: String(task.customer || task.payload?.customerName || ""),
+          serviceBranch: String(task.branch || serialUnit.branch || ""),
           installation: {
             installedAt: ampParameters.installationDate
               ? new Date(ampParameters.installationDate)
@@ -2042,7 +2207,10 @@ const createOrder = async (req, res) => {
   // millisecond. The suffix keeps every transaction and serial reservation
   // independently traceable.
   const orderCode = `ORD-${Date.now()}-${randomSerialToken()}`;
-  const receiptNumber = `RCP-${Date.now()}`;
+  // Cash-on-delivery has one primary order receipt immediately. Online
+  // payments receive this deterministic number only after PayMongo confirms
+  // payment, so retries and failures cannot create invoice tickets.
+  const receiptNumber = usesOnlinePayment ? "" : `RCP-${orderCode}`;
   const trackingNumber = `TRK-${Math.floor(Math.random() * 1000000000)}`;
   const eta = new Date();
   eta.setDate(eta.getDate() + 7);
@@ -2208,6 +2376,14 @@ const createOrder = async (req, res) => {
       workflowStatus: "to_pay",
       status: "pending",
       stockReservationStatus: "reserved",
+      fulfillmentTimeline: [
+        {
+          stage: "placed",
+          label: fulfillmentStages.placed,
+          detail: "Order submitted",
+          timestamp: new Date(),
+        },
+      ],
     };
 
     if (!session) return Order.create(orderPayload);
@@ -2428,10 +2604,16 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   order.workflowStatus = config.to;
   order.status = config.status;
   order.deliveryStatus = config.deliveryStatus || order.deliveryStatus;
+  if (action === "approve") {
+    appendFulfillmentEvent(order, "confirmed", "Order approved");
+    appendFulfillmentEvent(order, "preparing", "Preparing your assigned unit");
+  }
   if (action === "dispatch") {
     order.dispatchedAt = order.dispatchedAt || new Date();
     order.dispatchedBy = options.actorUserId || null;
+    appendFulfillmentEvent(order, "dispatched", "Order dispatched to the technician");
   }
+  if (action === "complete") appendFulfillmentEvent(order, "completed", "Installation completed");
   if (assignment.assignedTechnicianId) {
     order.assignedTechnicianId = assignment.assignedTechnicianId;
   }
@@ -2445,6 +2627,7 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   if (action === "cancel") {
     order.cancelledAt = new Date();
     order.cancellationReason = String(options.cancellationReason || "").trim();
+    appendFulfillmentEvent(order, "cancelled", order.cancellationReason || "Order cancelled");
     if (
       String(order.paymentProvider || "").toLowerCase() === "paymongo" &&
       String(order.paymentStatus || "").toLowerCase() === "paid"

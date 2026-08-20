@@ -26,6 +26,9 @@ const productSchema = new mongoose.Schema(
     },
     serialUnits: [
       {
+        // Permanent internal identity printed in the QR payload. It never changes
+        // when a temporary inventory serial is replaced by a manufacturer serial.
+        qrUnitId: { type: String, default: "", trim: true, index: true },
         serialNumber: {
           type: String,
           required: true,
@@ -36,6 +39,9 @@ const productSchema = new mongoose.Schema(
           enum: ["generated", "manufacturer"],
           default: "generated",
         },
+        // Previous temporary serials remain searchable so an already printed QR
+        // label continues to locate the same physical AC unit after real testing.
+        serialAliases: [{ type: String, trim: true }],
         qrCode: { type: String, default: "", trim: true },
         branch: { type: String, default: "", trim: true },
         status: {
@@ -90,6 +96,15 @@ productSchema.index(
   },
 );
 
+productSchema.index(
+  { "serialUnits.qrUnitId": 1 },
+  {
+    unique: true,
+    sparse: true,
+    name: "idx_serial_units_qr_unit_id_unique",
+  },
+);
+
 // Compound index for unique product variants (name + specs combination)
 productSchema.index(
   { name: 1, specs: 1 },
@@ -110,6 +125,7 @@ productSchema.index(
   {
     unique: true,
     sparse: true,
+    collation: { locale: "en", strength: 2 },
     name: "idx_serial_units_serial_number_unique",
   },
 );

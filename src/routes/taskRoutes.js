@@ -8,6 +8,7 @@ const {
 	acceptTask,
 	checkInTask,
 	getRegistrationContextBySerial,
+	getTechnicianUnitHistoryBySerial,
 	registerAmpUnit,
 	updateTaskStatus,
 } = require("../controllers/taskController");
@@ -18,6 +19,7 @@ router.use(requireAuth);
 router.get("/", listTasks);
 router.post("/", createTask);
 router.get("/registration-context/:serialNumber", getRegistrationContextBySerial);
+router.get("/unit-history/:serialNumber", getTechnicianUnitHistoryBySerial);
 router.get("/:taskId", getTaskById);
 router.patch("/:taskId/accept", acceptTask);
 router.patch("/:taskId/check-in", checkInTask);

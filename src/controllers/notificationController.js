@@ -3,6 +3,21 @@ const User = require("../models/User");
 
 const STAFF_ROLES = ["admin", "superadmin", "manager", "owner"];
 
+const collapseDuplicateNotifications = (notifications = []) => {
+  const seen = new Set();
+  return notifications.filter((item) => {
+    const json = item.toJSON ? item.toJSON() : item;
+    // Event producers provide a precise key. Legacy alerts are only collapsed
+    // when their title, message, target and type are genuinely identical.
+    const key = String(
+      json.dedupeKey || `${json.type || "system"}:${json.targetType || ""}:${json.targetId || ""}:${json.title || ""}:${json.message || ""}`,
+    );
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const roleMessages = (role = "customer", isFirstLogin = false) => {
   const normalizedRole = String(role || "customer").toLowerCase();
   const isStaff = STAFF_ROLES.includes(normalizedRole);
@@ -101,7 +116,7 @@ const listMyNotifications = async (req, res) => {
     notifications = await Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(30);
   }
 
-  notifications = notifications.filter((item) => {
+  notifications = collapseDuplicateNotifications(notifications).filter((item) => {
     if (item.type === "account" && userNotifications.accountUpdates === false) return false;
     if (item.type === "order" && userNotifications.orderUpdates === false) return false;
     if (item.type === "system" && userNotifications.systemAlerts === false) return false;

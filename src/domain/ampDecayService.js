@@ -174,6 +174,11 @@ const calculate_next_service_date = async (unitId, options = {}) => {
   const baseDailyDecay = Number(unit.amp?.dailyBaseDecay || DEFAULT_DAILY_DECAY);
   const historicalCurveFactor = Number(unit.amp?.historicalCurveFactor || 1);
   const technicianInputFactor = getTechnicianInputFactor(lastService);
+  const warrantyRepairCount = (Array.isArray(unit.warranty?.serviceRecords) ? unit.warranty.serviceRecords : [])
+    .filter((record) => /repair/i.test(String(record?.visitType || ""))).length;
+  // Recurring warranty repairs are a historical reliability signal. They modestly
+  // accelerate the AMP curve without inventing a live-sensor diagnosis.
+  const warrantyRepairMultiplier = warrantyRepairCount >= 3 ? 1.2 : warrantyRepairCount >= 2 ? 1.1 : 1;
 
   const lastServiceDate = startOfUtcDay(lastService.serviceDate);
   const elapsedDays = Math.max(0, Math.floor((asOfDate.getTime() - lastServiceDate.getTime()) / MS_PER_DAY));
@@ -184,7 +189,8 @@ const calculate_next_service_date = async (unitId, options = {}) => {
     baseDailyDecay *
     historicalCurveFactor *
     technicianInputFactor *
-    averageWeatherMultiplier;
+    averageWeatherMultiplier *
+    warrantyRepairMultiplier;
   const estimatedCurrentHealth = Math.max(0, baselineHealth - elapsedDays * dailyDecay);
 
   // If the estimated score already crossed the threshold, recommend service immediately.
@@ -222,6 +228,8 @@ const calculate_next_service_date = async (unitId, options = {}) => {
       averageWeatherMultiplier,
       technicianInputFactor,
       historicalCurveFactor,
+      warrantyRepairCount,
+      warrantyRepairMultiplier,
       dailyDecay,
       estimatedCurrentHealth,
       serviceThreshold,

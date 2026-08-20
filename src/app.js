@@ -26,6 +26,7 @@ const aiRoutes = require("./routes/aiRoutes");
 const ampRoutes = require("./routes/ampRoutes");
 const predictionRoutes = require("./routes/predictionRoutes");
 const partsRequestRoutes = require("./routes/partsRequestRoutes");
+const warrantyRoutes = require("./routes/warrantyRoutes");
 
 const app = express();
 const isProduction = env.nodeEnv === "production";
@@ -112,6 +113,7 @@ app.use("/api/ai", aiRoutes);
 app.use("/api/amp", ampRoutes);
 app.use("/api/predictions", predictionRoutes);
 app.use("/api/parts-requests", partsRequestRoutes);
+app.use("/api/warranties", warrantyRoutes);
 
 const buildPath = path.resolve(__dirname, "..", "..", "front", "build");
 const indexHtml = path.join(buildPath, "index.html");

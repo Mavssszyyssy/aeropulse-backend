@@ -1,6 +1,7 @@
 const Unit = require("../models/Unit");
 const ServiceHistory = require("../models/ServiceHistory");
 const { calculate_next_service_date } = require("./ampDecayService");
+const { appendWarrantyEvent, effectiveWarrantyStatus } = require("./warrantyService");
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -123,6 +124,42 @@ const completeServiceForUnit = async ({ unitId, technicianId, payload }) => {
     calculatedAt: new Date(),
   };
   await serviceHistory.save();
+
+  const warranty = unit.warranty?.toObject?.() || unit.warranty || {};
+  if (warranty?.startDate) {
+    const claimId = String(payload.warranty_claim_id || payload.warrantyClaimId || "").trim();
+    const claims = Array.isArray(warranty.claims) ? warranty.claims : [];
+    const claimIndex = claimId
+      ? claims.findIndex((claim) => String(claim?.claimId || "") === claimId)
+      : -1;
+    if (claimIndex >= 0) {
+      claims[claimIndex] = {
+        ...claims[claimIndex],
+        status: "service_completed",
+        resolvedAt: new Date(),
+        serviceHistoryId: String(serviceHistory._id || serviceHistory.id || ""),
+      };
+    }
+    warranty.claims = claims;
+    warranty.serviceRecords = [
+      ...(Array.isArray(warranty.serviceRecords) ? warranty.serviceRecords : []),
+      {
+        serviceDate: serviceHistory.serviceDate,
+        visitType: serviceHistory.visitType,
+        summary: String(payload.notes || "Service completed"),
+        serviceHistoryId: String(serviceHistory._id || serviceHistory.id || ""),
+        claimId,
+      },
+    ];
+    warranty.status = effectiveWarrantyStatus({ ...warranty, status: "active" });
+    warranty.timeline = appendWarrantyEvent(
+      warranty,
+      claimIndex >= 0 ? "Warranty Service Completed" : "Warranty Service Record Added",
+      claimIndex >= 0 ? "Approved warranty claim service was completed." : "Service history updated for AMP.",
+    );
+    unit.warranty = warranty;
+    await unit.save();
+  }
 
   return {
     unit,
