@@ -61,9 +61,12 @@ const getRequestBranch = ({ req, payload = {}, unit = null }) => {
   if (req.authUser.role === "superadmin") return String(payload.branch || "");
 
   const unitAddress = unit?.installation || {};
-  return String(payload.branch || "").trim() || resolvePreferredBranch({
+  // Customer addresses are the source of truth. Do not trust a stale branch
+  // value from a mobile/web payload after the customer changes location.
+  return resolvePreferredBranch({
     city: payload.city || unitAddress.city || "",
     province: payload.province || unitAddress.province || "",
+    barangay: payload.barangay || unitAddress.barangay || "",
     street: payload.address || unitAddress.addressLine || "",
   });
 };
