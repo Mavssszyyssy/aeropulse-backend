@@ -35,8 +35,10 @@ const userSchema = new mongoose.Schema(
     name_last: { type: String, required: true, trim: true },
     email: {
       type: String,
-      required: true,
+      // Customers may use SMS as their only sign-up verification method.
+      required: false,
       unique: true,
+      sparse: true,
       lowercase: true,
       trim: true,
     },

@@ -454,7 +454,7 @@ const verifyRegistrationCode = async (req, res) => {
     email: normalizedEmail,
     stepIndex: 1,
     formData: {
-      email: normalizedEmail,
+      ...(normalizedEmail ? { email: normalizedEmail } : {}),
       emailVerified: true,
     },
   };
@@ -530,7 +530,11 @@ const register = async (req, res) => {
     const passwordHash = await bcrypt.hash(password, salt);
 
     // Auto-generate alias from email if not provided (Technical Fallback)
-    const finalAlias = (alias || normalizedEmail.split("@")[0] || "")
+    const finalAlias = (
+      alias
+      || normalizedEmail.split("@")[0]
+      || (normalizedPhone ? `sms-${normalizedPhone}` : "")
+    )
       .toLowerCase()
       .trim();
 
