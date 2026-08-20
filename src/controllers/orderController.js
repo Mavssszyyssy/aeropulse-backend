@@ -426,7 +426,10 @@ const decrementProductStockForOrder = async (
     );
   }
 
-  const updatedProduct = await Product.findById(productId).select("name stock branchStock threshold");
+  const updatedProduct = await withOptionalSession(
+    Product.findById(productId).select("name stock branchStock threshold"),
+    session,
+  );
   const remainingBranchStock = hasBranchSnapshot
     ? Number(updatedProduct?.branchStock?.get(branch) || 0)
     : Number(updatedProduct?.stock || 0);
@@ -542,16 +545,97 @@ const restoreStockForCancelledOrder = async (order, session = null) => {
   );
 };
 
+const releaseOrderInventoryOnce = async (order, reason = "") => {
+  if (
+    !order ||
+    order.stockReservationStatus === "released" ||
+    order.stockReservationStatus === "consumed" ||
+    order.stockReleasedAt ||
+    order.workflowStatus === "complete"
+  ) {
+    return false;
+  }
+
+  await restoreStockForCancelledOrder(order);
+  await updateSerialUnitsForOrder(order, "cancelled");
+  order.stockReservationStatus = "released";
+  order.stockReleasedAt = new Date();
+  if (reason && !order.cancellationReason) order.cancellationReason = reason;
+  return true;
+};
+
+const reReserveReleasedOrderInventory = async (order) => {
+  if (!order || order.stockReservationStatus !== "released") return;
+
+  const completedReservations = [];
+  try {
+    for (const item of order.items || []) {
+      const quantity = Number(item.quantity || 0);
+      const productId = String(item.productId || "").trim();
+      const branch = String(item.sourceBranch || order.stockSourceBranch || "").trim();
+      if (quantity < 1 || !mongoose.Types.ObjectId.isValid(productId) || !branch) {
+        throw new HttpError(409, "This order no longer has a valid inventory reservation.");
+      }
+
+      const product = await Product.findById(productId);
+      if (!product) throw new HttpError(409, `Product ${item.name || productId} is no longer available.`);
+      const hasBranchSnapshot = Array.from(product.branchStock?.values?.() || []).some(
+        (value) => Number(value || 0) > 0,
+      );
+      const reservedUnits = await reserveSerialUnitsForOrder(
+        product,
+        branch,
+        quantity,
+        order.orderCode,
+      );
+      const serialNumbers = reservedUnits.map((unit) => unit.serialNumber);
+      try {
+        await decrementProductStockForOrder(
+          product,
+          branch,
+          quantity,
+          hasBranchSnapshot,
+        );
+      } catch (error) {
+        await releaseReservedSerialUnits(product._id, serialNumbers);
+        throw error;
+      }
+
+      completedReservations.push({ productId, branch, quantity, hasBranchSnapshot, serialNumbers });
+      item.serialNumbers = serialNumbers;
+      item.serialUnits = reservedUnits;
+    }
+
+    order.stockReservationStatus = "reserved";
+    order.stockReleasedAt = null;
+    await order.save();
+  } catch (error) {
+    await Promise.allSettled(
+      completedReservations.reverse().map(async (reservation) => {
+        await restoreReservedProductStock(
+          reservation.productId,
+          reservation.branch,
+          reservation.quantity,
+          reservation.hasBranchSnapshot,
+        );
+        await releaseReservedSerialUnits(
+          reservation.productId,
+          reservation.serialNumbers,
+        );
+      }),
+    );
+    throw error;
+  }
+};
+
 const rollbackUnpaidOnlineOrder = async (order) => {
   if (!order || !isOnlinePaymentMethod(order.paymentMethod)) return;
 
   try {
-    await restoreStockForCancelledOrder(order);
-    await updateSerialUnitsForOrder(order, "cancelled");
+    await releaseOrderInventoryOnce(order, "PayMongo checkout could not be started.");
     order.workflowStatus = "cancelled";
     order.status = "cancelled";
     order.paymentStatus = "failed";
-    order.cancellationReason = "PayMongo checkout could not be started.";
     await order.save();
   } catch (rollbackError) {
     console.error("Unable to roll back unpaid online order:", rollbackError);
@@ -819,6 +903,17 @@ const findOrderForPaymongoEvent = async (event) => {
 const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   if (!order) return null;
   const eventType = String(event.eventType || "").toLowerCase();
+  const eventKey = [
+    eventType,
+    event.resourceId || event.paymentId || event.paymentIntentId || event.checkoutSessionId || "",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(":");
+  const previousPaymongo = order.paymongo?.toObject?.() || order.paymongo || {};
+  if (eventKey && previousPaymongo.lastEventKey === eventKey) {
+    return order;
+  }
   const isPaid =
     eventType === "payment.paid" ||
     eventType === "checkout_session.payment.paid" ||
@@ -834,17 +929,22 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
 
   order.paymentProvider = "paymongo";
   order.paymongo = {
-    ...(order.paymongo?.toObject?.() || order.paymongo || {}),
+    ...previousPaymongo,
     checkoutSessionId: event.checkoutSessionId || order.paymongo?.checkoutSessionId || "",
     paymentIntentId: event.paymentIntentId || order.paymongo?.paymentIntentId || "",
     paymentId: event.paymentId || order.paymongo?.paymentId || "",
     referenceNumber: event.orderCode || order.paymongo?.referenceNumber || order.orderCode,
     status: event.attributes?.status || order.paymongo?.status || "",
     lastEventType: event.eventType,
+    lastEventKey: eventKey,
     raw: rawPayload,
   };
 
   if (isPaid) {
+    // A late payment callback can arrive after an earlier failed/expired
+    // callback released the reservation. Re-reserve before approving so the
+    // paid order cannot advance with missing stock or serial assignments.
+    await reReserveReleasedOrderInventory(order);
     order.paymentStatus = "paid";
     order.status = "paid";
     order.paymongo.paidAt = order.paymongo.paidAt || new Date();
@@ -880,6 +980,16 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   }
 
   if (isFailed) {
+    // Do not let a delayed failure callback roll back an order that has
+    // already been paid and moved beyond checkout. PayMongo can deliver
+    // callbacks out of order, so the server's current lifecycle wins.
+    if (
+      String(order.paymentStatus || "").toLowerCase() === "paid" &&
+      order.workflowStatus !== "to_pay"
+    ) {
+      await order.save();
+      return order;
+    }
     const eventStatus = String(event.attributes?.status || "").toLowerCase();
     const eventPaymentStatus = String(event.attributes?.payment_status || "").toLowerCase();
     const nextPaymentStatus =
@@ -891,6 +1001,10 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
           ? "cancelled"
           : "failed";
     order.paymentStatus = nextPaymentStatus;
+    await releaseOrderInventoryOnce(
+      order,
+      `PayMongo payment ${nextPaymentStatus}.`,
+    );
     order.receipt = {
       ...(order.receipt?.toObject?.() || order.receipt || {}),
       paymentMethod: order.paymentMethod,
@@ -1699,7 +1813,36 @@ const createOrder = async (req, res) => {
     returnTarget = "",
     clientType = "",
     platform = "",
+    idempotencyKey: bodyIdempotencyKey = "",
   } = req.body;
+  const idempotencyKey = String(
+    req.get("Idempotency-Key") || bodyIdempotencyKey || "",
+  ).trim().slice(0, 160);
+
+  if (idempotencyKey) {
+    const existingOrder = await Order.findOne({
+      customer: user._id,
+      idempotencyKey,
+    });
+    if (existingOrder) {
+      const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([existingOrder]);
+      return res.status(200).json({
+        order: {
+          ...hydratedOrder,
+          paymentUrl: hydratedOrder.paymongo?.checkoutUrl || "",
+        },
+        payment: hydratedOrder.paymongo?.checkoutUrl
+          ? {
+              provider: "paymongo",
+              checkoutSessionId: hydratedOrder.paymongo?.checkoutSessionId || "",
+              checkoutUrl: hydratedOrder.paymongo.checkoutUrl,
+              status: hydratedOrder.paymongo?.status || "active",
+            }
+          : null,
+        idempotentReplay: true,
+      });
+    }
+  }
   const usesOnlinePayment = isOnlinePaymentMethod(paymentMethod);
   const checkoutReturnTarget = normalizePaymentReturnTarget(
     paymentReturnTarget || returnTarget || clientType || platform,
@@ -1916,6 +2059,7 @@ const createOrder = async (req, res) => {
     const normalizedTotal = serverTotals.total;
     const orderPayload = {
       orderCode,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
       customer: user._id,
       customerName: user.name || `${user.name_first} ${user.name_last}`.trim(),
       items: resolvedItems,
@@ -1951,6 +2095,7 @@ const createOrder = async (req, res) => {
       totalAmount: normalizedTotal,
       workflowStatus: "to_pay",
       status: "pending",
+      stockReservationStatus: "reserved",
     };
 
     if (!session) return Order.create(orderPayload);
@@ -2190,7 +2335,8 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   await order.save();
   await updateSerialUnitsForOrder(order, order.workflowStatus);
   if (action === "cancel") {
-    await restoreStockForCancelledOrder(order);
+    await releaseOrderInventoryOnce(order, order.cancellationReason);
+    await order.save();
     await Task.updateMany(
       {
         $or: [
@@ -2207,6 +2353,11 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
         },
       },
     );
+  }
+  if (action === "complete") {
+    order.stockReservationStatus = "consumed";
+    order.stockReleasedAt = null;
+    await order.save();
   }
   if (action === "approve") {
     await createTaskForOrder(order, {
@@ -2479,6 +2630,11 @@ const recoverOrder = async (req, res) => {
 
     const installedUnits = await syncInstalledUnitsFromTask(linkedTask);
     await updateSerialUnitsForOrder(order, "complete");
+    order.workflowStatus = "complete";
+    order.status = "paid";
+    order.stockReservationStatus = "consumed";
+    order.stockReleasedAt = null;
+    await order.save();
     const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
     return res.json({
       message: `Synced ${installedUnits.length} installed customer unit(s) for ${order.orderCode}.`,
@@ -2779,6 +2935,8 @@ const retryPaymongoCheckout = async (req, res) => {
     if (order.paymentStatus === "paid" || order.status === "paid") {
       return res.status(409).json({ message: "This order is already paid." });
     }
+
+    await reReserveReleasedOrderInventory(order);
 
     const checkout = await attachPaymongoCheckout(order, {
       req,

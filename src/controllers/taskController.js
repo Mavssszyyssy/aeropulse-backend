@@ -390,14 +390,18 @@ const syncOrderWorkflowForTask = async (task, status) => {
   if (order.workflowStatus === "complete") return;
   if (order.workflowStatus !== "to_install") return;
 
+  // Finish the dependent records first. The order is only moved to COMPLETE
+  // after the registered AMP data has produced the customer unit record and
+  // the assigned inventory serials have been marked sold.
+  await ensureInstalledCustomerUnitsForTask(task);
+  await updateSerialUnitsForOrderWorkflow(order, "complete");
   order.workflowStatus = "complete";
   order.status = "paid";
+  order.stockReservationStatus = "consumed";
   if (!order.assignedTechnician && task.assignedTechnicianName) {
     order.assignedTechnician = task.assignedTechnicianName;
   }
   await order.save();
-  await ensureInstalledCustomerUnitsForTask(task);
-  await updateSerialUnitsForOrderWorkflow(order, "complete");
 };
 
 const syncServiceRequestForTask = async (task, status) => {
@@ -908,13 +912,15 @@ const registerAmpUnit = async (req, res) => {
         serialUnit.status = "service";
         serialUnit.defectHold = registration;
       } else {
-        serialUnit.status = "sold";
-        serialUnit.registeredAt = serialUnit.registeredAt || new Date();
+        // AMP registration proves the technician recorded the installation
+        // details, but the unit is not sold/installed until the complete task
+        // transition passes its proof checks. This keeps inventory, orders,
+        // and customer AC-unit records on one lifecycle.
+        serialUnit.status = "assigned";
         serialUnit.ampRegistration = registration;
         serialUnit.defectHold = {};
       }
       await product.save();
-      await upsertInstalledCustomerUnit({ task, product, serialUnit, registration });
     }
 
     if (!task.assignedTechnicianId) {

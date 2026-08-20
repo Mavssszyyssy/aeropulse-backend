@@ -34,6 +34,14 @@ const orderSchema = new mongoose.Schema(
     },
     paymentMethod: { type: String, default: "cod" },
     paymentProvider: { type: String, default: "" },
+    idempotencyKey: { type: String, trim: true, index: true, sparse: true },
+    stockReservationStatus: {
+      type: String,
+      enum: ["reserved", "released", "consumed"],
+      default: "reserved",
+      index: true,
+    },
+    stockReleasedAt: { type: Date, default: null },
     paymentStatus: {
       type: String,
       enum: ["pending", "paid", "failed", "cancelled", "expired", "not_required"],
@@ -49,6 +57,7 @@ const orderSchema = new mongoose.Schema(
       status: { type: String, default: "" },
       paidAt: { type: Date, default: null },
       lastEventType: { type: String, default: "" },
+      lastEventKey: { type: String, default: "" },
       raw: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
     proofOfPayment: {
@@ -141,5 +150,10 @@ orderSchema.set("toJSON", {
     return ret;
   },
 });
+
+orderSchema.index(
+  { customer: 1, idempotencyKey: 1 },
+  { unique: true, sparse: true, name: "idx_customer_order_idempotency" },
+);
 
 module.exports = mongoose.model("Order", orderSchema);
