@@ -3,6 +3,7 @@ const connectDb = require("../src/config/db");
 const env = require("../src/config/env");
 const { seedDemoUsers } = require("../src/seed/seedDemoUsers");
 const { seedDashboardData } = require("../src/seed/seedDashboardData");
+const { restoreDemoStaff } = require("../src/seed/restoreDemoStaff");
 
 let initialization;
 
@@ -13,6 +14,13 @@ const initialize = async () => {
       if (env.nodeEnv !== "production" && process.env.SEED_DEMO_DATA !== "false") {
         await seedDemoUsers();
         await seedDashboardData();
+      }
+      // Production demo data stays disabled. This opt-in recovery switch only
+      // restores the original Admin and SuperAdmin accounts when they are
+      // missing; it never changes existing users or operational records.
+      if (String(process.env.RESTORE_DEMO_STAFF || "").toLowerCase() === "true") {
+        const restored = await restoreDemoStaff();
+        console.info("Demo staff recovery completed:", restored);
       }
     })().catch((error) => {
       initialization = null;
