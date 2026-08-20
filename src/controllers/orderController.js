@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const Task = require("../models/Task");
@@ -904,6 +905,95 @@ const findOrderForPaymongoEvent = async (event) => {
   return Order.findOne({ $or: conditions });
 };
 
+const parsePaymongoSignature = (header = "") =>
+  String(header || "")
+    .split(",")
+    .map((part) => part.trim().split("="))
+    .filter(([key, value]) => key && value)
+    .reduce((result, [key, value]) => {
+      result[String(key).trim().toLowerCase()] = String(value).trim();
+      return result;
+    }, {});
+
+const verifyPaymongoWebhookSignature = (req) => {
+  const secret = String(env.paymongoWebhookSecret || process.env.PAYMONGO_WEBHOOK_SECRET || "").trim();
+  if (!secret) {
+    throw new HttpError(503, "PayMongo webhook secret is not configured on the backend.");
+  }
+
+  const signatureHeader =
+    req.get?.("Paymongo-Signature") ||
+    req.headers?.["paymongo-signature"] ||
+    req.headers?.["x-paymongo-signature"] ||
+    "";
+  const signature = parsePaymongoSignature(signatureHeader);
+  const timestamp = Number(signature.t);
+  const rawBody = Buffer.isBuffer(req.rawBody)
+    ? req.rawBody
+    : Buffer.from(JSON.stringify(req.body || {}));
+  const maxAgeSeconds = 5 * 60;
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    throw new HttpError(401, "Invalid PayMongo webhook signature.");
+  }
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > maxAgeSeconds) {
+    throw new HttpError(401, "Expired PayMongo webhook signature.");
+  }
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${rawBody.toString("utf8")}`)
+    .digest("hex");
+  const configuredMode = String(env.paymongoMode || process.env.PAYMONGO_MODE || "").toLowerCase();
+  const liveMode = configuredMode === "live" || configuredMode === "production";
+  const provided = String((liveMode ? signature.li : signature.te) || signature.li || signature.te || "")
+    .replace(/^sha256=/i, "")
+    .trim()
+    .toLowerCase();
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const providedBuffer = Buffer.from(provided, "utf8");
+  if (
+    expectedBuffer.length !== providedBuffer.length ||
+    !crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+  ) {
+    throw new HttpError(401, "Invalid PayMongo webhook signature.");
+  }
+  return true;
+};
+
+const extractMoneyAndCurrency = (value = {}) => {
+  const attributes =
+    value?.data?.attributes || value?.attributes || value || {};
+  const amountCandidates = [
+    attributes.amount_total,
+    attributes.amount,
+    attributes.total_amount,
+    attributes.payment?.attributes?.amount,
+    attributes.payments?.[0]?.attributes?.amount,
+  ];
+  const amount = amountCandidates.find((candidate) => Number.isFinite(Number(candidate)));
+  const currency = String(
+    attributes.currency ||
+      attributes.currency_code ||
+      attributes.payment?.attributes?.currency ||
+      attributes.payments?.[0]?.attributes?.currency ||
+      "",
+  ).toUpperCase();
+  return { amount: amount === undefined ? null : Number(amount), currency };
+};
+
+const assertPaymongoAmountMatchesOrder = (order, eventOrSession = {}) => {
+  const { amount, currency } = extractMoneyAndCurrency(eventOrSession);
+  if (currency && currency !== "PHP") {
+    throw new HttpError(409, "PayMongo payment currency does not match the order currency.");
+  }
+  if (amount === null) return;
+  const expectedCentavos = Math.round(Number(order.totalAmount || 0) * 100);
+  if (Math.round(amount) !== expectedCentavos) {
+    throw new HttpError(409, "PayMongo payment amount does not match the order total.");
+  }
+};
+
 const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   if (!order) return null;
   const eventType = String(event.eventType || "").toLowerCase();
@@ -931,6 +1021,10 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
       String(event.attributes?.status || "").toLowerCase(),
     );
 
+  if (isPaid) {
+    assertPaymongoAmountMatchesOrder(order, event);
+  }
+
   order.paymentProvider = "paymongo";
   order.paymongo = {
     ...previousPaymongo,
@@ -945,6 +1039,10 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   };
 
   if (isPaid) {
+    // PayMongo may deliver both payment.paid and checkout_session.completed.
+    // Once the order is paid, do not issue a second receipt, reserve stock a
+    // second time, or send duplicate customer notifications.
+    const wasAlreadyPaid = String(order.paymentStatus || "").toLowerCase() === "paid";
     // A late payment callback can arrive after an earlier failed/expired
     // callback released the reservation. Re-reserve before approving so the
     // paid order cannot advance with missing stock or serial assignments.
@@ -952,6 +1050,10 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
     order.paymentStatus = "paid";
     order.status = "paid";
     order.paymongo.paidAt = order.paymongo.paidAt || new Date();
+    if (wasAlreadyPaid) {
+      await order.save();
+      return order;
+    }
     order.receipt = {
       ...(order.receipt?.toObject?.() || order.receipt || {}),
       issuedAt: new Date().toISOString(),
@@ -987,10 +1089,7 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
     // Do not let a delayed failure callback roll back an order that has
     // already been paid and moved beyond checkout. PayMongo can deliver
     // callbacks out of order, so the server's current lifecycle wins.
-    if (
-      String(order.paymentStatus || "").toLowerCase() === "paid" &&
-      order.workflowStatus !== "to_pay"
-    ) {
+    if (String(order.paymentStatus || "").toLowerCase() === "paid") {
       await order.save();
       return order;
     }
@@ -2091,7 +2190,10 @@ const createOrder = async (req, res) => {
         paymentProvider: usesOnlinePayment ? "paymongo" : "",
         paymentReference: "",
         paymentStatus: usesOnlinePayment ? "pending" : "not_required",
-        amountPaid: normalizedTotal,
+        // Online orders are only paid after PayMongo verification/webhook.
+        // Storing the total here made pending card/GCash orders look paid in
+        // receipts even though no money had been confirmed.
+        amountPaid: usesOnlinePayment ? 0 : normalizedTotal,
         subtotalAmount: normalizedSubtotal,
         vatAmount: normalizedVat,
         shippingFee: normalizedShipping,
@@ -2895,6 +2997,7 @@ const requestCustomerCancellation = async (req, res) => {
 
 const handlePaymongoWebhook = async (req, res) => {
   try {
+    verifyPaymongoWebhookSignature(req);
     const event = extractPaymongoEvent(req.body || {});
     const order = await findOrderForPaymongoEvent(event);
     if (!order) {
@@ -2910,6 +3013,9 @@ const handlePaymongoWebhook = async (req, res) => {
     return res.json({ received: true, matched: true, orderCode: order.orderCode });
   } catch (error) {
     console.error("Failed to process PayMongo webhook:", error);
+    if (error instanceof HttpError) {
+      return res.status(error.status || 400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Unable to process PayMongo webhook." });
   }
 };
@@ -3035,6 +3141,9 @@ const verifyPaymongoCheckout = async (req, res) => {
     const session = await getCheckoutSession(checkoutSessionId);
     const event = buildEventFromCheckoutSession(session);
     if (checkoutSessionLooksPaid(session) || checkoutSessionLooksClosed(session)) {
+      if (checkoutSessionLooksPaid(session)) {
+        assertPaymongoAmountMatchesOrder(order, session);
+      }
       await applyPaymongoEventToOrder(order, event, session);
     } else {
       order.paymongo = {

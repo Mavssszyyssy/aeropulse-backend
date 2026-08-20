@@ -70,7 +70,17 @@ app.use(
 );
 
 app.use(cookieParser(env.jwtSecret));
-app.use(express.json({ limit: "5mb" }));
+// Preserve the exact request bytes for PayMongo webhook signature
+// verification. JSON parsing normalizes whitespace and key ordering, so a
+// parsed object cannot be used to authenticate a webhook safely.
+app.use(
+  express.json({
+    limit: "5mb",
+    verify: (req, _res, buffer) => {
+      req.rawBody = Buffer.from(buffer);
+    },
+  }),
+);
 
 app.get("/api/health", (_req, res) => {
   res.json({
