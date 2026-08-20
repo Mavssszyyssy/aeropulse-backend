@@ -6,6 +6,7 @@ const {
 	updateTask,
 	getTaskById,
 	acceptTask,
+	checkInTask,
 	getRegistrationContextBySerial,
 	registerAmpUnit,
 	updateTaskStatus,
@@ -19,6 +20,7 @@ router.post("/", createTask);
 router.get("/registration-context/:serialNumber", getRegistrationContextBySerial);
 router.get("/:taskId", getTaskById);
 router.patch("/:taskId/accept", acceptTask);
+router.patch("/:taskId/check-in", checkInTask);
 router.patch("/:taskId/amp-registration", registerAmpUnit);
 router.patch("/:taskId", updateTask);
 router.patch("/:taskId/status", updateTaskStatus);

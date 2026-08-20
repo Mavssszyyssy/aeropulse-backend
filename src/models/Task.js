@@ -18,7 +18,18 @@ const taskSchema = new mongoose.Schema(
     assignedTechnicianName: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["pending", "in-progress", "on-hold", "completed"],
+      enum: [
+        "pending",
+        "accepted",
+        "on-the-way",
+        "arrived",
+        "installing",
+        "in-progress",
+        "on-hold",
+        "failed",
+        "rescheduled",
+        "completed",
+      ],
       default: "pending",
     },
     priority: {

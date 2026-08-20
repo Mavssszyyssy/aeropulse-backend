@@ -5,6 +5,7 @@ const Product = require("../models/Product");
 const Order = require("../models/Order");
 const Unit = require("../models/Unit");
 const ServiceRequest = require("../models/ServiceRequest");
+const Notification = require("../models/Notification");
 const { estimateNextServiceWindow } = require("../domain/ampServiceEstimator");
 const { BRANCH_PRIORITY } = require("../domain/branchRouting");
 
@@ -24,8 +25,19 @@ const findTaskForRequest = async (taskId, req) => {
 };
 
 const normalizeStatus = (value = "") => {
-  const normalized = String(value || "").toLowerCase().replace(" ", "-");
-  if (["pending", "in-progress", "on-hold", "completed"].includes(normalized)) return normalized;
+  const normalized = String(value || "").toLowerCase().trim().replace(/[\s_]+/g, "-");
+  if ([
+    "pending",
+    "accepted",
+    "on-the-way",
+    "arrived",
+    "installing",
+    "in-progress",
+    "on-hold",
+    "failed",
+    "rescheduled",
+    "completed",
+  ].includes(normalized)) return normalized;
   if (normalized === "in_progress") return "in-progress";
   if (normalized === "on_hold") return "on-hold";
   return "pending";
@@ -284,9 +296,11 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
         customer: customerId,
         customerName: String(task.customer || ""),
         installation: {
-          installedAt: ampParameters.installationDate
-            ? new Date(ampParameters.installationDate)
-            : new Date(),
+          installedAt: ampParameters.installationTimestamp
+            ? new Date(ampParameters.installationTimestamp)
+            : ampParameters.installationDate
+              ? new Date(ampParameters.installationDate)
+              : new Date(),
           installedBy: task.assignedTechnicianId || registration.technicianId || undefined,
           addressLine: String(
             address.street || task.address || "",
@@ -402,6 +416,17 @@ const syncOrderWorkflowForTask = async (task, status) => {
     order.assignedTechnician = task.assignedTechnicianName;
   }
   await order.save();
+  const customerId = String(order.customer || task.customerId || task.payload?.customerId || "").trim();
+  if (customerId && mongoose.Types.ObjectId.isValid(customerId)) {
+    await Notification.create({
+      user: customerId,
+      type: "order",
+      title: "Installation completed",
+      message: `Your AC installation for order ${order.orderCode || ""} is complete. Your warranty and active unit record are now available.`,
+      route: "/customer/orders",
+      targetId: String(order._id || ""),
+    });
+  }
 };
 
 const syncServiceRequestForTask = async (task, status) => {
@@ -410,8 +435,8 @@ const syncServiceRequestForTask = async (task, status) => {
   if (!requestId || !mongoose.Types.ObjectId.isValid(requestId)) return;
 
   let nextStatus = "";
-  if (normalizedStatus === "pending") nextStatus = "Assigned";
-  if (normalizedStatus === "in-progress") nextStatus = "In Progress";
+  if (["pending", "accepted"].includes(normalizedStatus)) nextStatus = "Assigned";
+  if (["on-the-way", "arrived", "installing", "in-progress"].includes(normalizedStatus)) nextStatus = "In Progress";
   if (normalizedStatus === "on-hold") nextStatus = "Assigned";
   if (normalizedStatus === "completed") nextStatus = "Completed";
   if (!nextStatus) return;
@@ -455,11 +480,30 @@ const syncServiceRequestForTask = async (task, status) => {
   };
 
   await request.save();
+  const customerId = String(request.customerId || task.customerId || "").trim();
+  if (nextStatus === "Completed" && !task.payload?.orderId && !task.orderId && customerId && mongoose.Types.ObjectId.isValid(customerId)) {
+    const targetId = String(task._id || task.id || request._id || "");
+    const alreadyNotified = await Notification.exists({ user: customerId, targetId, title: "Service completed" });
+    if (!alreadyNotified) {
+      await Notification.create({
+        user: customerId,
+        type: "order",
+        title: "Service completed",
+        message: `Your technician service request for ${request.issue || "your AC unit"} has been completed.`,
+        route: "/customer/service-requests",
+        targetId,
+      });
+    }
+  }
 };
 
 const buildRegistrationRecord = ({ req, task, serialNumber, payload, status, previousPlan = null }) => {
+  const installationDate = String(payload.installationDate || new Date().toISOString().split("T")[0]);
+  const installationTime = String(payload.installationTime || new Date().toTimeString().slice(0, 5));
   const ampParameters = {
-    installationDate: String(payload.installationDate || new Date().toISOString().split("T")[0]),
+    installationDate,
+    installationTime,
+    installationTimestamp: `${installationDate}T${installationTime}:00`,
     lastServiceDate: String(payload.lastServiceDate || payload.installationDate || new Date().toISOString()),
     placementArea: String(payload.placementArea || ""),
     usageHoursPerDay: Number(payload.usageHoursPerDay || 8),
@@ -662,6 +706,16 @@ const updateTask = async (req, res) => {
     const payload = req.body || {};
     const nextStatus = normalizeStatus(payload.status || task.status);
     const proof = buildTaskProof({ task, payload, req, nextStatus });
+    const currentStatus = normalizeStatus(task.status);
+    const lifecycleOrder = ["pending", "accepted", "on-the-way", "arrived", "installing", "completed"];
+    const currentIndex = lifecycleOrder.indexOf(currentStatus);
+    const nextIndex = lifecycleOrder.indexOf(nextStatus);
+    if (req.authUser.role === "technician" && nextStatus !== "failed" && nextStatus !== "rescheduled" && nextStatus !== "on-hold" && currentIndex >= 0 && nextIndex >= 0 && nextIndex > currentIndex + 1) {
+      return res.status(409).json({ message: `Move this work order through ${lifecycleOrder[currentIndex + 1]} before marking it ${nextStatus}.` });
+    }
+    if (req.authUser.role === "technician" && ["installing", "completed"].includes(nextStatus) && !["arrived", "installing", "in-progress"].includes(currentStatus)) {
+      return res.status(409).json({ message: "Check in at the customer location before starting installation." });
+    }
     const updatedPayload = {
       ...(task.payload || {}),
       ...payload,
@@ -754,8 +808,8 @@ const acceptTask = async (req, res) => {
 
     task.assignedTechnicianId = currentTechId;
     task.assignedTechnicianName = getTechnicianDisplayName(technician);
-    if (task.status === "pending") {
-      task.status = "in-progress";
+    if (["pending", "accepted"].includes(normalizeStatus(task.status))) {
+      task.status = "accepted";
     }
     task.payload = {
       ...(task.payload || {}),
@@ -771,6 +825,50 @@ const acceptTask = async (req, res) => {
   } catch (error) {
     console.error("Failed to accept task:", error);
     return res.status(500).json({ message: "Unable to accept task right now." });
+  }
+};
+
+const checkInTask = async (req, res) => {
+  try {
+    if (req.authUser.role !== "technician") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const task = await findTaskForRequest(req.params.taskId, req);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    const technicianId = String(req.authUser._id || "");
+    if (task.assignedTechnicianId && String(task.assignedTechnicianId) !== technicianId) {
+      return res.status(403).json({ message: "This task is assigned to another technician." });
+    }
+    if (!["accepted", "on-the-way", "arrived", "installing", "in-progress"].includes(normalizeStatus(task.status))) {
+      return res.status(409).json({ message: "Accept the assigned work order and mark it on the way before checking in." });
+    }
+
+    const coordinates = req.body?.coordinates || req.body?.location?.coordinates || {};
+    const latitude = Number(coordinates.latitude);
+    const longitude = Number(coordinates.longitude);
+    const accuracy = Number(coordinates.accuracy || 0);
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ message: "A valid GPS location is required to check in." });
+    }
+
+    const now = new Date().toISOString();
+    task.status = "arrived";
+    task.assignedTechnicianId = task.assignedTechnicianId || technicianId;
+    task.assignedTechnicianName = task.assignedTechnicianName || getTechnicianDisplayName(req.authUser);
+    task.payload = {
+      ...(task.payload || {}),
+      checkIn: { latitude, longitude, accuracy: Number.isFinite(accuracy) ? accuracy : 0, checkedInAt: now },
+      status: "arrived",
+      updatedAt: now,
+    };
+    await task.save();
+    await syncServiceRequestForTask(task, "arrived");
+    return res.json({ task: hydrateTaskResponse(task), checkIn: task.payload.checkIn });
+  } catch (error) {
+    console.error("Failed to check in technician task:", error);
+    return res.status(500).json({ message: "Unable to check in to this work order right now." });
   }
 };
 
@@ -864,6 +962,9 @@ const registerAmpUnit = async (req, res) => {
     if (requiredSerials.length > 0 && !assignedSerial) {
       return res.status(400).json({ message: "This AC unit is not part of the selected installation task." });
     }
+    if (!["arrived", "installing", "in-progress"].includes(normalizeStatus(task.status))) {
+      return res.status(409).json({ message: "Check in at the customer location before registering the AC unit." });
+    }
 
     const isDefectiveHold = Boolean(payload.defectiveHold);
     if (isDefectiveHold && !String(payload.defectReason || "").trim()) {
@@ -872,6 +973,7 @@ const registerAmpUnit = async (req, res) => {
 
     const requiredFields = [
       "installationDate",
+      "installationTime",
       "placementArea",
       "usageHoursPerDay",
       "filterCondition",
@@ -942,7 +1044,7 @@ const registerAmpUnit = async (req, res) => {
     task.status = isDefectiveHold || progressAfterRegistration.totalHeld > 0
       ? "on-hold"
       : ["pending", "on-hold"].includes(task.status)
-        ? "in-progress"
+        ? "installing"
         : task.status;
     task.payload.status = task.status;
     task.completedAt = null;
@@ -962,8 +1064,8 @@ const registerAmpUnit = async (req, res) => {
 
 const updateTaskStatus = async (req, res) => {
   try {
-    const { status } = req.body;
-    const allowed = ["pending", "in-progress", "on-hold", "completed"];
+    const status = normalizeStatus(req.body?.status);
+    const allowed = ["pending", "accepted", "on-the-way", "arrived", "installing", "in-progress", "on-hold", "failed", "rescheduled", "completed"];
     if (!allowed.includes(status)) {
       return res.status(400).json({ message: "Invalid task status." });
     }
@@ -986,6 +1088,16 @@ const updateTaskStatus = async (req, res) => {
 
     const payload = req.body || {};
     const proof = buildTaskProof({ task, payload, req, nextStatus: status });
+    const currentStatus = normalizeStatus(task.status);
+    const lifecycleOrder = ["pending", "accepted", "on-the-way", "arrived", "installing", "completed"];
+    const currentIndex = lifecycleOrder.indexOf(currentStatus);
+    const nextIndex = lifecycleOrder.indexOf(status);
+    if (req.authUser.role === "technician" && status !== "failed" && status !== "rescheduled" && status !== "on-hold" && currentIndex >= 0 && nextIndex >= 0 && nextIndex > currentIndex + 1) {
+      return res.status(409).json({ message: `Move this work order through ${lifecycleOrder[currentIndex + 1]} before marking it ${status}.` });
+    }
+    if (req.authUser.role === "technician" && ["installing", "completed"].includes(status) && !["arrived", "installing", "in-progress"].includes(currentStatus)) {
+      return res.status(409).json({ message: "Check in at the customer location before starting installation." });
+    }
     task.status = status;
     if (status === "completed") {
       const completionError = assertCanCompleteTask(task);
@@ -1030,6 +1142,7 @@ module.exports = {
   updateTask,
   getTaskById,
   acceptTask,
+  checkInTask,
   getRegistrationContextBySerial,
   registerAmpUnit,
   updateTaskStatus,
