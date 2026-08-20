@@ -22,6 +22,7 @@ const auditLogSchema = new mongoose.Schema(
         "user_login",
         "order_refund_review_updated",
         "order_cancellation_requested",
+        "order_lifecycle_updated",
       ],
       index: true,
     },

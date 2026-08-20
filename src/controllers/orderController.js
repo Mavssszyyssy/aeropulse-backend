@@ -485,6 +485,7 @@ const lifecycleActions = {
     from: ["to_pay"],
     to: "to_deliver",
     status: "paid",
+    deliveryStatus: "preparing",
     title: "Order approved",
     message: (orderCode) =>
       `Your order ${orderCode} was approved. Your order is now in TO DELIVER stage.`,
@@ -493,6 +494,7 @@ const lifecycleActions = {
     from: ["to_deliver"],
     to: "to_install",
     status: "paid",
+    deliveryStatus: "dispatched",
     title: "Order dispatched",
     message: (orderCode) =>
       `Your order ${orderCode} is on the way and moved to TO INSTALL stage.`,
@@ -501,6 +503,7 @@ const lifecycleActions = {
     from: ["to_install"],
     to: "complete",
     status: "paid",
+    deliveryStatus: "completed",
     title: "Order completed",
     message: (orderCode) =>
       `Your order ${orderCode} has been completed. Thank you for choosing AeroPulse.`,
@@ -509,6 +512,7 @@ const lifecycleActions = {
     from: ["to_pay", "to_deliver"],
     to: "cancelled",
     status: "cancelled",
+    deliveryStatus: "cancelled",
     title: "Order cancelled",
     message: (orderCode) =>
       `Your order ${orderCode} has been cancelled. Please contact support if you need assistance.`,
@@ -1568,6 +1572,9 @@ const createTaskForOrder = async (order, options = {}) => {
         assignedTechnicianName: existingTask.assignedTechnicianName,
         scheduledDate: existingTask.scheduledDate,
         timeSlot: existingTask.timeSlot,
+        orderWorkflowStatus: order.workflowStatus,
+        deliveryStatus: order.deliveryStatus || "",
+        dispatchedAt: order.dispatchedAt || null,
         updatedAt: new Date().toISOString(),
       };
       await existingTask.save();
@@ -1622,6 +1629,9 @@ const createTaskForOrder = async (order, options = {}) => {
       customerPhone: String(order.address.phone || ""),
       assignedTechnicianId: assignment.assignedTechnicianId,
       assignedTechnicianName: assignment.assignedTechnicianName,
+      orderWorkflowStatus: order.workflowStatus,
+      deliveryStatus: order.deliveryStatus || "",
+      dispatchedAt: order.dispatchedAt || null,
       scheduledDate:
         options.installationDate ||
         order.installationDate ||
@@ -2297,16 +2307,32 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
     }
   }
 
-  const assignment =
-    action === "approve" || options.assignedTechnicianId || options.assignedTechnicianName
-      ? await resolveTechnicianAssignment(options)
-      : {
-          assignedTechnicianId: "",
-          assignedTechnicianName: String(options.assignedTechnician || "").trim(),
-        };
+  const linkedTaskBeforeAction = action === "dispatch" ? await findLinkedTaskForOrder(order) : null;
+  const assignmentOptions = action === "approve" || action === "dispatch" || options.assignedTechnicianId || options.assignedTechnicianName
+    ? {
+        ...options,
+        assignedTechnicianId: options.assignedTechnicianId || order.assignedTechnicianId || linkedTaskBeforeAction?.assignedTechnicianId || "",
+        assignedTechnicianName: options.assignedTechnicianName || order.assignedTechnician || linkedTaskBeforeAction?.assignedTechnicianName || "",
+      }
+    : options;
+  const assignment = await resolveTechnicianAssignment(assignmentOptions);
+  if (action === "dispatch" && !assignment.assignedTechnicianId) {
+    throw new HttpError(400, "Assign a technician before marking this order dispatched. The technician work order must be created at dispatch.");
+  }
+  if (action === "dispatch" && linkedTaskBeforeAction && ["completed", "failed"].includes(String(linkedTaskBeforeAction.status || "").toLowerCase())) {
+    throw new HttpError(409, `Order ${order.orderCode} has a ${linkedTaskBeforeAction.status} technician task and cannot be dispatched again.`);
+  }
 
   order.workflowStatus = config.to;
   order.status = config.status;
+  order.deliveryStatus = config.deliveryStatus || order.deliveryStatus;
+  if (action === "dispatch") {
+    order.dispatchedAt = order.dispatchedAt || new Date();
+    order.dispatchedBy = options.actorUserId || null;
+  }
+  if (assignment.assignedTechnicianId) {
+    order.assignedTechnicianId = assignment.assignedTechnicianId;
+  }
   if (assignment.assignedTechnicianName || options.assignedTechnician) {
     order.assignedTechnician =
       assignment.assignedTechnicianName ||
@@ -2359,11 +2385,26 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
     order.stockReleasedAt = null;
     await order.save();
   }
-  if (action === "approve") {
+  if (action === "approve" || action === "dispatch") {
     await createTaskForOrder(order, {
       ...options,
       assignedTechnicianId: assignment.assignedTechnicianId,
       assignedTechnicianName: assignment.assignedTechnicianName,
+    });
+  }
+
+  if (options.actorUserId && mongoose.Types.ObjectId.isValid(String(options.actorUserId))) {
+    await AuditLog.create({
+      action: "order_lifecycle_updated",
+      user: options.actorUserId,
+      branch: order.stockSourceBranch || order.customerBranch || "",
+      entityType: "order",
+      entityId: order._id,
+      changeDetails: {
+        before: { workflowStatus: options.previousWorkflowStatus, assignedTechnicianId: options.previousTechnicianId || "" },
+        after: { workflowStatus: order.workflowStatus, deliveryStatus: order.deliveryStatus, assignedTechnicianId: order.assignedTechnicianId || "", dispatchedAt: order.dispatchedAt || null },
+      },
+      description: `${action} order ${order.orderCode}; technician task synchronized.`,
     });
   }
 
@@ -2408,6 +2449,9 @@ const approveOrder = async (req, res) => {
       estimatedArrival,
       installationDate,
       timeSlot,
+      actorUserId: req.authUser._id,
+      previousWorkflowStatus: order.workflowStatus,
+      previousTechnicianId: order.assignedTechnicianId,
     });
   } catch (error) {
     if (error instanceof HttpError) {
@@ -2536,6 +2580,9 @@ const processOrder = async (req, res) => {
       installationDate,
       timeSlot,
       cancellationReason,
+      actorUserId: req.authUser._id,
+      previousWorkflowStatus: order.workflowStatus,
+      previousTechnicianId: order.assignedTechnicianId,
     });
   } catch (error) {
     if (error instanceof HttpError) {

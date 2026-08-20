@@ -411,6 +411,7 @@ const syncOrderWorkflowForTask = async (task, status) => {
   await updateSerialUnitsForOrderWorkflow(order, "complete");
   order.workflowStatus = "complete";
   order.status = "paid";
+  order.deliveryStatus = "completed";
   order.stockReservationStatus = "consumed";
   if (!order.assignedTechnician && task.assignedTechnicianName) {
     order.assignedTechnician = task.assignedTechnicianName;

@@ -73,6 +73,15 @@ const orderSchema = new mongoose.Schema(
     estimatedArrival: { type: String, default: "" },
     installationDate: { type: String, default: "" },
     assignedTechnician: { type: String, default: "" },
+    assignedTechnicianId: { type: String, default: "", index: true },
+    deliveryStatus: {
+      type: String,
+      enum: ["pending", "preparing", "dispatched", "installing", "completed", "cancelled"],
+      default: "pending",
+      index: true,
+    },
+    dispatchedAt: { type: Date, default: null },
+    dispatchedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     customerBranch: { type: String, default: "" },
     stockSourceBranch: { type: String, default: "" },
     receipt: {
