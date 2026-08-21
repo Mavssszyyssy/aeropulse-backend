@@ -9,6 +9,7 @@ const { signAccessToken } = require("../utils/token");
 const env = require("../config/env");
 const { BRANCHES } = require("../domain/branchRouting");
 const { canSendEmail, sendEmail } = require("../utils/email");
+const { resolveConfiguredBranch } = require("../services/branchCoverageService");
 
 const OTP_TTL_MINUTES = Math.max(
   3,
@@ -491,8 +492,6 @@ const register = async (req, res) => {
     messenger_handle,
     delivery_instructions,
     locations = [],
-    role,
-    branch,
     registrationVerificationToken,
   } = req.body;
   try {
@@ -539,6 +538,16 @@ const register = async (req, res) => {
       .trim();
 
     const primaryLoc = locations[0] || null;
+    let assignedBranch = "";
+    if (primaryLoc?.address) {
+      try {
+        assignedBranch = (await resolveConfiguredBranch(primaryLoc.address))?.name || "";
+      } catch (error) {
+        // Coverage can be retried later from the saved address. A temporary
+        // branch lookup issue must not prevent a verified customer signup.
+        console.error("Unable to assign registration branch:", error.message);
+      }
+    }
     const addressString = primaryLoc
       ? `${primaryLoc.address.street}, ${primaryLoc.address.city}, ${primaryLoc.address.province}`.trim()
       : "";
@@ -552,8 +561,11 @@ const register = async (req, res) => {
       phone: normalizedPhone,
       passwordHash,
       messenger_handle,
-      role: role || "customer",
-      assignedBranch: branch || "",
+      // Public registration must never be allowed to provision a privileged
+      // account or choose its own branch. Staff are created by Super Admin.
+      role: "customer",
+      assignedBranch,
+      activeBranch: assignedBranch,
       address: addressString,
       municipality: municipality || primaryLoc?.address?.city || "",
       municipality_code: municipality_code || "",
