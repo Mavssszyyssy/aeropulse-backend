@@ -51,21 +51,23 @@ const listWarrantyClaims = async (req, res) => {
     const units = await Unit.find({ "warranty.claims.0": { $exists: true } })
       .select("serialNumber brand modelName customerName installation warranty")
       .sort({ updatedAt: -1 });
-    const claims = units.flatMap((unit) => {
+    const claimGroups = await Promise.all(units.map(async (unit) => {
       const warranty = warrantySnapshot(unit);
+      const branch = await resolvePreferredBranch({
+        city: unit.installation?.city,
+        province: unit.installation?.province,
+      });
       return warranty.claims.map((claim) => ({
         ...claim,
         unitId: String(unit._id),
         serialNumber: unit.serialNumber,
         unitName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "Installed AC Unit",
         customerName: unit.customerName || "Customer",
-        branch: resolvePreferredBranch({
-          city: unit.installation?.city,
-          province: unit.installation?.province,
-        }),
+        branch,
         warrantyStatus: warranty.status,
       }));
-    }).sort((left, right) => new Date(right.requestedAt || 0) - new Date(left.requestedAt || 0));
+    }));
+    const claims = claimGroups.flat().sort((left, right) => new Date(right.requestedAt || 0) - new Date(left.requestedAt || 0));
     return res.json({ claims });
   } catch (error) {
     console.error("Failed to list warranty claims:", error);
@@ -104,7 +106,7 @@ const createWarrantyClaim = async (req, res) => {
     unit.warranty = warranty;
     await unit.save();
     await notifyOperationalStaff({
-      branch: resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
+      branch: await resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
       title: "New warranty claim",
       message: `${unit.customerName || "A customer"} submitted claim ${claim.claimId} for ${unit.modelName || unit.serialNumber}.`,
       type: "warranty",
@@ -146,7 +148,7 @@ const reviewWarrantyClaim = async (req, res) => {
         customer: unit.customerName || "Customer",
         issue: `Warranty claim ${claim.claimId}: ${claim.issue}`,
         address,
-        branch: resolvePreferredBranch({
+        branch: await resolvePreferredBranch({
           city: unit.installation?.city,
           province: unit.installation?.province,
         }),
@@ -188,7 +190,7 @@ const reviewWarrantyClaim = async (req, res) => {
       });
     }
     await notifyOperationalStaff({
-      branch: resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
+      branch: await resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
       title: `Warranty claim ${status.replace("_", " ")}`,
       message: `Claim ${claim.claimId} for ${unit.modelName || unit.serialNumber} is ${status.replace("_", " ")}.`,
       type: "warranty",

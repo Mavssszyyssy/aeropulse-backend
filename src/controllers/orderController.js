@@ -2217,8 +2217,14 @@ const createOrder = async (req, res) => {
   const installDate = new Date(eta);
   installDate.setDate(installDate.getDate() + 1);
 
-  const preferredBranch = resolvePreferredBranch(normalizedAddress);
-  const branchSearchOrder = getBranchSearchOrder(preferredBranch);
+  const preferredBranch = await resolvePreferredBranch(normalizedAddress);
+  if (!preferredBranch) {
+    throw new HttpError(
+      422,
+      "This delivery address is outside the configured service areas. Please select a covered address.",
+    );
+  }
+  const branchSearchOrder = await getBranchSearchOrder(preferredBranch);
   const assignedTechnician = preferredBranch
     ? `${preferredBranch} Technician Team`
     : "";

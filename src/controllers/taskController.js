@@ -1054,7 +1054,7 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
     if (!unit) return res.status(404).json({ message: "No installed AC unit was found for this QR label." });
 
     const { product, serialUnit } = await findProductSerialUnit(unit.serialNumber);
-    const branch = serialUnit?.branch || resolvePreferredBranch({
+    const branch = serialUnit?.branch || await resolvePreferredBranch({
       city: unit.installation?.city,
       province: unit.installation?.province,
     });

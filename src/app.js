@@ -27,6 +27,7 @@ const ampRoutes = require("./routes/ampRoutes");
 const predictionRoutes = require("./routes/predictionRoutes");
 const partsRequestRoutes = require("./routes/partsRequestRoutes");
 const warrantyRoutes = require("./routes/warrantyRoutes");
+const branchCoverageRoutes = require("./routes/branchCoverageRoutes");
 
 const app = express();
 const isProduction = env.nodeEnv === "production";
@@ -114,6 +115,7 @@ app.use("/api/amp", ampRoutes);
 app.use("/api/predictions", predictionRoutes);
 app.use("/api/parts-requests", partsRequestRoutes);
 app.use("/api/warranties", warrantyRoutes);
+app.use("/api/branches", branchCoverageRoutes);
 
 const buildPath = path.resolve(__dirname, "..", "..", "front", "build");
 const indexHtml = path.join(buildPath, "index.html");

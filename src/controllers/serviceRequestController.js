@@ -55,7 +55,7 @@ const getUserDisplayName = (user = {}) =>
   user.email ||
   "Customer";
 
-const getRequestBranch = ({ req, payload = {}, unit = null }) => {
+const getRequestBranch = async ({ req, payload = {}, unit = null }) => {
   if (req.authUser.role === "admin" || req.authUser.role === "manager" || req.authUser.role === "technician") {
     return req.activeBranch || String(payload.branch || "");
   }
@@ -305,7 +305,7 @@ const createMyServiceRequest = async (req, res) => {
       customer: customerName,
       issue,
       address,
-      branch: getRequestBranch({ req, payload, unit }),
+      branch: await getRequestBranch({ req, payload, unit }),
       status: normalizeStatus(payload.status || "Submitted"),
       customerId: String(payload.customerId || payload.userId || req.authUser._id || ""),
       customerEmail: String(payload.customerEmail || req.authUser.email || ""),

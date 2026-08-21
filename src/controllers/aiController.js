@@ -37,11 +37,11 @@ const slugSegment = (value, fallback) => {
 const asArray = (value, fallback = []) => Array.isArray(value) ? value.filter(Boolean).slice(0, 8) : fallback;
 const reportDate = (value = new Date()) => new Date(value).toISOString().slice(0, 10);
 
-function resolveResponsibleBranch(req, unit, requestedBranch = "") {
+async function resolveResponsibleBranch(req, unit, requestedBranch = "") {
   const user = req.authUser || {};
   if (user.role === "superadmin" && cleanText(requestedBranch)) return cleanText(requestedBranch, 80);
   const branchFromInstallation = unit
-    ? resolvePreferredBranch({
+    ? await resolvePreferredBranch({
       city: unit.installation?.city || "",
       province: unit.installation?.province || "",
       street: unit.installation?.addressLine || "",
@@ -288,7 +288,7 @@ const generateAmpReport = async (req, res) => {
       return res.status(403).json({ message: "This AC unit belongs to another branch." });
     }
 
-    const branch = resolveResponsibleBranch(req, unit, req.body?.branch);
+    const branch = await resolveResponsibleBranch(req, unit, req.body?.branch);
     const [history, requests, tasks] = await Promise.all([
       ServiceHistory.find({ unit: unit._id }).sort({ serviceDate: -1 }).limit(20).lean(),
       ServiceRequest.find({
