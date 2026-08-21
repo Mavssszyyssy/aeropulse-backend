@@ -1777,6 +1777,7 @@ const buildOrderTaskAddress = (order = {}) =>
 
 const createTaskForOrder = async (order, options = {}) => {
   if (!order) return null;
+  const activateTask = Boolean(options.activate);
   const existingTask = await findLinkedTaskForOrder(order);
   const assignment = await resolveTechnicianAssignment(options);
   const taskItems = buildOrderTaskItems(order);
@@ -1798,6 +1799,10 @@ const createTaskForOrder = async (order, options = {}) => {
   );
   if (existingTask) {
     let changed = false;
+    if (activateTask && ["pending", "accepted", "on-the-way", "arrived", "installing", "rescheduled"].includes(String(existingTask.status || "").toLowerCase())) {
+      existingTask.status = "in-progress";
+      changed = true;
+    }
     if (assignment.assignedTechnicianId || assignment.assignedTechnicianName) {
       existingTask.assignedTechnicianId =
         assignment.assignedTechnicianId || existingTask.assignedTechnicianId;
@@ -1834,6 +1839,8 @@ const createTaskForOrder = async (order, options = {}) => {
         assignedTechnicianName: existingTask.assignedTechnicianName,
         scheduledDate: existingTask.scheduledDate,
         timeSlot: existingTask.timeSlot,
+        status: existingTask.status,
+        activatedAt: activateTask ? new Date().toISOString() : existingTask.payload?.activatedAt || null,
         orderWorkflowStatus: order.workflowStatus,
         deliveryStatus: order.deliveryStatus || "",
         dispatchedAt: order.dispatchedAt || null,
@@ -1870,7 +1877,7 @@ const createTaskForOrder = async (order, options = {}) => {
     description: `Deliver and install items for order ${order.orderCode}.`,
     assignedTechnicianId: assignment.assignedTechnicianId,
     assignedTechnicianName: assignment.assignedTechnicianName,
-    status: "pending",
+    status: activateTask ? "in-progress" : "pending",
     priority: "medium",
     scheduledDate:
       options.installationDate ||
@@ -1900,6 +1907,8 @@ const createTaskForOrder = async (order, options = {}) => {
         order.estimatedDelivery ||
         "",
       timeSlot: String(options.timeSlot || "TBD"),
+      status: activateTask ? "in-progress" : "pending",
+      activatedAt: activateTask ? new Date().toISOString() : null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
@@ -2679,6 +2688,7 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   if (action === "approve" || action === "dispatch") {
     await createTaskForOrder(order, {
       ...options,
+      activate: action === "dispatch",
       assignedTechnicianId: assignment.assignedTechnicianId,
       assignedTechnicianName: assignment.assignedTechnicianName,
     });
