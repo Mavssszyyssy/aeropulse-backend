@@ -38,15 +38,29 @@ const createStaff = async (req, res) => {
     isFirstLogin: true,
     accountStatus: "active",
   });
+  let emailDelivered = false;
+  let deliveryWarning = "";
   if (canSendEmail()) {
-    await sendEmail({
-      to: user.email,
-      subject: "Your Staff Account (AeroPulse)",
-      text: `Your staff account has been created.\n\nEmail: ${user.email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.`,
-      html: `<p>Your staff account has been created.</p><p><b>Email:</b> ${user.email}<br/><b>Temporary Password:</b> ${tempPassword}</p><p>You must change your password on first login.</p>`,
-    });
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: "Your Staff Account (AeroPulse)",
+        text: `Your staff account has been created.\n\nEmail: ${user.email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.`,
+        html: `<p>Your staff account has been created.</p><p><b>Email:</b> ${user.email}<br/><b>Temporary Password:</b> ${tempPassword}</p><p>You must change your password on first login.</p>`,
+      });
+      emailDelivered = true;
+    } catch (error) {
+      // The account was successfully created. Return the temporary password once
+      // instead of turning a delivery problem into a duplicate-account retry.
+      console.error("Unable to deliver staff credentials:", error.message);
+      deliveryWarning = "The account was created, but the invitation email could not be delivered. Share the temporary password securely.";
+    }
   }
-  return res.status(201).json({ user: user.toJSON(), tempPassword: canSendEmail() ? undefined : tempPassword });
+  return res.status(201).json({
+    user: user.toJSON(),
+    tempPassword: emailDelivered ? undefined : tempPassword,
+    deliveryWarning,
+  });
 };
 
 module.exports = { createStaff };
