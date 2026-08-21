@@ -8,6 +8,9 @@ const reorderRequestSchema = new mongoose.Schema(
     branch: { type: String, default: "", index: true },
     status: { type: String, enum: ["submitted", "approved", "rejected"], default: "submitted" },
     notes: { type: String, default: "" },
+    reviewNotes: { type: String, default: "" },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    reviewedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
