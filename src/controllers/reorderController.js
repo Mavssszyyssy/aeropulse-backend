@@ -1,4 +1,3 @@
-const mongoose = require("mongoose");
 const ReorderRequest = require("../models/ReorderRequest");
 const Product = require("../models/Product");
 const Notification = require("../models/Notification");
@@ -112,63 +111,65 @@ const updateReorderStatus = async (req, res) => {
     return res.status(400).json({ message: "Status must be approved or rejected." });
   }
 
-  const session = await mongoose.startSession();
-  let reorder = null;
-  let reviewConflict = false;
-  let missingProduct = false;
+  const reviewNotes = String(req.body?.reviewNotes || "").trim();
+  // Claim the submitted request atomically before changing inventory. Only one
+  // concurrent click can move it out of submitted, so stock cannot be added
+  // twice even when the browser retries or the user double-clicks.
+  const reorder = await ReorderRequest.findOneAndUpdate(
+    { _id: req.params.reorderId, status: "submitted" },
+    {
+      $set: {
+        status,
+        reviewNotes,
+        reviewedBy: req.authUser._id,
+        reviewedAt: new Date(),
+      },
+    },
+    { new: true },
+  ).populate("product");
 
-  try {
-    await session.withTransaction(async () => {
-      const pending = await ReorderRequest.findOne({
-        _id: req.params.reorderId,
-        status: "submitted",
-      })
-        .populate("product")
-        .session(session);
-
-      if (!pending) {
-        reviewConflict = true;
-        return;
-      }
-
-      if (status === "approved") {
-        const product = pending.product;
-        if (!product) {
-          missingProduct = true;
-          return;
-        }
-        const current = Number(product.branchStock?.get(pending.branch) || 0);
-        product.branchStock.set(pending.branch, current + Number(pending.quantity));
-        product.stock = BRANCHES.reduce(
-          (total, branch) => total + Number(product.branchStock?.get(branch) || 0),
-          0,
-        );
-        // Keep serial generation and the stock update in the same transaction,
-        // then save the product only once. A repeated click cannot create a
-        // second stock increase or a duplicate QR record.
-        await ensureProductSerialUnits(product, product.stock, {
-          session,
-          deferSave: true,
-        });
-        await product.save({ session });
-      }
-
-      pending.status = status;
-      pending.reviewNotes = String(req.body?.reviewNotes || "").trim();
-      pending.reviewedBy = req.authUser._id;
-      pending.reviewedAt = new Date();
-      await pending.save({ session });
-      reorder = pending;
-    });
-  } finally {
-    await session.endSession();
-  }
-
-  if (reviewConflict) {
+  if (!reorder) {
     return res.status(409).json({ message: "This reorder request has already been reviewed." });
   }
-  if (missingProduct) {
-    return res.status(409).json({ message: "The requested product is no longer available." });
+
+  if (status === "approved") {
+    const product = reorder.product;
+    if (!product) {
+      await ReorderRequest.updateOne(
+        { _id: reorder._id, status: "approved", reviewedBy: req.authUser._id },
+        { $set: { status: "submitted", reviewNotes: "", reviewedBy: null, reviewedAt: null } },
+      );
+      return res.status(409).json({ message: "The requested product is no longer available." });
+    }
+
+    try {
+      // Use the same single-document stock/serial save used by Inventory
+      // Checker, which is reliable in the deployed serverless environment.
+      const current = Number(product.branchStock?.get(reorder.branch) || 0);
+      product.branchStock.set(reorder.branch, current + Number(reorder.quantity));
+      product.stock = BRANCHES.reduce(
+        (total, branch) => total + Number(product.branchStock?.get(branch) || 0),
+        0,
+      );
+      await ensureProductSerialUnits(product, product.stock, { deferSave: true });
+      await product.save();
+    } catch (error) {
+      // Release the claim when inventory could not be saved, allowing a safe
+      // retry without leaving the request falsely marked as approved.
+      await ReorderRequest.updateOne(
+        { _id: reorder._id, status: "approved", reviewedBy: req.authUser._id },
+        { $set: { status: "submitted", reviewNotes: "", reviewedBy: null, reviewedAt: null } },
+      );
+      console.error("Reorder approval inventory update failed", {
+        reorderId: String(reorder._id),
+        productId: String(product._id),
+        branch: reorder.branch,
+        error,
+      });
+      return res.status(500).json({
+        message: "Unable to add the approved stock. The request was kept pending; please try again.",
+      });
+    }
   }
 
   try {
