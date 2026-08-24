@@ -6,6 +6,8 @@ const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
+const { getServiceCatalog, findServiceOffering } = require("../domain/serviceCatalog");
+const env = require("../config/env");
 
 const normalizeStatus = (value = "") => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -33,6 +35,8 @@ const hydrateRequestResponse = (request) => {
     issueDescription: payload.issueDescription || payload.concern || json.issue,
     concern: payload.concern || payload.issueDescription || json.issue,
     serviceType: payload.serviceType || json.issueType,
+    serviceId: payload.serviceId || "",
+    pricing: payload.pricing || null,
     issueType: payload.issueType || json.issueType,
     linkedTaskId: payload.linkedTaskId || "",
     unitSerialNumber: payload.unitSerialNumber || payload.serialNumber || "",
@@ -259,6 +263,10 @@ const listMyServiceRequests = async (req, res) => {
   }
 };
 
+const listServiceCatalog = async (_req, res) => {
+  return res.json({ offerings: getServiceCatalog(env.serviceCatalogJson) });
+};
+
 const createMyServiceRequest = async (req, res) => {
   try {
     const payload = req.body || {};
@@ -266,9 +274,16 @@ const createMyServiceRequest = async (req, res) => {
     const issue = String(payload.issueDescription || payload.issue || payload.concern || "").trim();
     const address = String(payload.address || "").trim();
     const unitId = String(payload.unitId || "").trim();
+    const service = findServiceOffering(
+      getServiceCatalog(env.serviceCatalogJson),
+      payload.serviceId || payload.serviceType || payload.issueType,
+    );
 
     if (!customerName || !issue || !address) {
       return res.status(400).json({ message: "customer, issue, and address are required" });
+    }
+    if (!service) {
+      return res.status(400).json({ message: "Choose a valid service type from the current service catalog." });
     }
 
     const unit = unitId ? await findOwnedUnit(unitId, req.authUser._id) : null;
@@ -312,13 +327,20 @@ const createMyServiceRequest = async (req, res) => {
       customerPhone: String(payload.customerPhone || req.authUser.phone || ""),
       unitId,
       unitName: String(payload.unitName || unit?.modelName || ""),
-      issueType: String(payload.issueType || payload.serviceType || ""),
+      issueType: service.defaultIssueType,
       assignedTechnicianId: String(payload.assignedTechnicianId || ""),
       assignedTechnicianName: String(payload.assignedTechnicianName || ""),
       payload: {
         ...payload,
         userId: String(req.authUser._id || ""),
         customerName,
+        serviceId: service.id,
+        serviceType: service.title,
+        issueType: service.defaultIssueType,
+        // Pricing is resolved by the backend catalog. Client-provided prices
+        // are deliberately ignored to keep Mobile, Web, Admin and Technician
+        // records on one source of truth.
+        pricing: service.pricing,
         unitId,
         unitName: String(payload.unitName || unit?.modelName || ""),
         unitSerialNumber: String(payload.unitSerialNumber || unit?.serialNumber || ""),
@@ -371,13 +393,35 @@ const updateServiceRequestStatus = async (req, res) => {
         return res.status(403).json({ message: "Forbidden" });
       }
 
-      if (role === "technician" && String(request.assignedTechnicianId || "") !== String(req.authUser._id || "")) {
-        return res.status(403).json({ message: "Forbidden" });
+      if (role === "technician") {
+        return res.status(403).json({ message: "Technician progress is synchronized from the assigned work order." });
       }
 
       if (role === "customer" && nextStatus !== "Cancelled") {
         return res.status(403).json({ message: "Customers can only cancel requests." });
       }
+    }
+
+    const linkedTaskId = String(request.payload?.linkedTaskId || "").trim();
+    let linkedTask = null;
+    if (linkedTaskId) {
+      const conditions = [{ taskCode: linkedTaskId }];
+      if (mongoose.Types.ObjectId.isValid(linkedTaskId)) conditions.unshift({ _id: linkedTaskId });
+      linkedTask = await Task.findOne({ $or: conditions });
+    }
+    if (nextStatus === "Completed" && linkedTask && String(linkedTask.status || "").toLowerCase() !== "completed") {
+      return res.status(409).json({ message: "The assigned technician must submit proof and complete the work order before this request can be completed." });
+    }
+    if (nextStatus === "Cancelled" && linkedTask && !["completed", "cancelled"].includes(String(linkedTask.status || "").toLowerCase())) {
+      linkedTask.status = "cancelled";
+      linkedTask.completedAt = null;
+      linkedTask.payload = {
+        ...(linkedTask.payload || {}),
+        status: "cancelled",
+        cancellationReason: String(req.body?.description || "Service request cancelled by customer or administrator."),
+        updatedAt: new Date().toISOString(),
+      };
+      await linkedTask.save();
     }
 
     request.status = nextStatus || request.status;
@@ -429,23 +473,6 @@ const updateServiceRequestStatus = async (req, res) => {
         ...(request.payload || {}),
         completedAt: request.payload?.completedAt || new Date().toISOString(),
       };
-      const linkedTaskId = String(request.payload?.linkedTaskId || "").trim();
-      if (linkedTaskId) {
-        const taskConditions = [];
-        if (mongoose.Types.ObjectId.isValid(linkedTaskId)) taskConditions.push({ _id: linkedTaskId });
-        taskConditions.push({ taskCode: linkedTaskId });
-        const linkedTask = await Task.findOne({ $or: taskConditions });
-        if (linkedTask && linkedTask.status !== "completed") {
-          linkedTask.status = "completed";
-          linkedTask.completedAt = new Date();
-          linkedTask.payload = {
-            ...(linkedTask.payload || {}),
-            status: "completed",
-            updatedAt: new Date().toISOString(),
-          };
-          await linkedTask.save();
-        }
-      }
     }
 
     await request.save();
@@ -478,6 +505,7 @@ module.exports = {
   listServiceRequests,
   createServiceRequest,
   listMyServiceRequests,
+  listServiceCatalog,
   createMyServiceRequest,
   updateServiceRequestStatus,
 };

@@ -28,6 +28,7 @@ const taskSchema = new mongoose.Schema(
         "on-hold",
         "failed",
         "rescheduled",
+        "cancelled",
         "completed",
       ],
       default: "pending",

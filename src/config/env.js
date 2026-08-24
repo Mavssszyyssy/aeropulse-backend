@@ -139,6 +139,7 @@ const env = {
   infobipBaseUrl: process.env.INFOBIP_BASE_URL || "",
   infobipSender: process.env.INFOBIP_SENDER || "",
   infobipEmailSender: process.env.INFOBIP_EMAIL_SENDER || "",
+  serviceCatalogJson: process.env.SERVICE_CATALOG_JSON || "",
 };
 
 module.exports = env;

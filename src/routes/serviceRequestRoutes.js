@@ -4,6 +4,7 @@ const {
 	listServiceRequests,
 	createServiceRequest,
 	listMyServiceRequests,
+	listServiceCatalog,
 	createMyServiceRequest,
 	updateServiceRequestStatus,
 } = require("../controllers/serviceRequestController");
@@ -14,6 +15,7 @@ router.use(requireAuth);
 
 router.get("/", listServiceRequests);
 router.post("/", createServiceRequest);
+router.get("/catalog", listServiceCatalog);
 router.get("/me", listMyServiceRequests);
 router.post("/me", createMyServiceRequest);
 router.patch("/:id/status", updateServiceRequestStatus);

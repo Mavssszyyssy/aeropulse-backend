@@ -180,14 +180,28 @@ const reviewWarrantyClaim = async (req, res) => {
     await unit.save();
 
     if (unit.customer && mongoose.Types.ObjectId.isValid(String(unit.customer))) {
-      await Notification.create({
-        user: unit.customer,
-        type: "system",
-        title: `Warranty claim ${status.replace("_", " ")}`,
-        message: `Your warranty claim for ${unit.modelName || unit.serialNumber} is ${status.replace("_", " ")}.`,
-        route: "/customer/units",
-        targetId: String(unit._id),
-      });
+      await Notification.findOneAndUpdate(
+        {
+          user: unit.customer,
+          type: "warranty",
+          targetType: "warranty",
+          targetId: String(unit._id),
+          dedupeKey: `warranty-claim:${unit._id}:${claim.claimId}:${status}`,
+        },
+        {
+          user: unit.customer,
+          type: "warranty",
+          title: `Warranty claim ${status.replace("_", " ")}`,
+          message: `Your warranty claim for ${unit.modelName || unit.serialNumber} is ${status.replace("_", " ")}.`,
+          route: `/customer/units/${unit._id}`,
+          targetId: String(unit._id),
+          targetType: "warranty",
+          category: "warranty_claim",
+          dedupeKey: `warranty-claim:${unit._id}:${claim.claimId}:${status}`,
+          read: false,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
     }
     await notifyOperationalStaff({
       branch: await resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
