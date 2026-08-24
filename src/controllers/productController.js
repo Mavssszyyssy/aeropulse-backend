@@ -631,13 +631,15 @@ const getDesiredSerialBranches = (product, targetCount) => {
   return Array.from({ length: targetCount }, () => "");
 };
 
-const generateUniqueSerialNumber = async (product, seen) => {
+const generateUniqueSerialNumber = async (product, seen, queryOptions = {}) => {
   for (let attempt = 0; attempt < 25; attempt += 1) {
     const serialNumber = buildSerialNumber(product);
     if (seen.has(serialNumber)) continue;
-    const exists = await Product.exists({
+    const existsQuery = Product.exists({
       "serialUnits.serialNumber": serialNumber,
     });
+    if (queryOptions.session) existsQuery.session(queryOptions.session);
+    const exists = await existsQuery;
     if (!exists) {
       seen.add(serialNumber);
       return serialNumber;
@@ -707,7 +709,7 @@ const ensureProductSerialUnits = async (product, targetCount = null, saveOptions
   });
 
   const addAvailableSerial = async (branch = "") => {
-    const serialNumber = await generateUniqueSerialNumber(product, seen);
+    const serialNumber = await generateUniqueSerialNumber(product, seen, saveOptions);
     product.serialUnits.push({
       qrUnitId: buildQrUnitId(),
       serialNumber,
@@ -732,7 +734,7 @@ const ensureProductSerialUnits = async (product, targetCount = null, saveOptions
     availableBlankCount += 1;
   }
 
-  if (changed) {
+  if (changed && !saveOptions.deferSave) {
     await product.save(saveOptions);
   }
 

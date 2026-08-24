@@ -143,7 +143,13 @@ const updateReorderStatus = async (req, res) => {
           (total, branch) => total + Number(product.branchStock?.get(branch) || 0),
           0,
         );
-        await ensureProductSerialUnits(product, product.stock, { session });
+        // Keep serial generation and the stock update in the same transaction,
+        // then save the product only once. A repeated click cannot create a
+        // second stock increase or a duplicate QR record.
+        await ensureProductSerialUnits(product, product.stock, {
+          session,
+          deferSave: true,
+        });
         await product.save({ session });
       }
 
