@@ -89,6 +89,7 @@ app.get("/api/health", (_req, res) => {
     status: "ok",
     service: "aeropulse-api",
     environment: env.nodeEnv,
+    release: String(process.env.VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7),
     email: {
       infobip: getInfobipEmailConfiguration(),
       smtpConfigured: Boolean(

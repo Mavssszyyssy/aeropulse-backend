@@ -417,16 +417,13 @@ const getBranchTotal = (product) =>
     0,
   );
 
-const randomSerialToken = () =>
-  Math.random().toString(36).slice(2, 8).toUpperCase();
-
 const buildSerialNumber = (product) => {
   const skuPart = String(product?.sku || "AC")
     .replace(/[^a-z0-9]/gi, "")
     .slice(0, 8)
     .toUpperCase();
-  const timePart = Date.now().toString(36).toUpperCase();
-  return `CAACT-${skuPart || "AC"}-${timePart}-${randomSerialToken()}`;
+  const uniqueToken = crypto.randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase();
+  return `CAACT-${skuPart || "AC"}-${uniqueToken}`;
 };
 
 const buildQrUnitId = () => `QRU-${crypto.randomUUID().replace(/-/g, "").slice(0, 18).toUpperCase()}`;
@@ -631,19 +628,14 @@ const getDesiredSerialBranches = (product, targetCount) => {
   return Array.from({ length: targetCount }, () => "");
 };
 
-const generateUniqueSerialNumber = async (product, seen, queryOptions = {}) => {
+const generateUniqueSerialNumber = async (product, seen) => {
   for (let attempt = 0; attempt < 25; attempt += 1) {
     const serialNumber = buildSerialNumber(product);
     if (seen.has(serialNumber)) continue;
-    const existsQuery = Product.exists({
-      "serialUnits.serialNumber": serialNumber,
-    });
-    if (queryOptions.session) existsQuery.session(queryOptions.session);
-    const exists = await existsQuery;
-    if (!exists) {
-      seen.add(serialNumber);
-      return serialNumber;
-    }
+    // UUID-backed inventory serials are unique without a database round trip
+    // per unit. The Product unique index remains the final collision guard.
+    seen.add(serialNumber);
+    return serialNumber;
   }
   throw new Error("Unable to generate a unique serial number");
 };
@@ -709,7 +701,7 @@ const ensureProductSerialUnits = async (product, targetCount = null, saveOptions
   });
 
   const addAvailableSerial = async (branch = "") => {
-    const serialNumber = await generateUniqueSerialNumber(product, seen, saveOptions);
+    const serialNumber = await generateUniqueSerialNumber(product, seen);
     product.serialUnits.push({
       qrUnitId: buildQrUnitId(),
       serialNumber,
