@@ -119,29 +119,19 @@ const assertCanCompleteTask = (task) => {
 };
 
 const assertInstallationProof = (task, proof, payload = {}) => {
-  // A normal maintenance task can still be closed without this installation
-  // handover record. Orders containing assigned AC serials must have it.
+  // An installation is complete once its assigned QR unit is registered and
+  // the technician has supplied an installed-unit photo. Customer details are
+  // authoritative order data, so technicians must never retype or sign them.
   if (getTaskSerialNumbers(task).length === 0) return null;
 
   const hasInstallationPhoto = (proof?.afterPhotos || []).some((photo) =>
     Boolean(String(photo?.uri || "").trim()),
   );
-  const hasCustomerSignoff = Boolean(String(proof?.customerSignature?.name || "").trim());
-  const hasWorkSummary = Boolean(
-    String(payload.findings || payload.resolution || task?.payload?.findings || "").trim(),
-  );
-
-  if (hasInstallationPhoto && hasCustomerSignoff && hasWorkSummary) return null;
-
-  const missing = [
-    !hasInstallationPhoto ? "an installed-unit photo" : "",
-    !hasWorkSummary ? "a technician work summary" : "",
-    !hasCustomerSignoff ? "the customer or receiver sign-off" : "",
-  ].filter(Boolean);
+  if (hasInstallationPhoto) return null;
 
   return {
     status: 409,
-    message: `Installation proof is incomplete. Add ${missing.join(", ")} before closing this work order.`,
+    message: "Installation proof is incomplete. Add an installed-unit photo before closing this work order.",
   };
 };
 
@@ -237,6 +227,13 @@ const buildTaskProof = ({ task, payload, req, nextStatus }) => {
       signatureName ||
       "",
   ).trim();
+  const orderCustomer = {
+    ...(currentProof.customer && typeof currentProof.customer === "object" ? currentProof.customer : {}),
+    ...(incomingProof.customer && typeof incomingProof.customer === "object" ? incomingProof.customer : {}),
+    name: String(task.customer || payload.customerName || payload.customer || "Customer").trim(),
+    customerId: String(task.customerId || task.payload?.customerId || "").trim(),
+    source: "assigned_order",
+  };
   const hasIncomingProof =
     beforePhotos.length > 0 ||
     afterPhotos.length > 0 ||
@@ -257,6 +254,7 @@ const buildTaskProof = ({ task, payload, req, nextStatus }) => {
   return {
     beforePhotos: beforePhotos.length ? beforePhotos : currentProof.beforePhotos || [],
     afterPhotos: afterPhotos.length ? afterPhotos : currentProof.afterPhotos || [],
+    customer: orderCustomer,
     customerSignature: {
       ...(currentProof.customerSignature || {}),
       ...customerSignature,
@@ -1145,26 +1143,6 @@ const registerAmpUnit = async (req, res) => {
     const isDefectiveHold = Boolean(payload.defectiveHold);
     if (isDefectiveHold && !String(payload.defectReason || "").trim()) {
       return res.status(400).json({ message: "Add a defect reason before holding task completion." });
-    }
-
-    const requiredFields = [
-      "installationDate",
-      "installationTime",
-      "placementArea",
-      "usageHoursPerDay",
-      "filterCondition",
-      "coilCondition",
-      "drainageCondition",
-      "conditionRating",
-    ];
-    if (!isDefectiveHold) {
-      const missing = requiredFields.filter((field) => !String(payload[field] ?? "").trim());
-      if (missing.length > 0) {
-        return res.status(400).json({
-          message: "Complete all AMP registration parameters before submitting.",
-          missingFields: missing,
-        });
-      }
     }
 
     const normalizedSerialNumber = assignedSerial || serialNumber;

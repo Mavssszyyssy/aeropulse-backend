@@ -45,6 +45,9 @@ const taskSchema = new mongoose.Schema(
     proof: {
       beforePhotos: { type: [mongoose.Schema.Types.Mixed], default: [] },
       afterPhotos: { type: [mongoose.Schema.Types.Mixed], default: [] },
+      // Customer identity is copied from the assigned order. It is not a
+      // technician-entered acknowledgement or signature.
+      customer: { type: mongoose.Schema.Types.Mixed, default: {} },
       customerSignature: { type: mongoose.Schema.Types.Mixed, default: {} },
       technicianName: { type: String, default: "" },
       submittedAt: { type: Date, default: null },
