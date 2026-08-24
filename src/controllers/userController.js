@@ -4,6 +4,7 @@ const User = require("../models/User");
 const Order = require("../models/Order");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
+const { resolveConfiguredBranch } = require("../services/branchCoverageService");
 const env = require("../config/env");
 const { canSendEmail, sendEmail } = require("../utils/email");
 
@@ -158,6 +159,26 @@ const syncPrimaryAddressFromDefault = (user, addresses = []) => {
   user.address = formatAddressLine(defaultAddress);
 };
 
+// The default saved address is the source of truth for a customer's service
+// branch. Clear a previous branch when the new address has no coverage match.
+const syncCustomerBranchFromDefault = async (user, addresses = []) => {
+  if (user.role !== "customer") return;
+  const address = addresses.find((item) => item.isDefault) || addresses[0] || null;
+  const branch = address ? await resolveConfiguredBranch(address) : null;
+  const branchName = branch?.name || "";
+  user.assignedBranch = branchName;
+  user.activeBranch = branchName;
+};
+
+const hasLegacyAddressData = (user) => Boolean(
+  user?.address ||
+  user?.thoroughfare ||
+  user?.municipality ||
+  user?.submunicipality ||
+  user?.billingAddress?.street ||
+  user?.billingAddress?.city,
+);
+
 // Profile settings use legacy fields while checkout uses the saved-address
 // list. Keep the default saved address current whenever the profile changes.
 const syncDefaultAddressFromProfile = (user) => {
@@ -197,6 +218,18 @@ const syncDefaultAddressFromProfile = (user) => {
     street: street || sanitizeText(billing.street, 180) || existing.street || sanitizeText(user.address, 180),
     isDefault: true,
   };
+
+  // A customer may intentionally skip delivery address collection at sign-up.
+  // Profile-only updates (such as changing a name or mobile number) must not
+  // manufacture an incomplete address record for that account.
+  const hasAddressDetails = [
+    nextAddress.region,
+    nextAddress.province,
+    nextAddress.city,
+    nextAddress.barangay,
+    nextAddress.street,
+  ].some((value) => Boolean(sanitizeText(value, 180)));
+  if (addresses.length === 0 && !hasAddressDetails) return;
 
   if (addresses.length === 0) addresses.push(nextAddress);
   else addresses[index] = nextAddress;
@@ -434,9 +467,6 @@ const applyProfileUpdate = async (
     "thoroughfare",
     "property_block_lot",
     "apartment_unit",
-    "phone",
-    "name_first",
-    "name_last",
   ].some((field) => payload[field] !== undefined);
   if (hasProfileAddressUpdate) syncDefaultAddressFromProfile(user);
 
@@ -466,6 +496,7 @@ const updateProfile = async (req, res) => {
     return res.status(result.status).json({ message: result.message });
   }
 
+  await syncCustomerBranchFromDefault(req.authUser, req.authUser.addresses || []);
   await req.authUser.save();
   return res.json({ user: req.authUser.toJSON() });
 };
@@ -485,6 +516,7 @@ const updateProfileById = async (req, res) => {
     return res.status(result.status).json({ message: result.message });
   }
 
+  await syncCustomerBranchFromDefault(target, target.addresses || []);
   await target.save();
   return res.json({ user: target.toJSON() });
 };
@@ -497,8 +529,9 @@ const listAddresses = async (req, res) => {
   // Accounts created before saved addresses were introduced still have the
   // sign-up/profile address fields. Materialize that same address as the
   // default checkout address instead of asking the customer to enter it again.
-  if (addresses.length === 0) {
+  if (addresses.length === 0 && hasLegacyAddressData(req.authUser)) {
     syncDefaultAddressFromProfile(req.authUser);
+    await syncCustomerBranchFromDefault(req.authUser, req.authUser.addresses || []);
     await req.authUser.save();
     addresses = req.authUser.addresses || [];
   }
@@ -523,6 +556,7 @@ const addAddress = async (req, res) => {
   normalizeDefaultAddress(nextAddresses);
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
+  await syncCustomerBranchFromDefault(user, nextAddresses);
 
   await user.save();
   return res.status(201).json({ addresses: user.addresses });
@@ -554,6 +588,7 @@ const updateAddress = async (req, res) => {
   normalizeDefaultAddress(nextAddresses);
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
+  await syncCustomerBranchFromDefault(user, nextAddresses);
 
   await user.save();
   return res.json({ addresses: user.addresses });
@@ -574,6 +609,7 @@ const deleteAddress = async (req, res) => {
   normalizeDefaultAddress(nextAddresses);
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
+  await syncCustomerBranchFromDefault(user, nextAddresses);
   await user.save();
   return res.json({ addresses: user.addresses });
 };
@@ -594,6 +630,7 @@ const setDefaultAddress = async (req, res) => {
   });
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
+  await syncCustomerBranchFromDefault(user, nextAddresses);
   await user.save();
   return res.json({ addresses: user.addresses });
 };
