@@ -128,7 +128,11 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
     issueDescription: request.issue,
     unitSerialNumber: request.payload?.unitSerialNumber || "",
     qrCode: request.payload?.qrCode || "",
-    status: "pending",
+    // Assigning a technician from Admin is the activation step for service
+    // work. Installation-order tasks are still activated by order dispatch.
+    status: "in-progress",
+    activatedAt: request.payload?.activatedAt || nowIso,
+    activationSource: "admin_service_assignment",
     updatedAt: nowIso,
   };
 
@@ -154,7 +158,7 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
       unitType: request.payload?.unitType || request.unitName || "Installed AC Unit",
       issueType: request.issueType || request.payload?.serviceType || "Service Request",
       description: request.issue,
-      status: "pending",
+      status: "in-progress",
       priority: String(payload.priority || request.payload?.priority || "medium").toLowerCase(),
       scheduledDate: String(payload.scheduledDate || request.payload?.preferredDate || "TBD"),
       timeSlot: String(payload.timeSlot || request.payload?.preferredSchedule || "TBD"),
@@ -163,6 +167,13 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
       payload: { ...commonPayload, createdAt: request.payload?.createdAt || nowIso },
     });
   }
+
+  const previousTechnicianId = String(task.assignedTechnicianId || "").trim();
+  const currentTaskStatus = String(task.status || "pending").trim().toLowerCase();
+  const isReassignment = Boolean(previousTechnicianId && previousTechnicianId !== technicianId);
+  const shouldActivateTask =
+    !["completed", "cancelled"].includes(currentTaskStatus) &&
+    (isReassignment || ["pending", "accepted", "on-hold", "failed", "rescheduled"].includes(currentTaskStatus));
 
   task.assignedTechnicianId = technicianId;
   task.assignedTechnicianName = technicianName;
@@ -176,11 +187,14 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
   task.issueType = request.issueType || request.payload?.serviceType || task.issueType;
   task.description = request.issue;
   task.branch = request.branch || task.branch;
+  if (shouldActivateTask) task.status = "in-progress";
   task.payload = {
     ...(task.payload || {}),
     ...commonPayload,
     assignedTechnicianId: technicianId,
     assignedTechnicianName: technicianName,
+    status: task.status,
+    activatedAt: task.payload?.activatedAt || nowIso,
   };
 
   await task.save();
@@ -427,6 +441,12 @@ const updateServiceRequestStatus = async (req, res) => {
     request.status = nextStatus || request.status;
     request.assignedTechnicianId = String(req.body?.assignedTechnicianId || request.assignedTechnicianId || "");
     request.assignedTechnicianName = String(req.body?.assignedTechnicianName || request.assignedTechnicianName || "");
+    // Service-request assignment is also its Admin activation action. This
+    // prevents a pending task that technicians cannot start and keeps the
+    // request and task on the same lifecycle status.
+    if (request.assignedTechnicianId && ["Assigned", "In Progress"].includes(request.status)) {
+      request.status = "In Progress";
+    }
     const timeline = Array.isArray(request.payload?.timeline) ? request.payload.timeline : [];
     const nextTimeline = [
       ...timeline,
@@ -449,7 +469,7 @@ const updateServiceRequestStatus = async (req, res) => {
       ["Assigned", "In Progress"].includes(request.status);
     const task = shouldCreateTask ? await upsertServiceTaskForRequest(request, req.body || {}) : null;
     if (task) {
-      request.status = request.status === "In Progress" ? "In Progress" : "Assigned";
+      request.status = "In Progress";
       request.assignedTechnicianId = task.assignedTechnicianId;
       request.assignedTechnicianName = task.assignedTechnicianName;
       request.payload = {
