@@ -66,6 +66,26 @@ const buildCorsOrigin = () => {
   };
 };
 
+// Keep test and live credentials deliberately separate. A generic
+// PAYMONGO_SECRET_KEY is supported for older deployments, but explicit
+// PAYMONGO_TEST_SECRET_KEY / PAYMONGO_LIVE_SECRET_KEY always wins for the
+// selected mode so a stale key cannot silently send a test checkout to live.
+const paymongoMode = String(process.env.PAYMONGO_MODE || "").trim().toLowerCase();
+const resolvePaymongoSecretKey = () => {
+  if (paymongoMode === "test") {
+    return process.env.PAYMONGO_TEST_SECRET_KEY || process.env.PAYMONGO_SECRET_KEY || "";
+  }
+  if (paymongoMode === "live") {
+    return process.env.PAYMONGO_LIVE_SECRET_KEY || process.env.PAYMONGO_SECRET_KEY || "";
+  }
+  return (
+    process.env.PAYMONGO_SECRET_KEY ||
+    process.env.PAYMONGO_TEST_SECRET_KEY ||
+    process.env.PAYMONGO_LIVE_SECRET_KEY ||
+    ""
+  );
+};
+
 const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   host: process.env.HOST || "0.0.0.0",
@@ -78,8 +98,8 @@ const env = {
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   backendPublicUrl: process.env.BACKEND_PUBLIC_URL || process.env.PAYMONGO_RETURN_BASE_URL || "",
   mobileUrlScheme: process.env.MOBILE_URL_SCHEME || "coldair",
-  paymongoMode: process.env.PAYMONGO_MODE || "",
-  paymongoSecretKey: process.env.PAYMONGO_SECRET_KEY || "",
+  paymongoMode,
+  paymongoSecretKey: resolvePaymongoSecretKey(),
   paymongoWebhookSecret: process.env.PAYMONGO_WEBHOOK_SECRET || "",
   paymongoApiBaseUrl: process.env.PAYMONGO_API_BASE_URL || "https://api.paymongo.com",
   openAiApiKey: process.env.OPENAI_API_KEY || "",

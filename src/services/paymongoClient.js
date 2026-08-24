@@ -9,7 +9,24 @@ class PaymongoError extends Error {
   }
 }
 
-const isConfigured = () => Boolean(env.paymongoSecretKey);
+const selectedKeyMode = () => {
+  const key = String(env.paymongoSecretKey || "");
+  if (key.startsWith("sk_test_")) return "test";
+  if (key.startsWith("sk_live_")) return "live";
+  return "unknown";
+};
+
+const configurationError = () => {
+  if (!env.paymongoSecretKey) return "PayMongo secret key is not configured.";
+  const selectedMode = String(env.paymongoMode || "").toLowerCase();
+  const keyMode = selectedKeyMode();
+  if (selectedMode && ["test", "live"].includes(selectedMode) && keyMode !== selectedMode) {
+    return `PAYMONGO_MODE is ${selectedMode}, but the configured PayMongo secret key is ${keyMode}. Use the matching ${selectedMode} secret key.`;
+  }
+  return "";
+};
+
+const isConfigured = () => !configurationError();
 
 const authHeader = () =>
   `Basic ${Buffer.from(`${env.paymongoSecretKey}:`).toString("base64")}`;
@@ -26,8 +43,9 @@ const normalizePaymentMethods = (paymentMethod) => {
 };
 
 const requestPaymongo = async (path, { method = "GET", body } = {}) => {
-  if (!isConfigured()) {
-    throw new PaymongoError("PayMongo secret key is not configured.", { status: 500 });
+  const configurationIssue = configurationError();
+  if (configurationIssue) {
+    throw new PaymongoError(configurationIssue, { status: 500 });
   }
 
   const response = await fetch(`${env.paymongoApiBaseUrl}${path}`, {
@@ -203,5 +221,6 @@ module.exports = {
   createCheckoutSession,
   getCheckoutSession,
   isConfigured,
+  getConfigurationError: configurationError,
   normalizePaymentMethods,
 };

@@ -20,6 +20,7 @@ const {
   createCheckoutSession,
   getCheckoutSession,
   isConfigured: isPaymongoConfigured,
+  getConfigurationError: getPaymongoConfigurationError,
 } = require("../services/paymongoClient");
 
 const workflowLabel = (status) => {
@@ -874,7 +875,10 @@ const envFrontendUrl = () =>
 const attachPaymongoCheckout = async (order, options = {}) => {
   if (!isOnlinePaymentMethod(order.paymentMethod)) return null;
   if (!isPaymongoConfigured()) {
-    throw new HttpError(500, "PayMongo secret key is not configured on the backend.");
+    throw new HttpError(
+      500,
+      getPaymongoConfigurationError() || "PayMongo secret key is not configured on the backend.",
+    );
   }
 
   const { successUrl, cancelUrl } = buildPaymentReturnUrls(order, options);
