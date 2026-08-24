@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const ReorderRequest = require("../models/ReorderRequest");
 const Product = require("../models/Product");
 const Notification = require("../models/Notification");
@@ -50,6 +51,18 @@ const createReorderRequest = async (req, res) => {
     return res.status(400).json({ message: "A valid branch is required for a reorder request." });
   }
 
+  const existing = await ReorderRequest.exists({
+    requestedBy: req.authUser._id,
+    product: product._id,
+    branch,
+    status: "submitted",
+  });
+  if (existing) {
+    return res.status(409).json({
+      message: "A reorder request for this product and branch is already awaiting review.",
+    });
+  }
+
   const reorder = await ReorderRequest.create({
     requestedBy: req.authUser._id,
     product: product._id,
@@ -99,30 +112,58 @@ const updateReorderStatus = async (req, res) => {
     return res.status(400).json({ message: "Status must be approved or rejected." });
   }
 
-  const reorder = await ReorderRequest.findById(req.params.reorderId).populate("product");
-  if (!reorder) return res.status(404).json({ message: "Reorder request not found." });
-  if (reorder.status !== "submitted") {
+  const session = await mongoose.startSession();
+  let reorder = null;
+  let reviewConflict = false;
+  let missingProduct = false;
+
+  try {
+    await session.withTransaction(async () => {
+      const pending = await ReorderRequest.findOne({
+        _id: req.params.reorderId,
+        status: "submitted",
+      })
+        .populate("product")
+        .session(session);
+
+      if (!pending) {
+        reviewConflict = true;
+        return;
+      }
+
+      if (status === "approved") {
+        const product = pending.product;
+        if (!product) {
+          missingProduct = true;
+          return;
+        }
+        const current = Number(product.branchStock?.get(pending.branch) || 0);
+        product.branchStock.set(pending.branch, current + Number(pending.quantity));
+        product.stock = BRANCHES.reduce(
+          (total, branch) => total + Number(product.branchStock?.get(branch) || 0),
+          0,
+        );
+        await ensureProductSerialUnits(product, product.stock, { session });
+        await product.save({ session });
+      }
+
+      pending.status = status;
+      pending.reviewNotes = String(req.body?.reviewNotes || "").trim();
+      pending.reviewedBy = req.authUser._id;
+      pending.reviewedAt = new Date();
+      await pending.save({ session });
+      reorder = pending;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  if (reviewConflict) {
     return res.status(409).json({ message: "This reorder request has already been reviewed." });
   }
-
-  if (status === "approved") {
-    const product = reorder.product;
-    if (!product) return res.status(409).json({ message: "The requested product is no longer available." });
-    const current = Number(product.branchStock?.get(reorder.branch) || 0);
-    product.branchStock.set(reorder.branch, current + Number(reorder.quantity));
-    product.stock = BRANCHES.reduce(
-      (total, branch) => total + Number(product.branchStock?.get(branch) || 0),
-      0,
-    );
-    await ensureProductSerialUnits(product, product.stock);
-    await product.save();
+  if (missingProduct) {
+    return res.status(409).json({ message: "The requested product is no longer available." });
   }
-
-  reorder.status = status;
-  reorder.reviewNotes = String(req.body?.reviewNotes || "").trim();
-  reorder.reviewedBy = req.authUser._id;
-  reorder.reviewedAt = new Date();
-  await reorder.save();
 
   try {
     await Notification.create({

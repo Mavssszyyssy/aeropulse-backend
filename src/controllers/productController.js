@@ -646,7 +646,7 @@ const generateUniqueSerialNumber = async (product, seen) => {
   throw new Error("Unable to generate a unique serial number");
 };
 
-const ensureProductSerialUnits = async (product, targetCount = null) => {
+const ensureProductSerialUnits = async (product, targetCount = null, saveOptions = {}) => {
   const desiredCount = Math.max(
     0,
     Math.floor(
@@ -733,7 +733,7 @@ const ensureProductSerialUnits = async (product, targetCount = null) => {
   }
 
   if (changed) {
-    await product.save();
+    await product.save(saveOptions);
   }
 
   return changed;
