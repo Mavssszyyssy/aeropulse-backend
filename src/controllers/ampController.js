@@ -1,5 +1,6 @@
 const Unit = require("../models/Unit");
 const ServiceHistory = require("../models/ServiceHistory");
+const Task = require("../models/Task");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { callStructuredAmpAnalysis, validateAmpInsight } = require("../services/openAiAmpService");
 const { getManagerServicePipeline, getOwnerServiceForecast } = require("../domain/ampDashboardService");
@@ -66,6 +67,21 @@ const loadAccessibleUnit = async (req) => {
   if (req.authUser.role !== "superadmin" && req.activeBranch && unit.serviceBranch && unit.serviceBranch !== req.activeBranch && req.authUser.role !== "customer") {
     const error = new Error("This unit belongs to another branch."); error.status = 403; throw error;
   }
+  if (req.authUser.role === "technician") {
+    const technicianTask = await Task.exists({
+      assignedTechnicianId: String(req.authUser._id || ""),
+      $or: [
+        { unitId: String(unit._id) },
+        { "payload.unitId": String(unit._id) },
+        { "payload.serialNumbers": unit.serialNumber },
+        { "payload.items.serialNumbers": unit.serialNumber },
+        { "payload.items.serialUnits.serialNumber": unit.serialNumber },
+      ],
+    });
+    if (!technicianTask) {
+      const error = new Error("This AC unit is not part of one of your assigned work orders."); error.status = 403; throw error;
+    }
+  }
   return unit;
 };
 
@@ -131,6 +147,7 @@ const updateRoomSize = async (req, res) => {
 
 const completeService = async (req, res) => {
   try {
+    await loadAccessibleUnit(req);
     const result = await completeServiceForUnit({ unitId: req.params.unitId, technicianId: req.authUser._id, payload: req.body || {} });
     return res.status(201).json({ serviceHistory: result.serviceHistory.toJSON(), recommendation: result.recommendation, unit: result.unit.toJSON() });
   } catch (error) {

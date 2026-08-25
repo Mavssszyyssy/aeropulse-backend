@@ -4,7 +4,7 @@ const User = require("../models/User");
 
 const canReceive = (user, type = "system") => {
   const preferences = user?.notifications?.toObject?.() || user?.notifications || {};
-  if (preferences.inApp === false || preferences.push === false) return false;
+  if (preferences.inApp === false && preferences.push === false) return false;
   if (["order", "payment", "delivery"].includes(type) && preferences.orderUpdates === false) return false;
   if (["account", "security"].includes(type) && preferences.accountUpdates === false) return false;
   if (["system", "inventory", "technician", "service", "warranty", "report"].includes(type) && preferences.systemAlerts === false) return false;

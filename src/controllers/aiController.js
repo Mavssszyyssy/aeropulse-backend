@@ -60,6 +60,19 @@ const loadUnitAndRecommendation = async (req, unitId) => {
   if (!unit) { const error = new Error("Installed AC unit not found."); error.status = 404; throw error; }
   if (req.authUser.role === "customer" && String(unit.customer || "") !== String(req.authUser._id || "")) { const error = new Error("You are not allowed to access this AC unit."); error.status = 403; throw error; }
   if (req.authUser.role !== "superadmin" && req.authUser.role !== "customer" && req.activeBranch && unit.serviceBranch && unit.serviceBranch !== req.activeBranch) { const error = new Error("This AC unit belongs to another branch."); error.status = 403; throw error; }
+  if (req.authUser.role === "technician") {
+    const assignedTask = await Task.exists({
+      assignedTechnicianId: String(req.authUser._id || ""),
+      $or: [
+        { unitId: String(unit._id) },
+        { "payload.unitId": String(unit._id) },
+        { "payload.serialNumbers": unit.serialNumber },
+        { "payload.items.serialNumbers": unit.serialNumber },
+        { "payload.items.serialUnits.serialNumber": unit.serialNumber },
+      ],
+    });
+    if (!assignedTask) { const error = new Error("This AC unit is not part of one of your assigned work orders."); error.status = 403; throw error; }
+  }
   return { unit, recommendation: await calculateMaintenanceRecommendation(unit._id) };
 };
 
@@ -94,7 +107,7 @@ const generateAmpReport = async (req, res) => {
     const branch = await resolveResponsibleBranch(req, unit, req.body?.branch);
     const [history, requests, tasks] = await Promise.all([
       ServiceHistory.find({ unit: unit._id }).sort({ serviceDate: -1 }).limit(50).lean(),
-      ServiceRequest.find({ $or: [{ unitId: String(unit._id) }, { customerId: String(unit.customer || "") }] }).sort({ createdAt: -1 }).limit(20).lean(),
+      ServiceRequest.find({ unitId: String(unit._id) }).sort({ createdAt: -1 }).limit(20).lean(),
       Task.find({ $or: [{ unitId: String(unit._id) }, { "payload.serialNumbers": unit.serialNumber }, { "payload.serialNumber": unit.serialNumber }] }).sort({ updatedAt: -1 }).limit(20).lean(),
     ]);
     const aggregate = type === "inventory_reliability_analysis" ? await aggregateReliability(unit, branch) : null;

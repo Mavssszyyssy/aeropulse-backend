@@ -316,9 +316,10 @@ const normalizeNotifications = (current, payload = {}) => {
     }
   });
 
-  // Keep backward compatibility with legacy push key.
-  next.push = Boolean(next.inApp ?? next.push);
-  next.inApp = Boolean(next.inApp ?? next.push);
+  // Older records may contain only one of these keys. Seed a missing key once,
+  // but preserve independent user choices after both preferences exist.
+  if (next.inApp === undefined) next.inApp = Boolean(next.push);
+  if (next.push === undefined) next.push = Boolean(next.inApp);
   return next;
 };
 
@@ -337,7 +338,10 @@ const canManageTargetProfile = (manager, target) => {
   if (String(manager._id) === String(target._id)) return true;
   if (manager.role === "superadmin") return true;
   if (manager.role === "admin") {
-    return target.role === "customer" || target.role === "technician";
+    if (!["customer", "technician"].includes(target.role)) return false;
+    const managerBranch = String(manager.activeBranch || manager.assignedBranch || "").trim();
+    const targetBranch = String(target.activeBranch || target.assignedBranch || "").trim();
+    return Boolean(managerBranch && targetBranch && managerBranch === targetBranch);
   }
   return false;
 };
@@ -1009,6 +1013,10 @@ const listUsers = async (req, res) => {
     if (role && !["customer", "technician"].includes(role)) {
       return res.status(403).json({ message: "Forbidden" });
     }
+    query.$or = [
+      { activeBranch: req.activeBranch },
+      { assignedBranch: req.activeBranch },
+    ];
   }
 
   const users = await User.find(query).sort({ createdAt: -1 }).limit(500);
@@ -1079,8 +1087,9 @@ const shouldCreateInAppNotification = (user, type = "system") => {
   if (!user) return false;
   const notifications =
     user.notifications?.toObject?.() || user.notifications || {};
-  if (notifications.inApp === false || notifications.push === false)
-    return false;
+  // In-app and push delivery are independent preferences. Turning push off
+  // must not remove notifications from the in-app notification centre.
+  if (notifications.inApp === false) return false;
   if (!NOTIFICATION_TYPES.includes(type)) return true;
   if (type === "account" && notifications.accountUpdates === false)
     return false;

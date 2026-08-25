@@ -235,7 +235,9 @@ const getRestockOrders = async (req, res) => {
     query.status = status;
   }
 
-  if (branch && BRANCHES.includes(branch)) {
+  if (req.authUser.role === "admin") {
+    query.branches = req.activeBranch;
+  } else if (branch && BRANCHES.includes(branch)) {
     query.branches = branch;
   }
 

@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const Unit = require("../models/Unit");
+const Task = require("../models/Task");
 const ServiceRequest = require("../models/ServiceRequest");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
@@ -9,10 +10,36 @@ const { resolvePreferredBranch } = require("../domain/branchRouting");
 const displayName = (user = {}) =>
   user.name || `${user.name_first || ""} ${user.name_last || ""}`.trim() || user.email || user.role || "System";
 
+const resolveUnitBranch = async (unit) =>
+  String(unit?.serviceBranch || "").trim() ||
+  resolvePreferredBranch({
+    city: unit?.installation?.city,
+    province: unit?.installation?.province,
+  });
+
 const getUnitForRequest = async (req) => {
   const unit = await Unit.findById(req.params.unitId);
   if (!unit) return null;
-  if (req.authUser.role === "customer" && String(unit.customer || "") !== String(req.authUser._id || "")) return null;
+  const role = req.authUser.role;
+  if (role === "customer" && String(unit.customer || "") !== String(req.authUser._id || "")) return null;
+  if (role === "admin") {
+    const branch = await resolveUnitBranch(unit);
+    if (branch && branch !== String(req.activeBranch || "")) return null;
+  }
+  if (role === "technician") {
+    const serialNumber = String(unit.serialNumber || "").trim();
+    const task = await Task.exists({
+      assignedTechnicianId: String(req.authUser._id || ""),
+      $or: [
+        { unitId: String(unit._id) },
+        { "payload.unitId": String(unit._id) },
+        { "payload.serialNumbers": serialNumber },
+        { "payload.items.serialNumbers": serialNumber },
+        { "payload.items.serialUnits.serialNumber": serialNumber },
+      ],
+    });
+    if (!task) return null;
+  }
   return unit;
 };
 
@@ -49,14 +76,11 @@ const listWarrantyClaims = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
     const units = await Unit.find({ "warranty.claims.0": { $exists: true } })
-      .select("serialNumber brand modelName customerName installation warranty")
+      .select("serialNumber brand modelName customerName serviceBranch installation warranty")
       .sort({ updatedAt: -1 });
     const claimGroups = await Promise.all(units.map(async (unit) => {
       const warranty = warrantySnapshot(unit);
-      const branch = await resolvePreferredBranch({
-        city: unit.installation?.city,
-        province: unit.installation?.province,
-      });
+      const branch = await resolveUnitBranch(unit);
       return warranty.claims.map((claim) => ({
         ...claim,
         unitId: String(unit._id),
@@ -67,7 +91,10 @@ const listWarrantyClaims = async (req, res) => {
         warrantyStatus: warranty.status,
       }));
     }));
-    const claims = claimGroups.flat().sort((left, right) => new Date(right.requestedAt || 0) - new Date(left.requestedAt || 0));
+    const claims = claimGroups
+      .flat()
+      .filter((claim) => req.authUser.role === "superadmin" || !req.activeBranch || claim.branch === req.activeBranch)
+      .sort((left, right) => new Date(right.requestedAt || 0) - new Date(left.requestedAt || 0));
     return res.json({ claims });
   } catch (error) {
     console.error("Failed to list warranty claims:", error);
@@ -106,7 +133,7 @@ const createWarrantyClaim = async (req, res) => {
     unit.warranty = warranty;
     await unit.save();
     await notifyOperationalStaff({
-      branch: await resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
+      branch: await resolveUnitBranch(unit),
       title: "New warranty claim",
       message: `${unit.customerName || "A customer"} submitted claim ${claim.claimId} for ${unit.modelName || unit.serialNumber}.`,
       type: "warranty",
@@ -128,6 +155,10 @@ const reviewWarrantyClaim = async (req, res) => {
     if (!["admin", "superadmin"].includes(req.authUser.role)) return res.status(403).json({ message: "Forbidden" });
     const unit = await Unit.findById(req.params.unitId);
     if (!unit) return res.status(404).json({ message: "AC unit not found." });
+    const unitBranch = await resolveUnitBranch(unit);
+    if (req.authUser.role === "admin" && unitBranch && unitBranch !== req.activeBranch) {
+      return res.status(403).json({ message: "This warranty claim belongs to another branch." });
+    }
     const warranty = warrantySnapshot(unit);
     const index = warranty.claims.findIndex((claim) => String(claim?.claimId || "") === String(req.params.claimId || ""));
     if (index < 0) return res.status(404).json({ message: "Warranty claim not found." });
@@ -148,10 +179,7 @@ const reviewWarrantyClaim = async (req, res) => {
         customer: unit.customerName || "Customer",
         issue: `Warranty claim ${claim.claimId}: ${claim.issue}`,
         address,
-        branch: await resolvePreferredBranch({
-          city: unit.installation?.city,
-          province: unit.installation?.province,
-        }),
+        branch: unitBranch,
         status: "Reviewed",
         customerId: String(unit.customer || ""),
         unitId: String(unit._id),
@@ -198,13 +226,14 @@ const reviewWarrantyClaim = async (req, res) => {
           targetType: "warranty",
           category: "warranty_claim",
           dedupeKey: `warranty-claim:${unit._id}:${claim.claimId}:${status}`,
-          read: false,
+          unread: true,
+          status: "unread",
         },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       );
     }
     await notifyOperationalStaff({
-      branch: await resolvePreferredBranch({ city: unit.installation?.city, province: unit.installation?.province }),
+      branch: unitBranch,
       title: `Warranty claim ${status.replace("_", " ")}`,
       message: `Claim ${claim.claimId} for ${unit.modelName || unit.serialNumber} is ${status.replace("_", " ")}.`,
       type: "warranty",

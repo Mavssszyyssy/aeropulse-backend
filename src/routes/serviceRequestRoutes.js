@@ -1,5 +1,5 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, allowRoles } = require("../middleware/auth");
 const {
 	listServiceRequests,
 	createServiceRequest,
@@ -13,12 +13,12 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-router.get("/", listServiceRequests);
-router.post("/", createServiceRequest);
+router.get("/", allowRoles("admin", "superadmin"), listServiceRequests);
+router.post("/", allowRoles("admin", "superadmin"), createServiceRequest);
 router.get("/catalog", listServiceCatalog);
-router.get("/me", listMyServiceRequests);
-router.post("/me", createMyServiceRequest);
-router.patch("/:id/status", updateServiceRequestStatus);
+router.get("/me", allowRoles("customer"), listMyServiceRequests);
+router.post("/me", allowRoles("customer"), createMyServiceRequest);
+router.patch("/:id/status", allowRoles("customer", "admin", "superadmin"), updateServiceRequestStatus);
 
 module.exports = router;
 

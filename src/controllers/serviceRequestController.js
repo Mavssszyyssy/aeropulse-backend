@@ -3,23 +3,21 @@ const ServiceRequest = require("../models/ServiceRequest");
 const Task = require("../models/Task");
 const Unit = require("../models/Unit");
 const User = require("../models/User");
-const Notification = require("../models/Notification");
-const { notifyOperationalStaff } = require("../services/operationalNotificationService");
+const {
+  createDedupedNotification,
+  notifyOperationalStaff,
+} = require("../services/operationalNotificationService");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 const { getServiceCatalog, findServiceOffering } = require("../domain/serviceCatalog");
+const {
+  normalizeServiceRequestStatus,
+  canTransitionServiceRequest,
+  canCustomerCancelServiceRequest,
+} = require("../domain/serviceRequestWorkflow");
 const env = require("../config/env");
 
-const normalizeStatus = (value = "") => {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return "Pending";
-  if (normalized === "in progress") return "In Progress";
-  if (normalized === "submitted") return "Submitted";
-  if (normalized === "reviewed") return "Reviewed";
-  if (normalized === "assigned") return "Assigned";
-  if (normalized === "completed") return "Completed";
-  if (normalized === "cancelled") return "Cancelled";
-  return normalized.replace(/^\w/, (c) => c.toUpperCase());
-};
+const normalizeStatus = (value = "", fallback = "Pending") =>
+  normalizeServiceRequestStatus(value, fallback);
 
 const ACTIVE_REQUEST_STATUSES = ["Submitted", "Reviewed", "Assigned", "In Progress", "Pending"];
 
@@ -76,14 +74,18 @@ const getRequestBranch = async ({ req, payload = {}, unit = null }) => {
   });
 };
 
-const notifyUser = async ({ userId, title, message }) => {
+const notifyUser = async ({ userId, title, message, type = "service", targetId = "", dedupeKey = "" }) => {
   if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) return null;
   try {
-    return await Notification.create({
+    return await createDedupedNotification({
       user: userId,
-      type: "system",
+      type,
+      category: "service_request",
       title,
       message,
+      targetType: "service",
+      targetId: String(targetId || ""),
+      dedupeKey,
     });
   } catch (error) {
     console.error("Failed to create service request notification:", error);
@@ -111,8 +113,24 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
   if (!technicianId) return null;
 
   const technician = mongoose.Types.ObjectId.isValid(technicianId)
-    ? await User.findById(technicianId).select("name name_first name_last email")
+    ? await User.findById(technicianId).select("name name_first name_last email role accountStatus isDeleted activeBranch assignedBranch")
     : null;
+  if (
+    !technician ||
+    technician.role !== "technician" ||
+    technician.isDeleted ||
+    ["disabled", "deleted"].includes(String(technician.accountStatus || ""))
+  ) {
+    const error = new Error("Choose an active technician account.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const technicianBranch = String(technician.activeBranch || technician.assignedBranch || "").trim();
+  if (request.branch && technicianBranch && request.branch !== technicianBranch) {
+    const error = new Error("The technician must belong to the service request branch.");
+    error.statusCode = 409;
+    throw error;
+  }
   const technicianName = String(
     payload.assignedTechnicianName || request.assignedTechnicianName || getTechnicianDisplayName(technician),
   ).trim();
@@ -217,10 +235,11 @@ const listServiceRequests = async (req, res) => {
       : { $or: [{ branch: req.activeBranch }, { branch: "" }, { branch: { $exists: false } }] };
     const query = { ...branchQuery };
     const rawStatus = String(req.query?.status || "").trim();
-    const status = rawStatus ? normalizeStatus(rawStatus) : "";
+    const status = rawStatus ? normalizeStatus(rawStatus, null) : "";
     const technicianId = String(req.query?.technicianId || "").trim();
     const unitId = String(req.query?.unitId || "").trim();
 
+    if (rawStatus && !status) return res.status(400).json({ message: "Invalid service request status." });
     if (status) query.status = status;
     if (technicianId) query.assignedTechnicianId = technicianId;
     if (unitId) query.unitId = unitId;
@@ -240,13 +259,17 @@ const createServiceRequest = async (req, res) => {
     if (!customer || !issue || !address) {
       return res.status(400).json({ message: "customer, issue, and address are required" });
     }
+    const normalizedStatus = normalizeStatus(status, null);
+    if (!normalizedStatus) {
+      return res.status(400).json({ message: "Invalid service request status." });
+    }
     const nowIso = new Date().toISOString();
     const request = await ServiceRequest.create({
       customer,
       issue,
       address,
       branch: req.authUser.role === "superadmin" ? (req.body?.branch || "") : req.activeBranch,
-      status: normalizeStatus(status),
+      status: normalizedStatus,
       customerId: String(req.body?.customerId || req.body?.userId || ""),
       customerEmail: String(req.body?.customerEmail || ""),
       customerPhone: String(req.body?.customerPhone || ""),
@@ -284,6 +307,7 @@ const listServiceCatalog = async (_req, res) => {
 const createMyServiceRequest = async (req, res) => {
   try {
     const payload = req.body || {};
+    const idempotencyKey = String(req.get("Idempotency-Key") || payload.idempotencyKey || "").trim().slice(0, 160);
     const customerName = String(payload.customerName || payload.customer || getUserDisplayName(req.authUser)).trim();
     const issue = String(payload.issueDescription || payload.issue || payload.concern || "").trim();
     const address = String(payload.address || "").trim();
@@ -298,6 +322,16 @@ const createMyServiceRequest = async (req, res) => {
     }
     if (!service) {
       return res.status(400).json({ message: "Choose a valid service type from the current service catalog." });
+    }
+
+    if (idempotencyKey) {
+      const existingRequest = await ServiceRequest.findOne({
+        createdBy: req.authUser._id,
+        idempotencyKey,
+      });
+      if (existingRequest) {
+        return res.status(200).json({ request: hydrateRequestResponse(existingRequest), replayed: true });
+      }
     }
 
     const unit = unitId ? await findOwnedUnit(unitId, req.authUser._id) : null;
@@ -364,12 +398,15 @@ const createMyServiceRequest = async (req, res) => {
         updatedAt: payload.updatedAt || nowIso,
       },
       createdBy: req.authUser._id,
+      idempotencyKey,
     });
 
     await notifyUser({
       userId: req.authUser._id,
       title: "Service request submitted",
       message: `${request.issueType || "Service"} request for ${request.unitName || "your AC unit"} was submitted.`,
+      targetId: String(request._id || request.id || ""),
+      dedupeKey: `service-submitted:${request._id || request.id}`,
     });
     await notifyOperationalStaff({
       branch: request.branch,
@@ -384,6 +421,13 @@ const createMyServiceRequest = async (req, res) => {
 
     return res.status(201).json({ request: hydrateRequestResponse(request) });
   } catch (error) {
+    if (error?.code === 11000) {
+      const idempotencyKey = String(req.get("Idempotency-Key") || req.body?.idempotencyKey || "").trim().slice(0, 160);
+      const existingRequest = idempotencyKey
+        ? await ServiceRequest.findOne({ createdBy: req.authUser._id, idempotencyKey })
+        : null;
+      if (existingRequest) return res.status(200).json({ request: hydrateRequestResponse(existingRequest), replayed: true });
+    }
     console.error("Failed to create service request:", error);
     return res.status(500).json({ message: "Failed to create service request" });
   }
@@ -393,7 +437,8 @@ const updateServiceRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const rawNextStatus = String(req.body?.status || "").trim();
-    const nextStatus = rawNextStatus ? normalizeStatus(rawNextStatus) : "";
+    const nextStatus = rawNextStatus ? normalizeStatus(rawNextStatus, null) : "";
+    if (!nextStatus) return res.status(400).json({ message: "Choose a valid service request status." });
 
     const request = await ServiceRequest.findById(id);
     if (!request) {
@@ -401,6 +446,12 @@ const updateServiceRequestStatus = async (req, res) => {
     }
 
     const role = req.authUser.role;
+    if (role === "admin") {
+      const requestBranch = String(request.branch || "").trim();
+      if (requestBranch && requestBranch !== req.activeBranch) {
+        return res.status(403).json({ message: "This service request belongs to another branch." });
+      }
+    }
     if (role === "customer" || role === "technician") {
       const isOwner = String(request.createdBy || "") === String(req.authUser._id || "");
       if (!isOwner && role === "customer") {
@@ -414,6 +465,14 @@ const updateServiceRequestStatus = async (req, res) => {
       if (role === "customer" && nextStatus !== "Cancelled") {
         return res.status(403).json({ message: "Customers can only cancel requests." });
       }
+      if (role === "customer" && !canCustomerCancelServiceRequest(request.status)) {
+        return res.status(409).json({ message: "This request can no longer be cancelled because work has already started." });
+      }
+    }
+    if (!canTransitionServiceRequest(request.status, nextStatus)) {
+      return res.status(409).json({
+        message: `Service request cannot move from ${request.status} to ${nextStatus}.`,
+      });
     }
 
     const linkedTaskId = String(request.payload?.linkedTaskId || "").trim();
@@ -485,6 +544,8 @@ const updateServiceRequestStatus = async (req, res) => {
         userId: task.assignedTechnicianId,
         title: "New service task assigned",
         message: `${request.customer}'s ${request.unitName || "AC unit"} service request is assigned to you.`,
+        targetId: String(task._id || task.id || ""),
+        dedupeKey: `service-task-assigned:${task._id || task.id}:${task.assignedTechnicianId}`,
       });
     }
 
@@ -501,6 +562,8 @@ const updateServiceRequestStatus = async (req, res) => {
         userId: request.customerId,
         title: "Service request updated",
         message: `Your service request is now ${request.status}.`,
+        targetId: String(request._id || request.id || ""),
+        dedupeKey: `service-status:${request._id || request.id}:${request.status}`,
       });
     }
     await notifyOperationalStaff({
@@ -517,7 +580,7 @@ const updateServiceRequestStatus = async (req, res) => {
     return res.json({ request: hydrateRequestResponse(request) });
   } catch (error) {
     console.error("Failed to update service request status:", error);
-    return res.status(500).json({ message: "Failed to update service request" });
+    return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Failed to update service request" });
   }
 };
 

@@ -1,5 +1,5 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, allowRoles } = require("../middleware/auth");
 const {
   createReorderRequest,
   listReorders,
@@ -11,10 +11,10 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-router.get("/mine", listMyReorders);
-router.get("/", listReorders);
-router.post("/", createReorderRequest);
-router.patch("/:reorderId", updateReorderStatus);
+router.get("/mine", allowRoles("admin"), listMyReorders);
+router.get("/", allowRoles("admin", "superadmin"), listReorders);
+router.post("/", allowRoles("admin"), createReorderRequest);
+router.patch("/:reorderId", allowRoles("superadmin"), updateReorderStatus);
 
 module.exports = router;
 

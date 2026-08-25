@@ -24,7 +24,11 @@ const findTaskForRequest = async (taskId, req) => {
   if (mongoose.Types.ObjectId.isValid(taskId)) {
     conditions.unshift({ _id: taskId });
   }
-  return Task.findOne({ $and: [{ $or: conditions }, branchScopeQuery(req)] });
+  const scopes = [{ $or: conditions }, branchScopeQuery(req)];
+  if (req.authUser.role === "technician") {
+    scopes.push({ assignedTechnicianId: String(req.authUser._id || "") });
+  }
+  return Task.findOne({ $and: scopes });
 };
 
 const normalizeStatus = (value = "") => {

@@ -3319,6 +3319,12 @@ const verifyPaymongoCheckout = async (req, res) => {
     if (!isOwner && !["admin", "superadmin"].includes(req.authUser.role)) {
       return res.status(403).json({ message: "Forbidden" });
     }
+    if (
+      req.authUser.role === "admin" &&
+      ![order.customerBranch, order.stockSourceBranch].includes(req.activeBranch)
+    ) {
+      return res.status(403).json({ message: "This order belongs to another branch." });
+    }
     if (String(order.paymentProvider || "").toLowerCase() !== "paymongo") {
       return res.status(400).json({ message: "This order does not use PayMongo checkout." });
     }

@@ -12,19 +12,19 @@ const router = express.Router();
 
 router.use(requireAuth);
 
-// Manager creates a change request
-router.post("/", createChangeRequest);
+// Branch admins request inventory changes; Super Admin reviews them.
+router.post("/", allowRoles("admin"), createChangeRequest);
 
 // Manager gets their own requests
-router.get("/my-requests", getMyRequests);
+router.get("/my-requests", allowRoles("admin"), getMyRequests);
 
 // Owner gets all pending requests
-router.get("/pending", getPendingRequests);
+router.get("/pending", allowRoles("superadmin"), getPendingRequests);
 
 // Owner approves a request
-router.patch("/:id/approve", approveRequest);
+router.patch("/:id/approve", allowRoles("superadmin"), approveRequest);
 
 // Owner rejects a request
-router.patch("/:id/reject", rejectRequest);
+router.patch("/:id/reject", allowRoles("superadmin"), rejectRequest);
 
 module.exports = router;

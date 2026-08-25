@@ -27,9 +27,15 @@ const authenticate = async (req, res, next, options = {}) => {
     const isBranchScopedRole = user.role === "admin" || user.role === "manager" || user.role === "technician";
     req.activeBranch = "";
     if (isBranchScopedRole) {
-      const effectiveBranch = BRANCHES.includes(headerBranch)
-        ? headerBranch
-        : (BRANCHES.includes(user.activeBranch) ? user.activeBranch : user.assignedBranch);
+      const storedBranch = BRANCHES.includes(user.activeBranch)
+        ? user.activeBranch
+        : user.assignedBranch;
+      if (headerBranch && headerBranch !== storedBranch) {
+        return res.status(403).json({
+          message: "You cannot access records from another branch.",
+        });
+      }
+      const effectiveBranch = storedBranch;
       if (options.requireBranch === false) {
         req.activeBranch = BRANCHES.includes(effectiveBranch) ? effectiveBranch : "";
         return next();
