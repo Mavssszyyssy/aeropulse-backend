@@ -478,6 +478,18 @@ const syncOrderWorkflowForTask = async (task, status) => {
   }
 };
 
+const withoutEmbeddedProofMedia = (value = {}) => {
+  const sanitized = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value }
+    : {};
+  delete sanitized.proof;
+  delete sanitized.beforePhotos;
+  delete sanitized.afterPhotos;
+  delete sanitized.beforePhotoUri;
+  delete sanitized.afterPhotoUri;
+  return sanitized;
+};
+
 const taskTrackingStages = {
   "on-the-way": { stage: "out_for_delivery", label: "Out for Delivery", detail: "Technician is on the way" },
   arrived: { stage: "arrived", label: "Arrived", detail: "Technician arrived at the address" },
@@ -716,9 +728,12 @@ const canTechnicianAcceptTask = (task, technician) => {
 };
 
 const hydrateTaskResponse = (task) => {
-  const payload = task.payload && Object.keys(task.payload).length ? task.payload : null;
+  const payload = task.payload && Object.keys(task.payload).length
+    ? withoutEmbeddedProofMedia(task.payload)
+    : null;
   const progress = getRegistrationProgress(task);
   const base = task.toJSON();
+  if (base.payload) base.payload = payload || {};
   if (!payload) {
     return {
       ...base,
@@ -752,7 +767,7 @@ const hydrateTaskResponse = (task) => {
     priority: task.priority,
     assignedTechnicianId: task.assignedTechnicianId,
     assignedTechnicianName: task.assignedTechnicianName,
-    proof: payload.proof || task.proof || {},
+    proof: task.proof || {},
     registrationProgress: progress,
     status: task.status,
     createdAt: payload.createdAt || task.createdAt,
@@ -866,9 +881,8 @@ const updateTask = async (req, res) => {
       return res.status(409).json({ message: "Check in at the customer location before starting installation." });
     }
     const updatedPayload = {
-      ...(task.payload || {}),
-      ...payload,
-      proof,
+      ...withoutEmbeddedProofMedia(task.payload),
+      ...withoutEmbeddedProofMedia(payload),
       status: payload.status || task.status,
       updatedAt: new Date().toISOString(),
     };
@@ -1376,9 +1390,8 @@ const updateTaskStatus = async (req, res) => {
     task.completedAt = status === "completed" ? new Date() : null;
     task.proof = proof;
     task.payload = {
-      ...(task.payload || {}),
-      ...payload,
-      proof,
+      ...withoutEmbeddedProofMedia(task.payload),
+      ...withoutEmbeddedProofMedia(payload),
       status,
       updatedAt: new Date().toISOString(),
     };

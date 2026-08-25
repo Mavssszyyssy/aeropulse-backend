@@ -2002,12 +2002,8 @@ const getTaskCompletionBlocker = (order, linkedTask) => {
   const hasInstallationPhoto = (proof?.afterPhotos || []).some((photo) =>
     Boolean(String(photo?.uri || "").trim()),
   );
-  const hasCustomerSignoff = Boolean(String(proof?.customerSignature?.name || "").trim());
-  const hasWorkSummary = Boolean(
-    String(linkedTask.payload?.findings || linkedTask.payload?.resolution || "").trim(),
-  );
-  if (!hasInstallationPhoto || !hasCustomerSignoff || !hasWorkSummary) {
-    return `Order ${order.orderCode} needs a technician work summary, installed-unit photo, and customer or receiver sign-off before it can be closed.`;
+  if (!hasInstallationPhoto) {
+    return `Order ${order.orderCode} needs an installed-unit photo from the technician before it can be closed.`;
   }
 
   return "";
@@ -2591,11 +2587,7 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
     const hasInstallationPhoto = (proof?.afterPhotos || []).some((photo) =>
       Boolean(String(photo?.uri || "").trim()),
     );
-    const hasCustomerSignoff = Boolean(String(proof?.customerSignature?.name || "").trim());
-    const hasWorkSummary = Boolean(
-      String(linkedTask?.payload?.findings || linkedTask?.payload?.resolution || "").trim(),
-    );
-    if (!linkedTask || linkedTask.status !== "completed" || !hasInstallationPhoto || !hasCustomerSignoff || !hasWorkSummary) {
+    if (!linkedTask || linkedTask.status !== "completed" || !hasInstallationPhoto) {
       throw new HttpError(
         409,
         getTaskCompletionBlocker(order, linkedTask) ||
