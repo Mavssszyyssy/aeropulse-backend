@@ -123,9 +123,14 @@ const validateAddress = (address = {}) => {
   }
   return Object.keys(errors).length > 0 ? errors : null;
 };
-const normalizeDefaultAddress = (addresses = []) => {
+const normalizeDefaultAddress = (addresses = [], preferredDefaultIndex = -1) => {
   if (addresses.length === 0) return;
-  const requestedDefaultIndex = addresses.findIndex((item) => item.isDefault);
+  const requestedDefaultIndex =
+    Number.isInteger(preferredDefaultIndex) &&
+    preferredDefaultIndex >= 0 &&
+    preferredDefaultIndex < addresses.length
+      ? preferredDefaultIndex
+      : addresses.findIndex((item) => item.isDefault);
   const defaultIndex = requestedDefaultIndex >= 0 ? requestedDefaultIndex : 0;
   addresses.forEach((item, index) => {
     item.isDefault = index === defaultIndex;
@@ -565,7 +570,10 @@ const addAddress = async (req, res) => {
   const shouldSetDefault =
     normalizedAddress.isDefault || nextAddresses.length === 0;
   nextAddresses.push({ ...normalizedAddress, isDefault: shouldSetDefault });
-  normalizeDefaultAddress(nextAddresses);
+  normalizeDefaultAddress(
+    nextAddresses,
+    shouldSetDefault ? nextAddresses.length - 1 : -1,
+  );
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
   await syncCustomerBranchFromDefault(user, nextAddresses);
@@ -597,7 +605,10 @@ const updateAddress = async (req, res) => {
     ...nextAddresses[index].toObject(),
     ...normalizedAddress,
   };
-  normalizeDefaultAddress(nextAddresses);
+  normalizeDefaultAddress(
+    nextAddresses,
+    normalizedAddress.isDefault ? index : -1,
+  );
   user.addresses = nextAddresses;
   syncPrimaryAddressFromDefault(user, nextAddresses);
   await syncCustomerBranchFromDefault(user, nextAddresses);
