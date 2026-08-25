@@ -27,7 +27,11 @@ const initialize = async () => {
       throw error;
     });
   }
-  return initialization;
+  await initialization;
+  // Do not trust only the cold-start initialization promise. A warm Vercel
+  // function can lose its Atlas socket hours later; connectDb validates and
+  // renews it before every API request.
+  return connectDb();
 };
 
 module.exports = async (req, res) => {

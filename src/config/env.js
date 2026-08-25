@@ -86,6 +86,12 @@ const resolvePaymongoSecretKey = () => {
   );
 };
 
+const boundedTimeout = (value, fallback, minimum, maximum) => {
+  const parsed = Number(value);
+  const resolved = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(Math.max(resolved, minimum), maximum);
+};
+
 const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   host: process.env.HOST || "0.0.0.0",
@@ -102,6 +108,7 @@ const env = {
   paymongoSecretKey: resolvePaymongoSecretKey(),
   paymongoWebhookSecret: process.env.PAYMONGO_WEBHOOK_SECRET || "",
   paymongoApiBaseUrl: process.env.PAYMONGO_API_BASE_URL || "https://api.paymongo.com",
+  paymongoTimeoutMs: boundedTimeout(process.env.PAYMONGO_TIMEOUT_MS, 15000, 3000, 30000),
   openAiApiKey: process.env.OPENAI_API_KEY || "",
   openAiModel: process.env.OPENAI_MODEL || "gpt-4.1-mini",
   openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",

@@ -48,15 +48,34 @@ const requestPaymongo = async (path, { method = "GET", body } = {}) => {
     throw new PaymongoError(configurationIssue, { status: 500 });
   }
 
-  const response = await fetch(`${env.paymongoApiBaseUrl}${path}`, {
-    method,
-    headers: {
-      Accept: "application/json",
-      Authorization: authHeader(),
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, env.paymongoTimeoutMs);
+  let response;
+  try {
+    response = await fetch(`${env.paymongoApiBaseUrl}${path}`, {
+      method,
+      headers: {
+        Accept: "application/json",
+        Authorization: authHeader(),
+        "Content-Type": "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (_error) {
+    throw new PaymongoError(
+      timedOut
+        ? "PayMongo did not respond in time. Please try the payment again."
+        : "Unable to reach PayMongo. Please check the payment configuration and try again.",
+      { status: 503 },
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   let payload = {};
   try {
