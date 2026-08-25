@@ -583,6 +583,9 @@ const register = async (req, res) => {
       addresses: locations.map((loc, idx) => ({
         ...loc.address,
         label: `Facility ${idx + 1}`,
+        type: "home",
+        name: `${name_first} ${name_last}`.trim(),
+        phone: normalizedPhone,
         isDefault: idx === 0,
       })),
       accountStatus: "active",

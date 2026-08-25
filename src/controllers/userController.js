@@ -64,10 +64,14 @@ const sanitizeAddressPayload = (payload = {}) => {
     : "other";
   const name = sanitizeText(payload.name, 120);
   const region = sanitizeText(payload.region, 120);
+  const regionCode = sanitizeText(payload.regionCode, 40);
   const province = sanitizeText(payload.province, 120);
+  const provinceCode = sanitizeText(payload.provinceCode, 40);
   const street = sanitizeText(payload.street, 180);
   const barangay = sanitizeText(payload.barangay, 120);
+  const submunicipalityCode = sanitizeText(payload.submunicipalityCode, 40);
   const city = sanitizeText(payload.city, 120);
+  const municipalityCode = sanitizeText(payload.municipalityCode, 40);
   const postalCode = sanitizeText(payload.postalCode, 20);
   const phone = canonicalizePhMobile(payload.phone || "");
 
@@ -76,10 +80,14 @@ const sanitizeAddressPayload = (payload = {}) => {
     type,
     name,
     region,
+    regionCode,
     province,
+    provinceCode,
     street,
     barangay,
+    submunicipalityCode,
     city,
+    municipalityCode,
     postalCode,
     phone,
     isDefault: Boolean(payload.isDefault),
@@ -151,9 +159,13 @@ const syncPrimaryAddressFromDefault = (user, addresses = []) => {
 
   user.billingAddress = {
     region: sanitizeText(defaultAddress.region, 120),
+    regionCode: sanitizeText(defaultAddress.regionCode, 40),
     province: sanitizeText(defaultAddress.province, 120),
+    provinceCode: sanitizeText(defaultAddress.provinceCode, 40),
     city: sanitizeText(defaultAddress.city, 120),
+    municipalityCode: sanitizeText(defaultAddress.municipalityCode, 40),
     barangay: sanitizeText(defaultAddress.barangay, 120),
+    submunicipalityCode: sanitizeText(defaultAddress.submunicipalityCode, 40),
     street: sanitizeText(defaultAddress.street, 180),
   };
   user.address = formatAddressLine(defaultAddress);
