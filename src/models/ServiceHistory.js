@@ -28,14 +28,15 @@ const serviceHistorySchema = new mongoose.Schema(
       default: "scheduled_service",
     },
 
-    // This is the baseline score AMP starts from after a technician visit.
-    // It is internal-only and should not be shown directly to customers.
-    baselineHealthScore: {
-      type: Number,
-      required: true,
-      min: 0,
-      max: 100,
+    serviceType: {
+      type: String,
+      enum: ["regular_cleaning", "deep_cleaning", "repair", "inspection", "installation"],
+      default: "regular_cleaning",
+      index: true,
     },
+    findings: { type: String, default: "", trim: true },
+    actionTaken: { type: String, default: "", trim: true },
+    partsUsed: [{ type: String, trim: true }],
 
     conditionRating: {
       type: String,
@@ -75,6 +76,9 @@ const serviceHistorySchema = new mongoose.Schema(
     serviceActions: [{ type: String, trim: true }],
 
     ampSnapshot: {
+      bestServicedBy: { type: Date, default: null },
+      recommendedService: { type: String, default: "", trim: true },
+      recommendationBasis: { type: String, default: "", trim: true },
       nextIdealServiceDate: { type: Date, default: null },
       nextIdealServicePeriod: { type: String, default: "", trim: true },
       calculatedAt: { type: Date, default: null },

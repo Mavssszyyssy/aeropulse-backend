@@ -1,11 +1,11 @@
 const express = require("express");
 
 const { requireAuthNoBranch, allowRoles } = require("../middleware/auth");
-const { getUnitHealthInsight, generateAmpReport } = require("../controllers/aiController");
+const { getMaintenanceRecommendation, generateAmpReport } = require("../controllers/aiController");
 
 const router = express.Router();
 
-router.post("/unit-health", requireAuthNoBranch, getUnitHealthInsight);
+router.post("/maintenance-recommendation", requireAuthNoBranch, getMaintenanceRecommendation);
 router.post(
   "/amp-report",
   requireAuthNoBranch,

@@ -24,6 +24,8 @@ const unitSchema = new mongoose.Schema(
     modelName: { type: String, default: "", trim: true },
     brand: { type: String, default: "", trim: true },
     capacityHp: { type: Number, default: 0, min: 0 },
+    category: { type: String, default: "", trim: true, index: true },
+    roomSizeSqm: { type: Number, default: null, min: 1, max: 10000 },
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     customerName: { type: String, default: "", trim: true },
@@ -42,24 +44,33 @@ const unitSchema = new mongoose.Schema(
     },
 
     amp: {
-      // Customers should not see this raw score. It exists for backend prediction only.
-      currentHealthScore: { type: Number, default: 100, min: 0, max: 100 },
-
-      // The score boundary where AMP says the unit should be serviced.
-      serviceThreshold: { type: Number, default: 60, min: 1, max: 100 },
-
-      // Base health points lost per calendar day under normal environmental conditions.
-      dailyBaseDecay: { type: Number, default: 0.22, min: 0 },
-
-      // A multiplier knob for old units, harsh installation sites, or fragile models.
-      historicalCurveFactor: { type: Number, default: 1, min: 0.1 },
-
-      // Last customer-facing recommendation as a period, not a raw score.
+      bestServicedBy: { type: Date, default: null, index: true },
+      recommendedService: {
+        type: String,
+        enum: ["regular_cleaning", "deep_cleaning"],
+        default: "regular_cleaning",
+      },
+      recommendationBasis: { type: String, default: "", trim: true },
+      basisLevel: {
+        type: String,
+        enum: ["same_model", "same_brand_type", "same_brand", "similar_category", "system_default"],
+        default: "system_default",
+      },
+      intervalDays: { type: Number, default: 270, min: 30, max: 730 },
+      comparableSampleSize: { type: Number, default: 0, min: 0 },
+      lastServiceDate: { type: Date, default: null },
+      lastCleaningDate: { type: Date, default: null },
+      capacityAssessment: {
+        status: {
+          type: String,
+          enum: ["suitable", "insufficient", "higher_than_necessary", "room_size_required", "capacity_required"],
+          default: "room_size_required",
+        },
+        summary: { type: String, default: "", trim: true },
+      },
+      // Compatibility fields for older clients. They mirror bestServicedBy.
       nextIdealServicePeriod: { type: String, default: "", trim: true },
-
-      // Exact internal projected crossing date for audit and dispatch planning.
       nextIdealServiceDate: { type: Date, default: null },
-
       lastCalculatedAt: { type: Date, default: null },
     },
 

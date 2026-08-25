@@ -3,8 +3,10 @@ const { requireAuthNoBranch, allowRoles } = require("../middleware/auth");
 const {
   listMyUnits,
   calculateNextServiceDate,
+  updateRoomSize,
   completeService,
   getManagerPipeline,
+  getReportUnits,
   getOwnerForecast,
 } = require("../controllers/ampController");
 
@@ -34,6 +36,18 @@ router.get(
   "/units/:unitId/next-service",
   allowRoles("customer", "technician", "manager", "owner", "admin", "superadmin"),
   calculateNextServiceDate,
+);
+
+router.get(
+  "/report-units",
+  allowRoles("manager", "owner", "admin", "superadmin"),
+  getReportUnits,
+);
+
+router.patch(
+  "/units/:unitId/room-size",
+  allowRoles("customer", "technician", "admin", "superadmin"),
+  updateRoomSize,
 );
 
 router.post(

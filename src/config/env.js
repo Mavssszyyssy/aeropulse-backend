@@ -105,6 +105,8 @@ const env = {
   openAiApiKey: process.env.OPENAI_API_KEY || "",
   openAiModel: process.env.OPENAI_MODEL || "gpt-4.1-mini",
   openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+  openAiTimeoutMs: Number(process.env.OPENAI_TIMEOUT_MS || 20000),
+  openAiMaxRetries: Number(process.env.OPENAI_MAX_RETRIES || 2),
   otpTtlMinutes: Number(process.env.OTP_TTL_MINUTES || 5),
   otpResendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60),
   otpRequestWindowMinutes: Number(process.env.OTP_REQUEST_WINDOW_MINUTES || 15),

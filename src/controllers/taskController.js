@@ -8,7 +8,7 @@ const ServiceRequest = require("../models/ServiceRequest");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const ServiceHistory = require("../models/ServiceHistory");
-const { estimateNextServiceWindow } = require("../domain/ampServiceEstimator");
+const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { BRANCH_PRIORITY, resolvePreferredBranch } = require("../domain/branchRouting");
 const { buildActivatedWarranty, appendWarrantyEvent, effectiveWarrantyStatus } = require("../domain/warrantyService");
 
@@ -292,14 +292,11 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
     : ampParameters.installationDate
       ? new Date(ampParameters.installationDate)
       : new Date();
-  const nextServiceDate = registration.ampServicePlan?.nextServiceDate
-    ? new Date(registration.ampServicePlan.nextServiceDate)
-    : null;
 
   const existingUnit = await Unit.findOne({ serialNumber }).select("warranty");
   const warranty = buildActivatedWarranty(existingUnit?.warranty, installedAt);
 
-  return Unit.findOneAndUpdate(
+  const installedUnit = await Unit.findOneAndUpdate(
     { serialNumber },
     {
       $set: {
@@ -309,7 +306,9 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
         productId: String(product?._id || product?.id || ""),
         modelName: [product?.name, product?.specs].filter(Boolean).join(" ") || product?.sku || "AC Unit",
         brand: String(product?.brand || ""),
+        category: String(product?.category || ""),
         capacityHp: parseCapacityHp(product?.specs),
+        roomSizeSqm: Number(ampParameters.roomSizeSqm || 0) || null,
         customer: customerId,
         customerName: String(task.customer || ""),
         serviceBranch: String(task.branch || serialUnit?.branch || ""),
@@ -325,14 +324,6 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
           coordinates: {},
         },
         amp: {
-          currentHealthScore: 100,
-          serviceThreshold: 60,
-          dailyBaseDecay: 0.22,
-          historicalCurveFactor: 1,
-          nextIdealServicePeriod: String(registration.ampServicePlan?.label || ""),
-          nextIdealServiceDate: nextServiceDate && !Number.isNaN(nextServiceDate.getTime())
-            ? nextServiceDate
-            : null,
           lastCalculatedAt: new Date(),
         },
         warranty,
@@ -341,6 +332,8 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
+  await calculateMaintenanceRecommendation(installedUnit._id);
+  return installedUnit;
 };
 
 const ensureInstalledCustomerUnitsForTask = async (task) => {
@@ -551,6 +544,26 @@ const recordCompletedServiceHistory = async (task, request) => {
         ? "inspection"
         : "scheduled_service";
   const submitted = task.proof?.submittedAt || task.completedAt || new Date();
+  const explicitServiceType = String(
+    task.payload?.serviceType ||
+    task.payload?.service_type ||
+    task.payload?.cleaningType ||
+    request.payload?.serviceType ||
+    request.payload?.service_type ||
+    "",
+  ).trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const historyRecommendation = ["regular_cleaning", "deep_cleaning"].includes(explicitServiceType)
+    ? null
+    : await calculateMaintenanceRecommendation(unit._id, { asOfDate: submitted, persist: false });
+  const recordedServiceType = visitType === "repair"
+    ? "repair"
+    : visitType === "installation"
+      ? "installation"
+      : visitType === "inspection"
+        ? "inspection"
+        : ["regular_cleaning", "deep_cleaning"].includes(explicitServiceType)
+          ? explicitServiceType
+          : historyRecommendation?.recommendedService || "regular_cleaning";
   const validConditionRating = ["excellent", "good", "fair", "poor"].includes(String(task.payload?.conditionRating || "").toLowerCase())
     ? String(task.payload.conditionRating).toLowerCase()
     : "good";
@@ -559,13 +572,12 @@ const recordCompletedServiceHistory = async (task, request) => {
     task.payload?.resolution || task.resolution || "",
     task.payload?.partsUsed || task.partsUsed ? `Parts used: ${task.payload?.partsUsed || task.partsUsed}` : "",
   ].map((value) => String(value || "").trim()).filter(Boolean);
-  const score = Number(unit.amp?.currentHealthScore ?? 100);
   const history = await ServiceHistory.create({
     unit: unit._id,
     technician: technicianId,
     serviceDate: submitted,
     visitType,
-    baselineHealthScore: Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 100,
+    serviceType: recordedServiceType,
     conditionRating: validConditionRating,
     technicianInputs: {
       usageHoursPerDay: Number(task.payload?.usageHoursPerDay || 8),
@@ -577,12 +589,22 @@ const recordCompletedServiceHistory = async (task, request) => {
       notes: String(task.payload?.findings || task.findings || task.proof?.notes || task.description || "Service completed"),
     },
     serviceActions: actions.length ? actions : ["Service completed"],
-    ampSnapshot: {
-      nextIdealServiceDate: unit.amp?.nextIdealServiceDate || null,
-      nextIdealServicePeriod: unit.amp?.nextIdealServicePeriod || "",
-      calculatedAt: new Date(),
-    },
+    findings: String(task.payload?.findings || task.findings || task.proof?.notes || task.description || "Service completed"),
+    actionTaken: actions.join(", ") || "Service completed",
+    partsUsed: Array.isArray(task.payload?.partsUsed)
+      ? task.payload.partsUsed
+      : String(task.payload?.partsUsed || task.partsUsed || "").split(",").map((item) => item.trim()).filter(Boolean),
   });
+  const recommendation = await calculateMaintenanceRecommendation(unit._id, { asOfDate: submitted });
+  history.ampSnapshot = {
+    bestServicedBy: recommendation.bestServicedBy,
+    recommendedService: recommendation.recommendedService,
+    recommendationBasis: recommendation.recommendationBasis,
+    nextIdealServiceDate: recommendation.bestServicedBy,
+    nextIdealServicePeriod: `Best serviced by ${new Date(recommendation.bestServicedBy).toLocaleDateString("en-US")}`,
+    calculatedAt: new Date(),
+  };
+  await history.save();
   task.payload = { ...(task.payload || {}), serviceHistoryId: String(history._id), updatedAt: new Date().toISOString() };
   await task.save();
 };
@@ -660,7 +682,7 @@ const syncServiceRequestForTask = async (task, status) => {
   }
 };
 
-const buildRegistrationRecord = ({ req, task, serialNumber, payload, status, previousPlan = null }) => {
+const buildRegistrationRecord = ({ req, task, serialNumber, payload, status }) => {
   const installationDate = String(payload.installationDate || new Date().toISOString().split("T")[0]);
   const installationTime = String(payload.installationTime || new Date().toTimeString().slice(0, 5));
   const ampParameters = {
@@ -669,9 +691,8 @@ const buildRegistrationRecord = ({ req, task, serialNumber, payload, status, pre
     installationTimestamp: `${installationDate}T${installationTime}:00`,
     lastServiceDate: String(payload.lastServiceDate || payload.installationDate || new Date().toISOString()),
     placementArea: String(payload.placementArea || ""),
+    roomSizeSqm: Number(payload.roomSizeSqm || 0) || null,
     usageHoursPerDay: Number(payload.usageHoursPerDay || 8),
-    environmentDustLevel: String(payload.environmentDustLevel || "moderate"),
-    occupancyLoad: String(payload.occupancyLoad || "normal"),
     filterCondition: String(payload.filterCondition || "normal"),
     coilCondition: String(payload.coilCondition || "normal"),
     drainageCondition: String(payload.drainageCondition || "clear"),
@@ -699,9 +720,7 @@ const buildRegistrationRecord = ({ req, task, serialNumber, payload, status, pre
       recordedAt: new Date().toISOString(),
     },
     defectReason: String(payload.defectReason || ""),
-    ampServicePlan: status === "registered"
-      ? estimateNextServiceWindow(ampParameters, previousPlan)
-      : null,
+    ampServicePlan: null,
   };
 };
 
@@ -1172,38 +1191,22 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
     ];
     const warranty = unit.warranty?.toObject?.() || unit.warranty || {};
     const warrantyStatus = effectiveWarrantyStatus(warranty);
-    const healthScore = Number(unit.amp?.currentHealthScore ?? 100);
-    const riskLevel = healthScore <= 45 ? "High" : healthScore <= 70 ? "Moderate" : "Low";
-    const latestInputs = serviceHistory[0]?.technicianInputs || {};
-
+    const recommendation = await calculateMaintenanceRecommendation(unit._id);
     const ampHistory = serviceHistory
-      .filter((service) => service.ampSnapshot?.calculatedAt || service.ampSnapshot?.nextIdealServiceDate || service.baselineHealthScore !== undefined)
-      .map((service) => {
-        const score = Number(service.baselineHealthScore ?? healthScore);
-        return {
-          id: String(service._id),
-          date: service.ampSnapshot?.calculatedAt || service.serviceDate,
-          period: service.ampSnapshot?.nextIdealServicePeriod || "Service assessment",
-          usageData: service.technicianInputs?.usageHoursPerDay ? `${service.technicianInputs.usageHoursPerDay} hrs/day` : "Not recorded",
-          healthScore: score,
-          riskLevel: score <= 45 ? "High" : score <= 70 ? "Moderate" : "Low",
-          recommendation: service.ampSnapshot?.nextIdealServiceDate
-            ? `Inspect by ${new Date(service.ampSnapshot.nextIdealServiceDate).toLocaleDateString("en-US")}.`
-            : "Follow the recorded preventive-maintenance actions.",
-        };
-      });
-    if (ampHistory.length === 0) {
-      ampHistory.push({
-        date: unit.amp?.lastCalculatedAt || unit.updatedAt,
-        period: unit.amp?.nextIdealServicePeriod || "Current assessment",
-        usageData: latestInputs.usageHoursPerDay ? `${latestInputs.usageHoursPerDay} hrs/day` : "Not recorded",
-        healthScore,
-        riskLevel,
-        recommendation: unit.amp?.nextIdealServiceDate
-          ? `Inspect by ${new Date(unit.amp.nextIdealServiceDate).toLocaleDateString("en-US")}.`
-          : "Continue preventive maintenance and record technician findings.",
-      });
-    }
+      .filter((service) => service.ampSnapshot?.calculatedAt || service.ampSnapshot?.bestServicedBy || service.ampSnapshot?.nextIdealServiceDate)
+      .map((service) => ({
+        id: String(service._id),
+        date: service.ampSnapshot?.calculatedAt || service.serviceDate,
+        bestServicedBy: service.ampSnapshot?.bestServicedBy || service.ampSnapshot?.nextIdealServiceDate || "",
+        recommendedService: service.ampSnapshot?.recommendedService || service.serviceType || "regular_cleaning",
+        recommendationBasis: service.ampSnapshot?.recommendationBasis || "Based on recorded service history.",
+      }));
+    if (ampHistory.length === 0) ampHistory.push({
+      date: recommendation.generatedAt,
+      bestServicedBy: recommendation.bestServicedBy,
+      recommendedService: recommendation.recommendedService,
+      recommendationBasis: recommendation.recommendationBasis,
+    });
 
     return res.json({
       unit: {
@@ -1225,6 +1228,7 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
       maintenanceHistory,
       repairHistory: repairRows,
       ampHistory,
+      recommendation,
     });
   } catch (error) {
     console.error("Failed to load technician unit history:", error);

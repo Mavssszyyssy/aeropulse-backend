@@ -9,6 +9,7 @@ const AuditLog = require("../models/AuditLog");
 const Unit = require("../models/Unit");
 const mongoose = require("mongoose");
 const env = require("../config/env");
+const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const {
@@ -2022,9 +2023,6 @@ const syncInstalledUnitsFromTask = async (task) => {
     const registration = registrations[serialNumber] || {};
     const address = task.payload?.customerAddress || {};
     const ampParameters = registration.ampParameters || {};
-    const nextServiceDate = registration.ampServicePlan?.nextServiceDate
-      ? new Date(registration.ampServicePlan.nextServiceDate)
-      : null;
     const customerId = String(task.customerId || task.payload?.customerId || "").trim();
     if (!customerId) continue;
 
@@ -2038,7 +2036,9 @@ const syncInstalledUnitsFromTask = async (task) => {
           productId: String(product._id || product.id || ""),
           modelName: [product.name, product.specs].filter(Boolean).join(" ") || product.sku || "AC Unit",
           brand: String(product.brand || ""),
+          category: String(product.category || ""),
           capacityHp: parseCapacityHp(product.specs),
+          roomSizeSqm: Number(ampParameters.roomSizeSqm || 0) || null,
           customer: customerId,
           customerName: String(task.customer || task.payload?.customerName || ""),
           serviceBranch: String(task.branch || serialUnit.branch || ""),
@@ -2054,15 +2054,6 @@ const syncInstalledUnitsFromTask = async (task) => {
             coordinates: {},
           },
           amp: {
-            currentHealthScore: 100,
-            serviceThreshold: 60,
-            dailyBaseDecay: 0.22,
-            historicalCurveFactor: 1,
-            nextIdealServicePeriod: String(registration.ampServicePlan?.label || ""),
-            nextIdealServiceDate:
-              nextServiceDate && !Number.isNaN(nextServiceDate.getTime())
-                ? nextServiceDate
-                : null,
             lastCalculatedAt: new Date(),
           },
           status: "active",
@@ -2070,7 +2061,10 @@ const syncInstalledUnitsFromTask = async (task) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
-    if (installed) installedUnits.push(installed);
+    if (installed) {
+      await calculateMaintenanceRecommendation(installed._id);
+      installedUnits.push(installed);
+    }
   }
 
   return installedUnits;
