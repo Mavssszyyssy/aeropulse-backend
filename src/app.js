@@ -45,31 +45,34 @@ app.use(
 );
 app.use(morgan("dev"));
 
-// Switch to express-session for server-side persistence
-// This ensures server restarts wipe all sessions (default in-memory store)
-app.use(
-  session({
-    name: "aeropulse.sid",
-    secret: env.jwtSecret,
-    resave: false,
-    saveUninitialized: false,
-    // Serverless instances do not share express-session's memory store.
-    store: env.mongoUri
-      ? MongoStore.create({
-          mongoUrl: env.mongoUri,
-          collectionName: "sessions",
-          ttl: 24 * 60 * 60,
-          autoRemove: "native",
-        })
-      : undefined,
-    cookie: {
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
-    },
-  }),
-);
+// Only registration and recovery endpoints use server-side session data.
+// Keeping this store off ordinary token-authenticated API requests prevents a
+// stale session-store socket from delaying Admin, order, and catalog screens.
+const authSession = session({
+  name: "aeropulse.sid",
+  secret: env.jwtSecret,
+  resave: false,
+  saveUninitialized: false,
+  store: env.mongoUri
+    ? MongoStore.create({
+        mongoUrl: env.mongoUri,
+        collectionName: "sessions",
+        ttl: 24 * 60 * 60,
+        autoRemove: "native",
+        mongoOptions: {
+          serverSelectionTimeoutMS: 10000,
+          connectTimeoutMS: 10000,
+          socketTimeoutMS: 45000,
+        },
+      })
+    : undefined,
+  cookie: {
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+  },
+});
 
 app.use(cookieParser(env.jwtSecret));
 // Preserve the exact request bytes for PayMongo webhook signature
@@ -99,7 +102,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.use("/api/auth", authRoutes);
+app.use("/api/auth", authSession, authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/products", productRoutes);

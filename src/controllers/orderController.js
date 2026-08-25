@@ -2833,6 +2833,25 @@ const listOrdersForAdmin = async (req, res) => {
     ];
   }
 
+  // The notification bell only needs a count. Do not repeatedly hydrate every
+  // invoice, task, inventory serial, and customer record just to show it.
+  if (String(req.query?.summary || "").toLowerCase() === "alerts") {
+    const overdueBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [summary] = await Order.aggregate([
+      {
+        $match: {
+          ...query,
+          createdAt: { $lt: overdueBefore },
+          workflowStatus: { $nin: ["complete", "cancelled"] },
+        },
+      },
+      { $count: "pendingOrders" },
+    ]);
+    return res.json({
+      summary: { pendingOrders: Number(summary?.pendingOrders || 0) },
+    });
+  }
+
   const orders = await Order.find(query).sort({ createdAt: -1 });
   const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders);
   return res.json({
