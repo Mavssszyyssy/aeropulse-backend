@@ -820,7 +820,11 @@ const listTasks = async (req, res) => {
       query.assignedTechnicianId = technicianId;
     }
 
-    const tasks = await Task.find(query).sort({ updatedAt: -1 }).limit(200);
+    const requestedLimit = Number(req.query?.limit);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
+      : 200;
+    const tasks = await Task.find(query).sort({ updatedAt: -1 }).limit(limit);
     return res.json({ tasks: tasks.map(hydrateTaskResponse) });
   } catch (error) {
     console.error("Failed to list tasks:", error);

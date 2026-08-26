@@ -3,6 +3,28 @@ const env = require("../config/env");
 const User = require("../models/User");
 const { BRANCHES } = require("../domain/branchRouting");
 
+const READ_AUTH_CACHE_TTL_MS = 5000;
+const readAuthCache = new Map();
+
+const readCachedUser = async (userId, requestMethod) => {
+  const canUseCache = ["GET", "HEAD"].includes(String(requestMethod || "").toUpperCase());
+  const cacheKey = String(userId || "");
+  const cached = canUseCache ? readAuthCache.get(cacheKey) : null;
+  if (cached && cached.expiresAt > Date.now()) return User.hydrate(cached.user);
+
+  const user = await User.findById(userId);
+  if (canUseCache && user) {
+    readAuthCache.set(cacheKey, { expiresAt: Date.now() + READ_AUTH_CACHE_TTL_MS, user: user.toObject() });
+    if (readAuthCache.size > 500) {
+      const now = Date.now();
+      for (const [key, value] of readAuthCache.entries()) {
+        if (value.expiresAt <= now) readAuthCache.delete(key);
+      }
+    }
+  }
+  return user;
+};
+
 const authenticate = async (req, res, next, options = {}) => {
   try {
     const authHeader = req.headers.authorization || "";
@@ -13,7 +35,7 @@ const authenticate = async (req, res, next, options = {}) => {
     }
 
     const payload = jwt.verify(token, env.jwtSecret);
-    const user = await User.findById(payload.sub);
+    const user = await readCachedUser(payload.sub, req.method);
     if (!user) {
       return res.status(401).json({ message: "Invalid token user" });
     }

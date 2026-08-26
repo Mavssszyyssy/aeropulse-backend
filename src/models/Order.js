@@ -175,5 +175,7 @@ orderSchema.index(
   { customer: 1, idempotencyKey: 1 },
   { unique: true, sparse: true, name: "idx_customer_order_idempotency" },
 );
+orderSchema.index({ customerBranch: 1, createdAt: -1 });
+orderSchema.index({ stockSourceBranch: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", orderSchema);

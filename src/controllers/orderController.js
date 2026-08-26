@@ -779,10 +779,18 @@ const collectItemSerialNumbers = (item = {}) => {
   );
 };
 
-const orderToResponse = (order) => ({
-  ...order.toJSON(),
-  workflowLabel: workflowLabel(order.workflowStatus),
-});
+const orderToResponse = (order) => {
+  const response = typeof order?.toJSON === "function"
+    ? order.toJSON()
+    : { ...(order || {}) };
+  if (!response.id && response._id) response.id = String(response._id);
+  delete response._id;
+  delete response.__v;
+  return {
+    ...response,
+    workflowLabel: workflowLabel(response.workflowStatus),
+  };
+};
 
 const isOnlinePaymentMethod = (paymentMethod = "") =>
   ["gcash", "credit", "card", "maya", "paymaya", "online"].includes(
@@ -1300,7 +1308,8 @@ const buildEventFromCheckoutSession = (session = {}) => {
   };
 };
 
-const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
+const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
+  const includeTaskDetails = options.includeTaskDetails !== false;
   const orderList = Array.isArray(orders) ? orders : [orders];
   const responses = orderList.map(orderToResponse);
   const serialNumbers = Array.from(
@@ -1343,8 +1352,17 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
     });
   }
 
+  // Product serial arrays can grow large. Return only units that belong to
+  // these orders instead of loading every unit stored on a product.
+  const serialUnitMatches = [];
+  if (serialNumbers.length > 0) serialUnitMatches.push({ $in: ["$$unit.serialNumber", serialNumbers] });
+  if (orderCodes.length > 0) serialUnitMatches.push({ $in: ["$$unit.assignedOrderCode", orderCodes] });
+  if (orderIds.length > 0) serialUnitMatches.push({ $in: ["$$unit.assignedOrderId", orderIds] });
   const products = inventoryQueries.length
-    ? await Product.find({ $or: inventoryQueries }).select("name sku serialUnits")
+    ? await Product.aggregate([
+      { $match: { $or: inventoryQueries } },
+      { $project: { name: 1, sku: 1, serialUnits: { $filter: { input: "$serialUnits", as: "unit", cond: { $or: serialUnitMatches } } } } },
+    ])
     : [];
 
   const inventoryUnitBySerial = new Map();
@@ -1477,10 +1495,11 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
     });
   });
 
-  const tasks = orderCodes.length
+  const tasks = includeTaskDetails && orderCodes.length
     ? await Task.find({ "payload.orderCode": { $in: orderCodes } })
       .select("taskCode status assignedTechnicianName completedAt updatedAt proof payload")
       .sort({ updatedAt: -1 })
+      .lean()
     : [];
   const taskByOrderCode = new Map();
   tasks.forEach((task) => {
@@ -1492,7 +1511,7 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = []) => {
     .map((order) => String(order.customer || "").trim())
     .filter((id) => mongoose.Types.ObjectId.isValid(id));
   const customers = customerIds.length
-    ? await User.find({ _id: { $in: customerIds } }).select("name email phone mobileNumber billingAddress")
+    ? await User.find({ _id: { $in: customerIds } }).select("name email phone mobileNumber billingAddress").lean()
     : [];
   const customerById = new Map(customers.map((customer) => [String(customer._id), customer]));
 
@@ -2852,8 +2871,10 @@ const listOrdersForAdmin = async (req, res) => {
     });
   }
 
-  const orders = await Order.find(query).sort({ createdAt: -1 });
-  const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders);
+  const orders = await Order.find(query).sort({ createdAt: -1 }).lean();
+  const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
+    includeTaskDetails: false,
+  });
   return res.json({
     orders: hydratedOrders,
     paymentGateway: getPaymongoRuntimeStatus(),
