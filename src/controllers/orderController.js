@@ -2871,7 +2871,13 @@ const listOrdersForAdmin = async (req, res) => {
     });
   }
 
-  const orders = await Order.find(query).sort({ createdAt: -1 }).lean();
+  // The provider's raw checkout payload is only needed on an order detail or
+  // payment verification call. Excluding it from the list keeps a single
+  // PayMongo test checkout from inflating every Admin synchronization read.
+  const orders = await Order.find(query)
+    .select("-paymongo.raw")
+    .sort({ createdAt: -1 })
+    .lean();
   const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
     includeTaskDetails: false,
   });

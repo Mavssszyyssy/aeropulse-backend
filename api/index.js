@@ -7,6 +7,13 @@ const { restoreDemoStaff } = require("../src/seed/restoreDemoStaff");
 
 let initialization;
 
+const healthResponse = (res) => res.json({
+  status: "ok",
+  service: "aeropulse-api",
+  environment: env.nodeEnv,
+  release: String(process.env.VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7),
+});
+
 const initialize = async () => {
   if (!initialization) {
     initialization = (async () => {
@@ -46,8 +53,13 @@ module.exports = async (req, res) => {
       req.url = `/api/${normalizedRoute}${incomingUrl.search}`;
     }
 
-    await initialize();
+    // Health must remain useful while Atlas is reconnecting. It is used by
+    // the web app as a connectivity probe and should not wait behind a stale
+    // database socket or a payment-provider request.
     const path = new URL(req.url || "/", "http://localhost").pathname;
+    if (path === "/api/health") return healthResponse(res);
+
+    await initialize();
     if (["/", "/api", "/api/index"].includes(path)) {
       return res.json({
         service: "aeropulse-api",

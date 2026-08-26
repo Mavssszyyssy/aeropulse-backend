@@ -31,15 +31,61 @@ const connectionOptions = {
   // Fail an affected request promptly rather than buffering it indefinitely
   // after Atlas closes an idle serverless connection.
   bufferCommands: false,
-  serverSelectionTimeoutMS: 10000,
-  connectTimeoutMS: 10000,
-  socketTimeoutMS: 45000,
+  serverSelectionTimeoutMS: 7000,
+  connectTimeoutMS: 7000,
+  socketTimeoutMS: 15000,
   maxPoolSize: 10,
   minPoolSize: 0,
 };
 
+const PING_INTERVAL_MS = 15000;
+const PING_TIMEOUT_MS = 2500;
+
+const pingConnection = async () => {
+  const connection = mongoose.connection;
+  if (connection.readyState !== 1 || !connection.db) return false;
+  const ping = connection.db.admin().ping();
+  await Promise.race([
+    ping,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("MongoDB heartbeat timed out.")), PING_TIMEOUT_MS),
+    ),
+  ]);
+  return true;
+};
+
 const connectDb = async () => {
-  if (mongoose.connection.readyState === 1) return mongoose.connection;
+  if (mongoose.connection.readyState === 1) {
+    const now = Date.now();
+    const lastPing = Number(global.__aeropulseMongoLastPingAt || 0);
+    if (now - lastPing < PING_INTERVAL_MS) return mongoose.connection;
+    if (global.__aeropulseMongoPing) {
+      try {
+        await global.__aeropulseMongoPing;
+        return mongoose.connection;
+      } catch (_error) {
+        // The heartbeat failed; close the stale socket and reconnect below.
+      }
+    }
+    global.__aeropulseMongoPing = pingConnection()
+      .then(() => {
+        global.__aeropulseMongoLastPingAt = Date.now();
+      })
+      .finally(() => {
+        global.__aeropulseMongoPing = null;
+      });
+    try {
+      await global.__aeropulseMongoPing;
+      return mongoose.connection;
+    } catch (_error) {
+      global.__aeropulseMongoLastPingAt = 0;
+      try {
+        await mongoose.disconnect();
+      } catch (_disconnectError) {
+        // Reconnection below will surface the actionable error if needed.
+      }
+    }
+  }
   const mongoUri = buildMongoUri();
 
   try {
