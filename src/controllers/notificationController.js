@@ -146,7 +146,10 @@ const markNotificationRead = async (req, res) => {
 const markAllNotificationsRead = async (req, res) => {
   const userId = req.authUser._id;
   const result = await Notification.updateMany(
-    { user: userId, unread: true },
+    {
+      user: userId,
+      $or: [{ unread: true }, { status: "unread" }],
+    },
     { $set: { unread: false, status: "read" } }
   );
 
