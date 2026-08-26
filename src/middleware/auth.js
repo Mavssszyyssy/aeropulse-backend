@@ -9,6 +9,7 @@ const readAuthCache = new Map();
 const readCachedUser = async (userId, requestMethod) => {
   const canUseCache = ["GET", "HEAD"].includes(String(requestMethod || "").toUpperCase());
   const cacheKey = String(userId || "");
+  if (!canUseCache) readAuthCache.delete(cacheKey);
   const cached = canUseCache ? readAuthCache.get(cacheKey) : null;
   if (cached && cached.expiresAt > Date.now()) return User.hydrate(cached.user);
 
