@@ -40,3 +40,8 @@ test("an accepted AI date is distinguished from an AI explanation and system fal
   expect(screen.queryByText("AI-assisted explanation")).toBeNull();
   expect(screen.getByText("AI-estimated servicing interval: 150 days.")).toBeTruthy();
 });
+test("visit analysis can recommend an inspection instead of labeling it cleaning", async () => {
+  await render(<CustomerAmpReport report={{ ...report, maintenance: { ...report.maintenance, recommendedService: "inspection" } }} provider="openai" />);
+  expect(screen.getByText("Recommended service")).toBeTruthy();
+  expect(screen.getByText("AC inspection")).toBeTruthy();
+});

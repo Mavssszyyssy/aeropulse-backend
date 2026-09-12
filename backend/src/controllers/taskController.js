@@ -662,7 +662,7 @@ const completeWarrantyClaimForServiceTask = async (task, request) => {
 
 const recordCompletedServiceHistory = async (task, request) => {
   const existingHistoryId = String(task.payload?.serviceHistoryId || "").trim();
-  if (existingHistoryId && await ServiceHistory.exists({ _id: existingHistoryId })) return;
+  if (existingHistoryId && await ServiceHistory.exists({ _id: existingHistoryId })) return ServiceHistory.findById(existingHistoryId);
   if (getTaskSerialNumbers(task).length) return;
   const unitId = String(task.unitId || request.unitId || "").trim();
   const technicianId = String(task.assignedTechnicianId || "").trim();
@@ -674,6 +674,38 @@ const recordCompletedServiceHistory = async (task, request) => {
   });
   task.payload = { ...(task.payload || {}), serviceHistoryId: String(history._id), updatedAt: new Date().toISOString() };
   await task.save();
+  return history;
+};
+
+const notifyCustomerOfCompletedService = async (task, request = {}, completedHistory = null) => {
+  if (task.payload?.orderId || task.orderId) return;
+  const customerId = String(request.customerId || task.customerId || "").trim();
+  if (!customerId || !mongoose.Types.ObjectId.isValid(customerId)) return;
+  const historyId = String(completedHistory?._id || task.payload?.serviceHistoryId || "").trim();
+  const history = completedHistory || (mongoose.Types.ObjectId.isValid(historyId)
+    ? await ServiceHistory.findById(historyId).select("aiInterpretation").lean()
+    : null);
+  const interpretation = history?.aiInterpretation;
+  const requestId = String(request._id || "").trim();
+  const targetId = requestId || String(task._id || task.id || "");
+  const alreadyNotified = await Notification.exists({ user: customerId, targetId, title: "Service completed" });
+  if (alreadyNotified) return;
+  const message = String(interpretation?.customerSummary || "").trim()
+    || `Your technician service for ${request.issue || task.issueType || "your AC unit"} has been completed.`;
+  const severity = interpretation?.severity === "urgent" ? "critical"
+    : ["soon", "monitor"].includes(interpretation?.severity) ? "warning" : "info";
+  await Notification.create({
+    user: customerId,
+    type: "service",
+    category: "service",
+    severity,
+    targetType: requestId ? "service_request" : "task",
+    title: "Service completed",
+    message,
+    route: requestId ? "/customer/service-requests" : "/customer/units",
+    targetId,
+    dedupeKey: `service-completed-summary:${targetId}:${historyId || task._id}`,
+  });
 };
 
 const syncServiceRequestForTask = async (task, status) => {
@@ -692,7 +724,7 @@ const syncServiceRequestForTask = async (task, status) => {
   const request = await ServiceRequest.findById(requestId);
   if (!request) return;
   // A completed request must have its service evidence persisted first.
-  if (nextStatus === "Completed") await recordCompletedServiceHistory(task, request);
+  const completedHistory = nextStatus === "Completed" ? await recordCompletedServiceHistory(task, request) : null;
 
   const previousStatus = String(request.status || "").trim().toLowerCase();
   const statusChanged = previousStatus !== nextStatus.toLowerCase();
@@ -760,32 +792,18 @@ const syncServiceRequestForTask = async (task, status) => {
     });
   }
   if (nextStatus === "Completed") {
-    await recordCompletedServiceHistory(task, request);
     await completeWarrantyClaimForServiceTask(task, request);
-  }
-  const customerId = String(request.customerId || task.customerId || "").trim();
-  if (nextStatus === "Completed" && !task.payload?.orderId && !task.orderId && customerId && mongoose.Types.ObjectId.isValid(customerId)) {
-    const targetId = String(request._id);
-    const alreadyNotified = await Notification.exists({ user: customerId, targetId, title: "Service completed" });
-    if (!alreadyNotified) {
-      await Notification.create({
-        user: customerId,
-        type: "service",
-        category: "service",
-        targetType: "service_request",
-        title: "Service completed",
-        message: `Your technician service request for ${request.issue || "your AC unit"} has been completed.`,
-        route: "/customer/service-requests",
-        targetId: String(request._id),
-      });
-    }
+    await notifyCustomerOfCompletedService(task, request, completedHistory);
   }
 };
 
 const reconcileCompletedTask = async (task) => {
   await syncOrderWorkflowForTask(task, "completed");
   await syncServiceRequestForTask(task, "completed");
-  if (!String(task.payload?.requestId || task.requestId || "").trim()) await recordCompletedServiceHistory(task, {});
+  if (!String(task.payload?.requestId || task.requestId || "").trim()) {
+    const completedHistory = await recordCompletedServiceHistory(task, {});
+    await notifyCustomerOfCompletedService(task, {}, completedHistory);
+  }
 };
 
 const buildRegistrationRecord = ({ req, task, serialNumber, payload, status }) => {
@@ -1159,7 +1177,10 @@ const updateTask = async (req, res) => {
     if (reassigned) await notifyTaskAssignment(task);
     await syncOrderWorkflowForTask(task, nextStatus);
     await syncServiceRequestForTask(task, nextStatus);
-    if (nextStatus === "completed" && !String(task.payload?.requestId || task.requestId || "").trim()) await recordCompletedServiceHistory(task, {});
+    if (nextStatus === "completed" && !String(task.payload?.requestId || task.requestId || "").trim()) {
+      const completedHistory = await recordCompletedServiceHistory(task, {});
+      await notifyCustomerOfCompletedService(task, {}, completedHistory);
+    }
     return res.json({ task: hydrateTaskResponse(task) });
   } catch (error) {
     console.error("Failed to update task:", error);
@@ -1462,6 +1483,7 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
       findings: service.findings || service.technicianInputs?.notes || "No findings recorded",
       actionTaken: service.actionTaken || (service.serviceActions || []).join(", ") || "Actions not recorded",
       evidence: assessServiceEvidence(service),
+      aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
       status: "Completed",
       }));
     const repairRows = [
@@ -1475,6 +1497,7 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
           actionTaken: service.actionTaken || (service.serviceActions || []).join(", ") || "Actions not recorded",
           partsUsed: (service.partsUsed || []).join(", ") || "None recorded",
           evidence: assessServiceEvidence(service),
+          aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
           technician: technicianName(service.technician),
           status: "Completed",
         })),
@@ -1759,7 +1782,8 @@ const updateTaskStatus = async (req, res) => {
     // Installation work orders are not linked to a service-request record,
     // but they still form the first entry in the AC unit's history.
     if (status === "completed" && !String(task.payload?.requestId || "").trim()) {
-      await recordCompletedServiceHistory(task, {});
+      const completedHistory = await recordCompletedServiceHistory(task, {});
+      await notifyCustomerOfCompletedService(task, {}, completedHistory);
     }
 
     return res.json({ task: hydrateTaskResponse(task) });

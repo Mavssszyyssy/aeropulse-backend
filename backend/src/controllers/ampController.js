@@ -56,6 +56,7 @@ const serviceHistoryItem = (service) => ({
     ? service.technician.name || [service.technician.name_first, service.technician.name_last].filter(Boolean).join(" ") || service.technician.email || ""
     : "",
   evidence: assessServiceEvidence(service),
+  aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
 });
 
 const completeUnitHistory = (json, history = []) => {

@@ -23,7 +23,12 @@ export function buildMaintenanceRecommendation({ unit } = {}) {
 export function buildNextRecommendedMaintenance(recommendation) {
   const due = parseDate(recommendation?.bestServicedBy);
   const daysUntil = due ? businessDayNumber(due) - businessDayNumber(new Date()) : null;
-  const serviceLabel = recommendation?.recommendedService === "deep_cleaning" ? "Deep cleaning" : recommendation?.recommendedService === "regular_cleaning" ? "Regular cleaning" : "Service details needed";
+  const serviceLabel = ({
+    deep_cleaning: "Deep cleaning",
+    regular_cleaning: "Regular cleaning",
+    inspection: "AC inspection",
+    repair: "Repair assessment",
+  })[recommendation?.recommendedService] || "Service details needed";
   return {
     date: due ? due.toISOString().slice(0, 10) : "",
     label: due ? (daysUntil < 0 ? `${Math.abs(daysUntil)} day(s) overdue` : daysUntil === 0 ? "Suggested for today" : `Suggested in ${daysUntil} day(s)`) : "Installation or cleaning date needed",

@@ -140,7 +140,9 @@ export default function CustomerServicesScreen() {
       return;
     }
     if (!serviceOfferings.length) return;
-    const preferredId = requestedType === "deep_cleaning" ? "cleaning" : requestedType === "regular_cleaning" ? "maintenance" : requestedType;
+    const preferredId = requestedType === "deep_cleaning" ? "cleaning"
+      : requestedType === "regular_cleaning" ? "maintenance"
+        : requestedType === "inspection" ? "consultation" : requestedType;
     const match = serviceOfferings.find((item) => {
       const values = [item.id, item.title, item.defaultIssueType].map((value) => String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_"));
       return values.includes(requestedType) || values.includes(preferredId);

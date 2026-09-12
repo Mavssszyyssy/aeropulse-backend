@@ -162,6 +162,29 @@ test("a repair does not move the cleaning anchor and an incomplete record stays 
   assert.equal(fixture.status, "on_hold");
   assert.match(result.recommendationBasis, /6 months \(180 days\)/);
 });
+test("the latest validated AI visit follow-up overrides the routine plan without changing the cleaning anchor", async (t) => {
+  const summary = "The technician recorded an unusual fan noise. An inspection is recommended by 2026-10-01.";
+  const fixture = {
+    _id: "fixture", brand: "LG", modelName: "Test", category: "split", status: "active",
+    installation: { installedAt: "2025-01-01" },
+    amp: { visitFollowUp: { sourceServiceHistoryId: "visit-1", provider: "openai", severity: "soon", recommendedService: "inspection", recommendedDate: "2026-10-01", customerSummary: summary } },
+    save: async () => {},
+  };
+  const rows = [
+    { _id: "visit-1", ...finding, serviceType: "repair", serviceDate: "2026-09-01", findings: "The fan made an unusual noise.", actionTaken: "Tested cooling and recorded the noise." },
+    { _id: "clean-1", ...finding, serviceDate: "2026-01-01" },
+  ];
+  const chain = (items) => ({ select() { return this; }, sort() { return this; }, lean: async () => items });
+  t.mock.method(Unit, "findById", async () => fixture);
+  t.mock.method(Unit, "find", () => chain([]));
+  t.mock.method(History, "find", () => chain(rows));
+  const result = await calculateMaintenanceRecommendation("fixture", { asOfDate: "2026-09-05", serviceRequests: [], persist: false });
+  assert.equal(result.recommendedService, "inspection");
+  assert.equal(result.bestServicedBy, "2026-10-01T00:00:00.000Z");
+  assert.equal(result.recommendationBasis, summary);
+  assert.equal(result.lastCleaningDate, "2026-01-01T00:00:00.000Z");
+  assert.equal(result.latestVisitAnalysis.sourceServiceHistoryId, "visit-1");
+});
 test("equal horsepower in a different category is brand evidence, not same-type evidence", async (t) => {
   const unit = { _id: "target", brand: "LG", modelName: "Split A", category: "split", capacityHp: 1, installation: { installedAt: "2026-06-01" } };
   const other = { _id: "other", brand: "LG", modelName: "Window B", category: "window", capacityHp: 1, installation: { installedAt: "2025-01-01" } };

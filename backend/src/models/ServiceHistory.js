@@ -62,6 +62,28 @@ const serviceHistorySchema = new mongoose.Schema(
       nextIdealServicePeriod: { type: String, default: "", trim: true },
       calculatedAt: { type: Date, default: null },
     },
+
+    // The technician's original findings/actions above remain authoritative.
+    // This separate record stores only the AI interpretation and its follow-up.
+    aiInterpretation: {
+      provider: { type: String, enum: ["", "openai", "system-fallback"], default: "" },
+      status: { type: String, enum: ["", "completed", "unavailable"], default: "" },
+      whatHappened: { type: String, default: "", trim: true },
+      problemsFound: { type: String, default: "", trim: true },
+      severity: { type: String, enum: ["", "routine", "monitor", "soon", "urgent", "not_assessed"], default: "" },
+      repairOrReplacement: { type: String, enum: ["", "not_indicated", "inspection_needed", "repair_may_be_needed", "replacement_may_be_needed", "not_assessed"], default: "" },
+      recommendedAction: { type: String, enum: ["", "routine_cleaning", "inspection", "repair_assessment", "existing_schedule"], default: "" },
+      recommendedActions: [{ type: String, trim: true }],
+      recommendedService: { type: String, enum: ["", "regular_cleaning", "deep_cleaning", "inspection", "repair"], default: "" },
+      recommendedFollowUpDays: { type: Number, default: null, min: 1, max: 730 },
+      recommendedFollowUpDate: { type: Date, default: null },
+      evidenceFactIds: [{ type: String, trim: true }],
+      customerSummary: { type: String, default: "", trim: true },
+      model: { type: String, default: "", trim: true },
+      requestId: { type: String, default: "", trim: true },
+      generatedAt: { type: Date, default: null },
+      warning: { type: String, default: "", trim: true },
+    },
   },
   { timestamps: true },
 );

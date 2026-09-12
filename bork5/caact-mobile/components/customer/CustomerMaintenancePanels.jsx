@@ -10,11 +10,15 @@ import { customerSystemMessage } from "../../services/customerLanguage";
 const dateLabel = (value) => value
   ? new Date(value).toLocaleDateString("en-PH", { day: "numeric", month: "long", year: "numeric" })
   : "Installation or cleaning date needed";
-const serviceLabel = (value) => value === "deep_cleaning" ? "Deep cleaning" : value === "regular_cleaning" ? "Regular cleaning" : "Service details needed";
+const serviceLabel = (value) => ({ deep_cleaning: "Deep cleaning", regular_cleaning: "Regular cleaning", inspection: "AC inspection", repair: "Repair assessment" })[value] || "Service details needed";
 const serviceExplanation = (value) => value === "deep_cleaning"
   ? "Deep cleaning applies when the unit has gone more than one year without cleaning. The entire AC is taken down for a more thorough cleaning."
   : value === "regular_cleaning"
     ? "Regular cleaning applies when the unit was last cleaned within one year."
+    : value === "inspection"
+      ? "A follow-up inspection was recommended from the technician's completed service report."
+      : value === "repair"
+        ? "A repair assessment was recommended from the technician's completed service report. Final work is confirmed after inspection."
     : "A recorded installation or cleaning date is needed before suggesting a cleaning method.";
 
 const roomSizeMessage = (assessment = {}) => ({

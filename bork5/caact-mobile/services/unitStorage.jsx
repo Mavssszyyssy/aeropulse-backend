@@ -56,6 +56,8 @@ function normalizeUnit(unit = {}) {
     warrantyExpirationDate: unit.warrantyExpirationDate || unit.warranty?.expirationDate || "",
     warrantyRecommendation: unit.warrantyRecommendation || "",
     serviceHistory: Array.isArray(unit.serviceHistory) ? unit.serviceHistory : [],
+    unitHistory: Array.isArray(unit.unitHistory) ? unit.unitHistory : (Array.isArray(unit.serviceHistory) ? unit.serviceHistory : []),
+    latestVisitAnalysis: unit.latestVisitAnalysis || unit.amp?.latestVisitAnalysis || unit.amp?.visitFollowUp || null,
     createdAt: unit.createdAt || "",
     updatedAt: unit.updatedAt || "",
   };

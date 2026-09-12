@@ -7,13 +7,17 @@ const isMongoId = (value) => /^[a-f\d]{24}$/i.test(String(value || ""));
 const dateLabel = (value) => value
   ? new Date(value).toLocaleDateString("en-PH", { day: "numeric", month: "long", year: "numeric" })
   : "Not available";
-const serviceLabel = (value) => value === "deep_cleaning" ? "Deep cleaning" : value === "regular_cleaning" ? "Regular cleaning" : "Service details needed";
+const serviceLabel = (value) => ({ deep_cleaning: "Deep cleaning", regular_cleaning: "Regular cleaning", inspection: "AC inspection", repair: "Repair assessment" })[value] || "Service details needed";
 
 const serviceExplanation = (service) =>
   service === "deep_cleaning"
     ? "Deep cleaning applies when the unit has gone more than one year without cleaning. The entire AC is taken down for a more thorough cleaning."
     : service === "regular_cleaning"
       ? "Regular cleaning applies when the unit was last cleaned within one year."
+      : service === "inspection"
+        ? "A follow-up inspection was recommended from the technician's completed service report."
+        : service === "repair"
+          ? "A repair assessment was recommended from the technician's completed service report. Final work is confirmed after inspection."
       : "We need your installation date or last completed cleaning date to suggest the right cleaning service.";
 
 const capacityMessage = (assessment = {}) => {
@@ -59,7 +63,7 @@ function DynamicServiceSticker({ unit }) {
     <header className="service-sticker-header">
       <span className="service-sticker-icon" aria-hidden="true"><CalendarBlank size={22} weight="fill" /></span>
       <div className="service-sticker-heading">
-        <span className="service-sticker-label">Next recommended cleaning</span>
+        <span className="service-sticker-label">Next recommended service</span>
         <strong className="service-sticker-date">{dateLabel(recommendation.bestServicedBy)}</strong>
       </div>
       <span className="service-sticker-source">{planLabel(recommendation)}</span>

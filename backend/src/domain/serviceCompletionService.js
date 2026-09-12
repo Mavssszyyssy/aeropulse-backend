@@ -4,6 +4,8 @@ const { calculateMaintenanceRecommendation } = require("./ampMaintenanceService"
 const { appendWarrantyEvent, effectiveWarrantyStatus } = require("./warrantyService");
 const { isDetailedFinding, detailedActions } = require("./serviceEvidence");
 const { formatDateKeyInTimeZone } = require("../utils/dateTime");
+const { callStructuredAmpAnalysis } = require("../services/openAiAmpService");
+const { buildVisitEvidence, finalizeVisitAnalysis } = require("./ampVisitAnalysis");
 
 const clean = (value, max = 1000) => String(value || "").trim().slice(0, max);
 const list = (value) => (Array.isArray(value) ? value : String(value || "").split(","))
@@ -45,6 +47,52 @@ const validateStrictServicePayload = (payload = {}) => {
     errors,
     values: { serviceType, findings, actions, conditionRating, serviceDate },
   };
+};
+
+const analyzeCompletedVisit = async ({
+  unit,
+  serviceHistory,
+  recommendation,
+  technicianId,
+  providerCall = callStructuredAmpAnalysis,
+  recalculate = calculateMaintenanceRecommendation,
+}) => {
+  if (serviceHistory.aiInterpretation?.status === "completed") {
+    return { interpretation: serviceHistory.aiInterpretation, recommendation };
+  }
+  const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
+    .sort({ serviceDate: -1 }).limit(8).lean();
+  const evidence = buildVisitEvidence({ unit, serviceHistory, priorHistory, recommendation });
+  let providerResult;
+  try {
+    providerResult = await providerCall({
+      safetyIdentifier: String(technicianId || "technician-visit"),
+      recommendation,
+      visitAnalysis: true,
+      visitEvidence: evidence,
+    });
+  } catch (error) {
+    providerResult = { provider: "system-fallback", insight: null, error: "AI analysis could not be completed. The technician's original report remains available." };
+  }
+  const interpretation = finalizeVisitAnalysis({ providerResult, evidence, recommendation, serviceHistory });
+  serviceHistory.aiInterpretation = interpretation;
+  await serviceHistory.save();
+
+  if (interpretation.provider === "openai" && interpretation.recommendedFollowUpDate) {
+    await Unit.updateOne({ _id: unit._id }, { $set: {
+      "amp.visitFollowUp": {
+        sourceServiceHistoryId: String(serviceHistory._id),
+        provider: "openai",
+        severity: interpretation.severity,
+        recommendedService: interpretation.recommendedService,
+        recommendedDate: interpretation.recommendedFollowUpDate,
+        customerSummary: interpretation.customerSummary,
+        generatedAt: interpretation.generatedAt,
+      },
+    } });
+    recommendation = await recalculate(unit._id);
+  }
+  return { interpretation, recommendation };
 };
 
 const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payload = {} }) => {
@@ -90,7 +138,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
   const serviceHistory = sourceTaskId
     ? await ServiceHistory.findOneAndUpdate({ unit: unit._id, sourceTaskId: String(sourceTaskId) }, { $setOnInsert: historyData }, { upsert: true, returnDocument: "after", runValidators: true })
     : await ServiceHistory.create(historyData);
-  const recommendation = await calculateMaintenanceRecommendation(unit._id);
+  let recommendation = await calculateMaintenanceRecommendation(unit._id);
   serviceHistory.ampSnapshot = {
     bestServicedBy: recommendation.bestServicedBy,
     recommendedService: recommendation.recommendedService,
@@ -123,7 +171,19 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     await unit.save();
   }
 
-  return { unit: await Unit.findById(unit._id), serviceHistory, recommendation };
+  const analysis = await analyzeCompletedVisit({ unit, serviceHistory, recommendation, technicianId });
+  recommendation = analysis.recommendation;
+  serviceHistory.ampSnapshot = {
+    bestServicedBy: recommendation.bestServicedBy,
+    recommendedService: recommendation.recommendedService,
+    recommendationBasis: recommendation.recommendationBasis,
+    nextIdealServiceDate: recommendation.bestServicedBy,
+    nextIdealServicePeriod: recommendation.bestServicedBy ? `Suggested servicing date: ${recommendation.bestServicedBy.slice(0, 10)}` : "Date required",
+    calculatedAt: new Date(),
+  };
+  await serviceHistory.save();
+
+  return { unit: await Unit.findById(unit._id), serviceHistory, recommendation, interpretation: analysis.interpretation };
 };
 
-module.exports = { completeServiceForUnit, validateStrictServicePayload };
+module.exports = { analyzeCompletedVisit, completeServiceForUnit, validateStrictServicePayload };

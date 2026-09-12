@@ -50,7 +50,7 @@ const unitSchema = new mongoose.Schema(
       bestServicedBy: { type: Date, default: null, index: true },
       recommendedService: {
         type: String,
-        enum: ["", "regular_cleaning", "deep_cleaning"],
+        enum: ["", "regular_cleaning", "deep_cleaning", "inspection", "repair"],
         default: "regular_cleaning",
       },
       recommendationBasis: { type: String, default: "", trim: true },
@@ -83,6 +83,15 @@ const unitSchema = new mongoose.Schema(
       nextIdealServicePeriod: { type: String, default: "", trim: true },
       nextIdealServiceDate: { type: Date, default: null },
       lastCalculatedAt: { type: Date, default: null },
+      visitFollowUp: {
+        sourceServiceHistoryId: { type: String, default: "", trim: true },
+        provider: { type: String, enum: ["", "openai"], default: "" },
+        severity: { type: String, enum: ["", "routine", "monitor", "soon", "urgent"], default: "" },
+        recommendedService: { type: String, enum: ["", "regular_cleaning", "deep_cleaning", "inspection", "repair"], default: "" },
+        recommendedDate: { type: Date, default: null },
+        customerSummary: { type: String, default: "", trim: true },
+        generatedAt: { type: Date, default: null },
+      },
     },
 
     warranty: {

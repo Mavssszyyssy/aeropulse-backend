@@ -36,6 +36,7 @@ const formatHistory = (item = {}) => ({
   actionTaken: cleanText(item.actionTaken || (item.serviceActions || []).join(", "), 500),
   partsUsed: Array.isArray(item.partsUsed) ? item.partsUsed.slice(0, 20) : [],
   evidence: assessServiceEvidence(item),
+  aiInterpretation: item.aiInterpretation?.status ? item.aiInterpretation : null,
 });
 
 const aggregateReliability = async (unit, branch) => {

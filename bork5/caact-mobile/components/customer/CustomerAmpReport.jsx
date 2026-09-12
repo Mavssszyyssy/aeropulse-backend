@@ -9,7 +9,7 @@ const dateLabel = (value) => {
   const date = value ? new Date(value) : null;
   return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString("en-PH", { day: "numeric", month: "long", year: "numeric" }) : "Not recorded";
 };
-const methodLabel = (value) => value === "regular_cleaning" ? "Regular cleaning" : value === "deep_cleaning" ? "Deep cleaning" : "Service details needed";
+const methodLabel = (value) => ({ regular_cleaning: "Regular cleaning", deep_cleaning: "Deep cleaning", inspection: "AC inspection", repair: "Repair assessment" })[value] || "Service details needed";
 const body = { color: COLORS.textSecondary, fontSize: FONT.sm, lineHeight: 20, marginTop: SPACING.sm };
 
 export default function CustomerAmpReport({ report, provider }) {
@@ -28,7 +28,7 @@ export default function CustomerAmpReport({ report, provider }) {
     {report.explanationWarning ? <Text accessibilityRole="alert" style={body}>{customerSystemMessage(report.explanationWarning)}</Text> : null}
     {!summary ? <>
       <DetailRow label="Suggested servicing date" value={dateLabel(maintenance.bestServicedBy)} />
-      <DetailRow label="Recommended cleaning" value={methodLabel(maintenance.recommendedService)} />
+      <DetailRow label="Recommended service" value={methodLabel(maintenance.recommendedService)} />
     </> : <DetailRow label="Last recorded cleaning" value={dateLabel(maintenance.lastCleaningDate)} />}
     <Text style={body}>{explanation || customerSystemMessage(maintenance.recommendationBasis) || "We need more details from completed visits to explain this suggestion."}</Text>
     {maintenance.dataQuality?.message ? <Text accessibilityRole="alert" style={[body, { color: COLORS.danger }]}>{customerSystemMessage(maintenance.dataQuality.message)}</Text> : null}
@@ -36,6 +36,7 @@ export default function CustomerAmpReport({ report, provider }) {
     {showHistory ? <View>
       {(report.serviceHistory || []).map((service, index) => <View key={`${service.date}-${index}`}>
         <DetailRow label={`${service.serviceLabel || service.type || "Service"} · ${dateLabel(service.date)}`} value={[service.findings, service.actionTaken].filter(Boolean).join("\n") || "Detailed service report not recorded"} multiline />
+        {service.aiInterpretation?.customerSummary ? <DetailRow label={service.aiInterpretation.provider === "openai" ? "AI follow-up recommendation" : "Follow-up schedule"} value={service.aiInterpretation.customerSummary} multiline /> : null}
         {service.evidence?.eligible === false ? <Text style={[body, { color: COLORS.danger }]}>{customerSystemMessage(service.evidence.reason)}</Text> : null}
       </View>)}
       {!report.serviceHistory?.length ? <Text style={body}>No service history has been recorded.</Text> : null}

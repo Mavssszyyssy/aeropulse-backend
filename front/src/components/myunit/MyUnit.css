@@ -1062,6 +1062,33 @@
   cursor: pointer;
 }
 
+.history-ai-follow-up {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
+  background: #f0f9ff;
+  color: #0f172a;
+  line-height: 1.45;
+}
+
+.history-ai-follow-up strong {
+  color: #0369a1;
+  font-size: 13px;
+}
+
+.history-ai-follow-up span {
+  font-size: 14px;
+}
+
+:root[data-theme='dark'] .history-ai-follow-up {
+  border-color: #075985;
+  background: #0c4a6e;
+  color: #e0f2fe;
+}
+
 :root[data-theme='dark'] .unit-organizer,
 :root[data-theme='dark'] .unit-no-results {
   border-color: #334155;

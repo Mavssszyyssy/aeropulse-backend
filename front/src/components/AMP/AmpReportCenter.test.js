@@ -38,6 +38,17 @@ it("shows actual history without crashing or inventing a fee when no price exist
   expect(screen.queryByText(/₱/)).not.toBeInTheDocument();
 });
 
+it("shows the AI follow-up separately from the technician's original service record", () => {
+  render(<ServiceHistory unit={{ brand: "Cold Air", model: "CA-1", serviceHistory: [{
+    id: "visit-ai", date: "2026-09-12", serviceType: "regular_cleaning",
+    findings: "Fan made an unusual noise.", actionTaken: "Cleaned the filter.",
+    aiInterpretation: { provider: "openai", customerSummary: "The fan should be inspected within 30 days." },
+  }] }} onClose={vi.fn()} />);
+  expect(screen.getByText(/Fan made an unusual noise/)).toBeVisible();
+  expect(screen.getByText("AI follow-up recommendation")).toBeVisible();
+  expect(screen.getByText("The fan should be inspected within 30 days.")).toBeVisible();
+});
+
 it("retains evidence warnings in the report/PDF and clears the previous unit's export on selection change", async () => {
   apiRequest.mockResolvedValue({ provider: "rules", report: {
     title: "Next Maintenance Recommendation", reportId: "REPORT-1", branch: "Bulacan", generatedAt: "2026-09-05T12:00:00Z",

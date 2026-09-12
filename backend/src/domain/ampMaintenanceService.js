@@ -227,15 +227,27 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
   const savedAi = unit.amp?.aiPrediction;
   const aiCurrent = savedPredictionIsCurrent(savedAi, evidence, calculationDate);
   const intervalDays = aiCurrent ? savedAi.prediction.interval_days : cohort.intervalDays;
-  const bestServicedBy = anchor ? addCalendarMonths(startOfUtcDay(anchor), intervalDays) : null;
-  const recommendedService = cleaningMethodForDates({
+  let bestServicedBy = anchor ? addCalendarMonths(startOfUtcDay(anchor), intervalDays) : null;
+  let recommendedService = cleaningMethodForDates({
     lastCleaningDate,
     installationDate: installedAt,
     asOfDate,
   });
   const capacityAssessment = capacityAssessmentFor(unit);
-  const basis = aiCurrent ? predictionBasis(savedAi.prediction, evidence) : anchor ? basisText(cohort) : "A completed cleaning or installation date is needed before a servicing date can be suggested.";
-  const predictionSource = aiCurrent ? "openai" : "system";
+  let basis = aiCurrent ? predictionBasis(savedAi.prediction, evidence) : anchor ? basisText(cohort) : "A completed cleaning or installation date is needed before a servicing date can be suggested.";
+  let predictionSource = aiCurrent ? "openai" : "system";
+  const visitFollowUp = unit.amp?.visitFollowUp?.toObject?.() || unit.amp?.visitFollowUp || null;
+  const latestCompletedVisit = newestFirst.find((history) => normalizeServiceType(history) !== "installation") || null;
+  const visitFollowUpIsCurrent = Boolean(visitFollowUp?.provider === "openai"
+    && visitFollowUp.sourceServiceHistoryId
+    && String(visitFollowUp.sourceServiceHistoryId) === String(latestCompletedVisit?._id || "")
+    && asDate(visitFollowUp.recommendedDate));
+  if (visitFollowUpIsCurrent) {
+    bestServicedBy = startOfUtcDay(visitFollowUp.recommendedDate);
+    recommendedService = visitFollowUp.recommendedService || recommendedService;
+    basis = visitFollowUp.customerSummary || "Follow-up timing is based on the technician's completed report and the AC unit's recorded history.";
+    predictionSource = "openai";
+  }
   const excludedRecordCount = allHistory.length - ownHistory.length;
   const dataQuality = { excludedRecordCount, message: excludedRecordCount ? `${excludedRecordCount} service record(s) have missing details or invalid dates and are excluded from maintenance timing. Ask the service team to review them.` : "", anchorType: lastCleaningDate ? "last_cleaning" : installedAt ? "installation" : "missing" };
 
@@ -282,6 +294,7 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     predictionSource,
     predictionEvidence: evidence,
     aiPrediction: aiCurrent ? { model: savedAi.model, generatedAt: savedAi.generatedAt, engineVersion: savedAi.engineVersion } : null,
+    latestVisitAnalysis: visitFollowUpIsCurrent ? visitFollowUp : null,
     historicalBasis: {
       level: cohort.level,
       intervalDays,

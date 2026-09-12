@@ -31,3 +31,13 @@ test("completed reports are separate, collapsed initially, and all remain reacha
   await fireEvent.press(screen.getByLabelText("Completed service reports"));
   expect(screen.queryByText(/Finding 3/)).toBeNull();
 });
+test("completed reports keep the technician record separate from the AI follow-up", async () => {
+  await render(<CompletedServiceReports records={[{
+    id: "visit-ai", findings: "Fan made an unusual noise.", actionTaken: "Cleaned the filter.", date: "2026-09-12", serviceType: "Cleaning",
+    aiInterpretation: { provider: "openai", customerSummary: "The fan should be inspected within 30 days." },
+  }]} serviceName={v => v} formatDate={v => v} />);
+  await fireEvent.press(screen.getByLabelText("Completed service reports"));
+  expect(screen.getByText(/Fan made an unusual noise/)).toBeTruthy();
+  expect(screen.getByText("AI follow-up recommendation")).toBeTruthy();
+  expect(screen.getByText("The fan should be inspected within 30 days.")).toBeTruthy();
+});
