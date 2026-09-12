@@ -1,8 +1,7 @@
 const RestockOrder = require("../models/RestockOrder");
 const Product = require("../models/Product");
-const Notification = require("../models/Notification");
 const AuditLog = require("../models/AuditLog");
-const User = require("../models/User");
+const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { BRANCHES } = require("../domain/branchRouting");
 const { ensureProductSerialUnits } = require("./productController");
 
@@ -106,30 +105,25 @@ const signalRestockOrder = async (req, res) => {
       ipAddress: req.ip,
     });
 
-    // Notify managers at affected branches
-    const managers = await User.find({
-      role: "admin",
-      assignedBranch: { $in: restockOrder.branches },
-    });
-
     const formatDateRange = (start, end) => {
       const s = new Date(start).toLocaleDateString();
       const e = new Date(end).toLocaleDateString();
       return `${s} - ${e}`;
     };
 
-    const notificationPromises = managers.map((manager) =>
-      Notification.create({
-        user: manager._id,
-        type: "system",
-        title: "Restock Incoming",
-        message: `Restock from ${restockOrder.supplier.name} expected ${formatDateRange(
-          restockOrder.expectedDeliveryStart,
-          restockOrder.expectedDeliveryEnd
-        )}. ${restockOrder.products.length} product(s)`,
-      })
-    );
-    await Promise.all(notificationPromises);
+    await notifyOperationalStaff({
+      branches: restockOrder.branches,
+      roles: ["admin"],
+      type: "inventory",
+      category: "restock",
+      title: "Restock incoming",
+      message: `Restock from ${restockOrder.supplier.name} is expected ${formatDateRange(restockOrder.expectedDeliveryStart, restockOrder.expectedDeliveryEnd)}. ${restockOrder.products.length} product(s).`,
+      targetId: String(restockOrder._id),
+      targetType: "restock",
+      route: "/admin/inventory",
+      dedupeKey: `restock:${restockOrder._id}:incoming`,
+      dedupeMinutes: 0,
+    });
 
     return res.json({ restockOrder: restockOrder.toJSON() });
   } catch (error) {
@@ -209,16 +203,19 @@ const markRestockReceived = async (req, res) => {
     restockOrder.actualDeliveryDate = new Date();
     await restockOrder.save();
 
-    // Notify owner
-    const owner = await User.findOne({ role: "superadmin" });
-    if (owner) {
-      await Notification.create({
-        user: owner._id,
-        type: "system",
-        title: "Restock Received",
-        message: `Restock from ${restockOrder.supplier.name} has been received at ${req.activeBranch}`,
-      });
-    }
+    await notifyOperationalStaff({
+      branches: restockOrder.branches,
+      roles: ["superadmin"],
+      type: "inventory",
+      category: "restock",
+      title: "Restock received",
+      message: `Restock from ${restockOrder.supplier.name} has been received for ${restockOrder.branches.join(", ")}.`,
+      targetId: String(restockOrder._id),
+      targetType: "restock",
+      route: "/superadmin/inventory",
+      dedupeKey: `restock:${restockOrder._id}:received`,
+      dedupeMinutes: 0,
+    });
 
     return res.json({ restockOrder: restockOrder.toJSON() });
   } catch (error) {

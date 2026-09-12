@@ -13,6 +13,14 @@ test("AMP dashboard query ranges reject abusive or misleading values", () => {
   assert.throws(() => boundedNumber("not-a-number", options), /1 to 24/);
 });
 
+test("AMP pipeline pagination has bounded page sizes", () => {
+  const pageOptions = { fallback: 1, min: 1, max: 1000000, integer: true, label: "Pipeline page" };
+  const sizeOptions = { fallback: 50, min: 10, max: 200, integer: true, label: "Pipeline page size" };
+  assert.equal(boundedNumber("2", pageOptions), 2);
+  assert.equal(boundedNumber("100", sizeOptions), 100);
+  assert.throws(() => boundedNumber("201", sizeOptions), /10 to 200/);
+});
+
 test("AMP service pipeline keeps admins branch-scoped and lets Superadmin select an operating branch", () => {
   assert.deepEqual(resolveManagerPipelineScope({
     role: "admin",

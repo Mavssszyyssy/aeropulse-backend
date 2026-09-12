@@ -17,6 +17,19 @@ const canReceive = (user, type = "system") => {
 const createDedupedNotification = async (payload = {}, { dedupeMinutes = 60 } = {}) => {
   if (!payload.user || !mongoose.Types.ObjectId.isValid(String(payload.user))) return null;
   const dedupeKey = String(payload.dedupeKey || "").trim();
+  const notificationPayload = {
+    branch: "",
+    type: "system",
+    category: "",
+    severity: "info",
+    targetId: "",
+    targetType: "",
+    route: "",
+    unread: true,
+    status: "unread",
+    ...payload,
+    dedupeKey,
+  };
   if (dedupeKey) {
     const query = {
       user: payload.user,
@@ -27,17 +40,25 @@ const createDedupedNotification = async (payload = {}, { dedupeMinutes = 60 } = 
     }
     const existing = await Notification.findOne(query).sort({ createdAt: -1 });
     if (existing) {
+      const refreshFields = [
+        "branch", "type", "category", "severity", "title", "message",
+        "targetId", "targetType", "route",
+      ];
+      const contentChanged = refreshFields.some((field) => (
+        String(existing[field] || "") !== String(notificationPayload[field] || "")
+      ));
+      if (contentChanged) {
+        for (const field of refreshFields) existing[field] = notificationPayload[field] || "";
+        existing.unread = true;
+        existing.status = "unread";
+        existing.archivedAt = null;
+        await existing.save();
+      }
       existing.$locals.wasDeduplicated = true;
       return existing;
     }
   }
-  const created = await Notification.create({
-    unread: true,
-    status: "unread",
-    severity: "info",
-    ...payload,
-    dedupeKey,
-  });
+  const created = await Notification.create(notificationPayload);
   created.$locals.wasDeduplicated = false;
   return created;
 };

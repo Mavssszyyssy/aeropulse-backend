@@ -39,3 +39,31 @@ test('cross-branch orders notify both involved admins and the owner once, not un
   assert.deepEqual(notices.map(n => n.branch), ['Cavite', 'Bulacan', 'Cavite']);
   assert.equal(new Set(notices.map(n => n.dedupeKey)).size, 3);
 });
+
+test('a changed event refreshes its existing notification instead of showing stale or duplicate content', async (t) => {
+  const user = { _id: '000000000000000000000001', role: 'admin', assignedBranch: 'Cavite' };
+  const existing = {
+    branch: 'Cavite', type: 'inventory', category: 'stock', severity: 'warning',
+    title: 'Low stock', message: '4 units remain.', targetId: 'product-1',
+    targetType: 'inventory', route: '/admin/inventory', archivedAt: new Date(),
+    unread: false, status: 'read', $locals: {},
+    async save() { this.saved = true; return this; },
+  };
+  t.mock.method(User, 'find', () => ({ select: async () => [user] }));
+  t.mock.method(Notification, 'findOne', () => ({ sort: async () => existing }));
+  const create = t.mock.method(Notification, 'create', async (payload) => payload);
+  const results = await notifyOperationalStaff({
+    branch: 'Cavite', type: 'inventory', category: 'stock', severity: 'critical',
+    title: 'Out of stock', message: '0 units remain.', targetId: 'product-1',
+    targetType: 'inventory', route: '/admin/inventory', dedupeKey: 'stock:product-1:Cavite',
+  });
+  assert.equal(create.mock.callCount(), 0);
+  assert.equal(results[0], existing);
+  assert.equal(existing.title, 'Out of stock');
+  assert.equal(existing.message, '0 units remain.');
+  assert.equal(existing.severity, 'critical');
+  assert.equal(existing.unread, true);
+  assert.equal(existing.status, 'unread');
+  assert.equal(existing.archivedAt, null);
+  assert.equal(existing.saved, true);
+});

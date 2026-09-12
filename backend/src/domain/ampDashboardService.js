@@ -82,8 +82,10 @@ const buildRecordedMaintenanceTrends = async ({ branch = "" } = {}) => {
   };
 };
 
-const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBranches = false } = {}) => {
+const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBranches = false, page = 1, pageSize = 50 } = {}) => {
   const windowDays = boundedNumber(days, { fallback: 30, min: 1, max: 365, integer: true, label: "Pipeline window" });
+  const currentPage = boundedNumber(page, { fallback: 1, min: 1, max: 1000000, integer: true, label: "Pipeline page" });
+  const currentPageSize = boundedNumber(pageSize, { fallback: 50, min: 10, max: 200, integer: true, label: "Pipeline page size" });
   const now = businessDay();
   await refreshMaintenanceRecommendations(includeAllBranches ? {} : branchFilterMatch(branch));
   const windowEnd = addDays(now, windowDays);
@@ -96,14 +98,18 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     ...baseMatch,
     ...(!includeAllBranches ? branchFilterMatch(branch) : {}),
   };
-  const [units, aggregate, recordedBranchSummary] = await Promise.all([Unit.aggregate([
+  const [pipelineResult, aggregate, recordedBranchSummary] = await Promise.all([Unit.aggregate([
     { $match: unitMatch },
     { $lookup: { from: "servicehistories", let: { unitId: "$_id" }, pipeline: [
       { $match: { $expr: { $eq: ["$unit", "$$unitId"] } } }, { $sort: { serviceDate: -1 } }, { $limit: 1 },
       { $project: { serviceDate: 1, serviceType: 1, visitType: 1, findings: 1, actionTaken: 1, partsUsed: 1 } },
     ], as: "lastVisit" } },
     { $addFields: { lastVisit: { $first: "$lastVisit" } } },
-    { $sort: { "amp.bestServicedBy": 1 } }, { $limit: 200 },
+    { $sort: { "amp.bestServicedBy": 1, _id: 1 } },
+    { $facet: {
+      rows: [{ $skip: (currentPage - 1) * currentPageSize }, { $limit: currentPageSize }],
+      count: [{ $count: "total" }],
+    } },
   ]), buildRecordedMaintenanceTrends({ branch }), Unit.aggregate([
     { $match: summaryMatch },
     { $group: {
@@ -119,6 +125,8 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     } },
     { $sort: { _id: 1 } },
   ])]);
+  const units = pipelineResult[0]?.rows || [];
+  const totalUnits = Number(pipelineResult[0]?.count?.[0]?.total || 0);
   const summaryByBranch = new Map(recordedBranchSummary.map((item) => [item._id, item]));
   const visibleBranches = includeAllBranches
     ? [...BRANCHES, UNASSIGNED_BRANCH]
@@ -134,6 +142,12 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
   });
   return {
     generatedAt: new Date().toISOString(), windowDays, aggregate, branchSummary,
+    pagination: {
+      page: currentPage,
+      pageSize: currentPageSize,
+      total: totalUnits,
+      totalPages: Math.max(1, Math.ceil(totalUnits / currentPageSize)),
+    },
     units: units.map((unit) => {
       const dueDate = new Date(unit.amp.bestServicedBy);
       return {

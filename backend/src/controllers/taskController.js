@@ -1456,7 +1456,6 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
     const serviceHistory = await ServiceHistory.find({ unit: unit._id })
       .populate("technician", "name name_first name_last")
       .sort({ serviceDate: -1 })
-      .limit(100)
       .lean();
     const relatedTasks = await Task.find({
       $and: [
@@ -1471,7 +1470,7 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
           ],
         },
       ],
-    }).sort({ completedAt: -1, updatedAt: -1 }).limit(100).lean();
+    }).sort({ completedAt: -1, updatedAt: -1 }).lean();
 
     const maintenanceHistory = serviceHistory
       .filter((service) => ["installation", "scheduled_service", "inspection"].includes(String(service.visitType).toLowerCase()))
@@ -1482,6 +1481,10 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
       technician: technicianName(service.technician),
       findings: service.findings || service.technicianInputs?.notes || "No findings recorded",
       actionTaken: service.actionTaken || (service.serviceActions || []).join(", ") || "Actions not recorded",
+      hoursSpent: service.hoursSpent ?? null,
+      laborCost: service.laborCost ?? null,
+      partsCost: service.partsCost ?? null,
+      totalServiceCost: service.totalServiceCost ?? null,
       evidence: assessServiceEvidence(service),
       aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
       status: "Completed",
@@ -1496,6 +1499,10 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
           diagnosis: service.findings || service.technicianInputs?.notes || "Findings not recorded",
           actionTaken: service.actionTaken || (service.serviceActions || []).join(", ") || "Actions not recorded",
           partsUsed: (service.partsUsed || []).join(", ") || "None recorded",
+          hoursSpent: service.hoursSpent ?? null,
+          laborCost: service.laborCost ?? null,
+          partsCost: service.partsCost ?? null,
+          totalServiceCost: service.totalServiceCost ?? null,
           evidence: assessServiceEvidence(service),
           aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
           technician: technicianName(service.technician),

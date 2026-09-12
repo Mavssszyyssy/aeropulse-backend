@@ -78,7 +78,9 @@ function predictionBasis(prediction, evidence) {
   const refrigerantNote = evidence.contextSignals?.refrigerantIssueRecordCount
     ? ` ${evidence.contextSignals.refrigerantIssueRecordCount} refrigerant-related record(s) were reviewed as context but were not counted as cleaning intervals.`
     : " Repairs and refrigerant issues are context only and are not counted as cleaning intervals.";
-  return `AI-estimated servicing interval: ${prediction.interval_days} days after the last verified cleaning or installation. OpenAI selected ${direction} evidence-backed interval from ${evidence.cohort.sampleSize} verified cleaning interval(s) for ${source}; the arithmetic average is ${evidence.cohort.baselineIntervalDays} days.${range}${dirtReason}${depthNote}${refrigerantNote} The selected day count is restricted to the calculated average or a shorter interval actually present in the verified history. It is not a guaranteed failure date, confirmed booking, or warranty decision.`;
+  const selectedMonths = Math.max(1, Math.round(prediction.interval_days / 30));
+  const baselineMonths = Math.max(1, Math.round(evidence.cohort.baselineIntervalDays / 30));
+  return `AI-estimated servicing interval: ${selectedMonths} calendar month(s) after the last verified cleaning or installation (${prediction.interval_days} days is the normalized comparison value). OpenAI selected ${direction} evidence-backed interval from ${evidence.cohort.sampleSize} verified cleaning interval(s) for ${source}; the normalized arithmetic average is ${baselineMonths} calendar month(s) (${evidence.cohort.baselineIntervalDays} days).${range}${dirtReason}${depthNote}${refrigerantNote} The selected interval is restricted to the calculated average or a shorter interval actually present in the verified history. It is not a guaranteed failure date, confirmed booking, or warranty decision.`;
 }
 
 function savedPredictionIsCurrent(saved, evidence, asOfDate) {

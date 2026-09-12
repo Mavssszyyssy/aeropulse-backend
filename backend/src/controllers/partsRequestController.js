@@ -1,6 +1,6 @@
 const PartsRequest = require("../models/PartsRequest");
 const Notification = require("../models/Notification");
-const User = require("../models/User");
+const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 
 const REQUEST_STATUSES = ["Submitted", "Reviewed", "Assigned", "Completed", "Cancelled"];
 
@@ -38,24 +38,19 @@ const createPartsRequest = async (req, res) => {
       priority,
     });
 
-    const reviewers = await User.find({ role: { $in: ["admin", "superadmin"] } }).select("_id role activeBranch assignedBranch");
-    await Promise.all(
-      reviewers
-        .filter((reviewer) =>
-          reviewer.role === "superadmin" ||
-          !request.branch ||
-          reviewer.activeBranch === request.branch ||
-          reviewer.assignedBranch === request.branch,
-        )
-        .map((reviewer) =>
-          Notification.create({
-            user: reviewer._id,
-            type: "system",
-            title: "Technician parts request",
-            message: `${request.technicianName} requested ${quantity} × ${partName}${priority === "Urgent" ? " (urgent)" : ""}.`,
-          }),
-        ),
-    );
+    await notifyOperationalStaff({
+      branch: request.branch,
+      type: "service",
+      category: "parts_request",
+      severity: priority === "Urgent" ? "critical" : "info",
+      title: "Technician parts request",
+      message: `${request.technicianName} requested ${quantity} × ${partName}${priority === "Urgent" ? " (urgent)" : ""}.`,
+      targetId: String(request._id),
+      targetType: "parts_request",
+      route: "/admin/services/service-requests",
+      dedupeKey: `parts-request:${request._id}:submitted`,
+      dedupeMinutes: 0,
+    });
 
     return res.status(201).json({ request: request.toJSON() });
   } catch (error) {

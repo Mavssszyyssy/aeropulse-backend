@@ -2362,6 +2362,7 @@ const createOrder = async (req, res) => {
         });
         resolvedItems.push({
           productId: String(product.id || ""),
+          sku: String(product.sku || "").trim(),
           name: product.name,
           model: String(product.sku || "").trim(),
           price: Number(product.price || 0),

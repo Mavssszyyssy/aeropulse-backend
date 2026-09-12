@@ -21,12 +21,24 @@ const serviceLabel = (value) => ({
   inspection: "Inspection", installation: "Installation",
 })[normalize(value)] || "Service type not recorded";
 
+const NON_REPORT_TEXT = /^(?:(?:test|testing)(?: only| data)?|sample|(?:asdf|qwerty)+|lorem ipsum|unknown|nothing|nil|no issue|no issues|okay|ok)[.!?\s]*$/i;
+const hasMeaningfulReportText = (value, minimumLength) => {
+  const text = clean(value).replace(/\s+/g, " ");
+  if (text.length < minimumLength || NON_REPORT_TEXT.test(text)) return false;
+  const words = text.match(/[\p{L}\p{N}]+/gu) || [];
+  if (!words.some((word) => /\p{L}/u.test(word))) return false;
+  if (new Set(words.map((word) => word.toLowerCase())).size === 1 && words.length > 1) return false;
+  const compact = text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  if (compact.length >= 4 && new Set(compact).size <= 2) return false;
+  return true;
+};
+
 const isDetailedFinding = (value) => {
   const text = clean(value);
-  return text.length >= 10 && !/^(?:AMP recommended\b|service completed\.?$|no findings recorded\.?$|pending technician findings\.?$)/i.test(text);
+  return hasMeaningfulReportText(text, 10) && !/^(?:AMP recommended\b|service completed\.?$|no findings recorded\.?$|pending technician findings\.?$)/i.test(text);
 };
 const detailedActions = (value) => (Array.isArray(value) ? value : String(value || "").split(","))
-  .map(clean).filter((item) => item.length >= 3 && !/^(?:service completed|completed|done|n\/?a|none|not recorded)\.?$/i.test(item));
+  .map(clean).filter((item) => hasMeaningfulReportText(item, 3) && !/^(?:service completed|completed|done|n\/?a|none|not recorded)\.?$/i.test(item));
 
 const assessServiceEvidence = (history = {}, { asOfDate = new Date(), installedAt } = {}) => {
   const serviceType = serviceTypeFor(history);
@@ -40,4 +52,4 @@ const assessServiceEvidence = (history = {}, { asOfDate = new Date(), installedA
   return { eligible: !reason, serviceType, serviceLabel: serviceLabel(serviceType), reason };
 };
 
-module.exports = { SERVICE_TYPES, serviceTypeFor, serviceLabel, isDetailedFinding, detailedActions, assessServiceEvidence };
+module.exports = { SERVICE_TYPES, serviceTypeFor, serviceLabel, hasMeaningfulReportText, isDetailedFinding, detailedActions, assessServiceEvidence };

@@ -8,6 +8,7 @@ const orderSchema = new mongoose.Schema(
     items: [
       {
         productId: { type: String, default: "" },
+        sku: { type: String, default: "", trim: true },
         name: { type: String, required: true },
         model: { type: String, default: "" },
         price: { type: Number, required: true, min: 0 },

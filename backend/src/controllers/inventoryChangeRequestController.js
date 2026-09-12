@@ -1,8 +1,7 @@
 const InventoryChangeRequest = require("../models/InventoryChangeRequest");
 const AuditLog = require("../models/AuditLog");
 const Product = require("../models/Product");
-const Notification = require("../models/Notification");
-const User = require("../models/User");
+const { createDedupedNotification, notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { ensureProductSerialUnits } = require("./productController");
 
 /**
@@ -62,17 +61,19 @@ const createChangeRequest = async (req, res) => {
       ipAddress: req.ip,
     });
 
-    // Notify superadmins/owners about pending request
-    const owners = await User.find({ role: "superadmin" });
-    const notificationPromises = owners.map((owner) =>
-      Notification.create({
-        user: owner._id,
-        type: "system",
-        title: "Pending Inventory Change Request",
-        message: `Manager ${req.authUser.name} requested to increase ${product.name} inventory from ${currentStockValue} to ${requestedQuantity} at ${branch}`,
-      })
-    );
-    await Promise.all(notificationPromises);
+    await notifyOperationalStaff({
+      branch,
+      roles: ["superadmin"],
+      type: "inventory",
+      category: "inventory_change_request",
+      severity: "warning",
+      title: "Pending inventory change request",
+      message: `Admin ${req.authUser.name} requested to increase ${product.name} inventory from ${currentStockValue} to ${requestedQuantity} at ${branch}.`,
+      targetId: String(request._id),
+      targetType: "inventory_change_request",
+      route: "/superadmin/inventory",
+      dedupeKey: `inventory-change:${request._id}:pending`,
+    });
 
     return res.status(201).json({ request: request.toJSON() });
   } catch (error) {
@@ -169,12 +170,17 @@ const approveRequest = async (req, res) => {
       ipAddress: req.ip,
     });
 
-    // Notify manager
-    await Notification.create({
+    await createDedupedNotification({
       user: request.requestedBy,
-      type: "system",
+      branch: request.branch,
+      type: "inventory",
+      category: "inventory_change_request",
       title: "Inventory Change Approved",
-      message: `Your request to change ${product.name} from ${oldStock} to ${request.requestedStock} at ${request.branch} has been approved`,
+      message: `Your request to change ${product.name} from ${oldStock} to ${request.requestedStock} at ${request.branch} has been approved.`,
+      targetId: String(request._id),
+      targetType: "inventory_change_request",
+      route: "/admin/inventory",
+      dedupeKey: `inventory-change:${request._id}:approved`,
     });
 
     return res.json({ request: request.toJSON() });
@@ -228,12 +234,18 @@ const rejectRequest = async (req, res) => {
       ipAddress: req.ip,
     });
 
-    // Notify manager
-    await Notification.create({
+    await createDedupedNotification({
       user: request.requestedBy,
-      type: "system",
+      branch: request.branch,
+      type: "inventory",
+      category: "inventory_change_request",
+      severity: "warning",
       title: "Inventory Change Rejected",
       message: `Your request to change ${product.name} at ${request.branch} has been rejected. Reason: ${rejectionReason}`,
+      targetId: String(request._id),
+      targetType: "inventory_change_request",
+      route: "/admin/inventory",
+      dedupeKey: `inventory-change:${request._id}:rejected`,
     });
 
     return res.json({ request: request.toJSON() });

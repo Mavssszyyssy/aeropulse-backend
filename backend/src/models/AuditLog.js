@@ -78,7 +78,6 @@ const executiveAlertActions = new Set([
   "inventory_direct_update",
   "restock_order_created",
   "restock_order_signalled",
-  "restock_order_received",
   "restock_order_cancelled",
   "product_created",
   "product_deleted",

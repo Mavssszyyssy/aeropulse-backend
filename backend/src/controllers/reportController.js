@@ -46,7 +46,24 @@ const getSalesReport = async (req, res) => {
     // order whose creation, update, or recorded payment overlaps the period,
     // then apply the exact reporting date and status rule once in the domain.
     const orders = await Order.find({ $and: conditions }).lean();
-    const report = summarizeSalesOrders(orders, { status, interval, from, to });
+    // New orders retain their SKU directly. Older orders used the `model`
+    // field for the catalog SKU, so prefer the linked product record and keep
+    // that stored value only as a compatibility fallback.
+    const productIds = [...new Set(orders.flatMap((order) => (order.items || [])
+      .map((item) => String(item.productId || "").trim())
+      .filter((id) => /^[a-f\d]{24}$/i.test(id))))];
+    const catalogProducts = productIds.length
+      ? await Product.find({ _id: { $in: productIds } }).select("_id sku").lean()
+      : [];
+    const skuByProductId = new Map(catalogProducts.map((product) => [String(product._id), String(product.sku || "").trim()]));
+    const ordersWithSkus = orders.map((order) => ({
+      ...order,
+      items: (order.items || []).map((item) => ({
+        ...item,
+        sku: String(item.sku || skuByProductId.get(String(item.productId || "")) || item.productSku || item.model || "").trim(),
+      })),
+    }));
+    const report = summarizeSalesOrders(ordersWithSkus, { status, interval, from, to });
     return res.json({
       interval: report.interval,
       status: report.status,

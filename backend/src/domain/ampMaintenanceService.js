@@ -139,12 +139,13 @@ const collectHistoricalCohort = async (unit, asOfDate) => {
 
 const basisText = ({ level, intervalDays, sampleSize, samples = [] }) => {
   const months = Math.max(1, Math.round(intervalDays / 30));
-  const range = samples.length ? ` The verified range is ${Math.min(...samples)}–${Math.max(...samples)} days.` : "";
-  if (level === "same_unit") return `Based on this AC unit's ${sampleSize} verified cleaning interval(s). Their arithmetic average is ${intervalDays} days (about ${months} month(s)).${range}`;
-  if (level === "same_model") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from the same model. Their arithmetic average is ${intervalDays} days (about ${months} month(s)).${range}`;
-  if (level === "same_brand_type") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from AC units of the same brand and type. Their arithmetic average is ${intervalDays} days (about ${months} month(s)).${range}`;
-  if (level === "same_brand") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from the same brand. Their arithmetic average is ${intervalDays} days (about ${months} month(s)).${range}`;
-  return "Insufficient service history. Default recommended cleaning interval: 6 months (180 days). This baseline is replaced when enough verified cleaning intervals become available.";
+  const range = samples.length ? ` The verified cycle range is about ${Math.round(Math.min(...samples) / 30)}–${Math.round(Math.max(...samples) / 30)} calendar month(s).` : "";
+  const average = `Their normalized arithmetic average is ${months} calendar month(s); ${intervalDays} days is retained as the comparison value.`;
+  if (level === "same_unit") return `Based on this AC unit's ${sampleSize} verified cleaning interval(s). ${average}${range}`;
+  if (level === "same_model") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from the same model. ${average}${range}`;
+  if (level === "same_brand_type") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from AC units of the same brand and type. ${average}${range}`;
+  if (level === "same_brand") return `This AC does not yet have two verified cleaning intervals, so the plan uses ${sampleSize} interval(s) from the same brand. ${average}${range}`;
+  return "Insufficient service history. Default recommended cleaning interval: 6 calendar months (180-day reference). This baseline is replaced when enough verified cleaning intervals become available.";
 };
 
 const patternAnalysisFor = (cohort) => ({

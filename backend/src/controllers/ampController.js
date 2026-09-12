@@ -52,6 +52,11 @@ const serviceHistoryItem = (service) => ({
   findings: service.findings || service.technicianInputs?.notes || "",
   actionTaken: service.actionTaken || (service.serviceActions || []).join(", "),
   partsUsed: Array.isArray(service.partsUsed) ? service.partsUsed : [],
+  hoursSpent: service.hoursSpent ?? null,
+  laborCost: service.laborCost ?? null,
+  partsCost: service.partsCost ?? null,
+  additionalCost: service.additionalCost ?? null,
+  totalServiceCost: service.totalServiceCost ?? null,
   technician: service.technician && typeof service.technician === "object"
     ? service.technician.name || [service.technician.name_first, service.technician.name_last].filter(Boolean).join(" ") || service.technician.email || ""
     : "",
@@ -241,7 +246,7 @@ const listMyUnits = async (req, res) => {
         if ((matchesItems || matchesAssignment) && !orderBySerial.has(serial)) orderBySerial.set(serial, order);
       });
     });
-    const histories = units.length ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } }).sort({ serviceDate: -1 }).limit(500) : [];
+    const histories = units.length ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } }).sort({ serviceDate: -1 }) : [];
     const historyByUnit = new Map();
     histories.forEach((item) => historyByUnit.set(String(item.unit), [...(historyByUnit.get(String(item.unit)) || []), item]));
     const recommendations = await Promise.all(units.map((unit) => calculateMaintenanceRecommendation(unit._id)));
@@ -296,7 +301,7 @@ const getManagerPipeline = async (req, res) => {
       requestedBranch: req.query.branch,
       activeBranch: req.activeBranch,
     });
-    return res.json(await getManagerServicePipeline({ days: req.query.days, ...scope }));
+    return res.json(await getManagerServicePipeline({ days: req.query.days, page: req.query.page, pageSize: req.query.pageSize, ...scope }));
   }
   catch (error) { return res.status(error.status || 500).json({ message: error.message || "Unable to load the maintenance pipeline." }); }
 };
@@ -310,7 +315,6 @@ const getReportUnits = async (req, res) => {
       .select("brand modelName serialNumber serviceBranch status customer customerName capacityHp")
       .populate("customer", "name name_first name_last")
       .sort({ serviceBranch: 1, modelName: 1, serialNumber: 1 })
-      .limit(500)
       .lean();
     return res.json({
       units: units.map((unit) => ({

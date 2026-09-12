@@ -78,13 +78,22 @@ const sanitizeLegacyNotifications = (notifications, role = "customer") => {
   });
 };
 
+const applyNotificationPreferences = (notifications = [], preferences = {}) =>
+  collapseDuplicateNotifications(notifications).filter((item) => {
+    if (item.type === "account" && preferences.accountUpdates === false) return false;
+    if (["order", "payment", "delivery"].includes(item.type) && preferences.orderUpdates === false) return false;
+    if (["technician", "service", "warranty"].includes(item.type) && preferences.serviceUpdates === false) return false;
+    if (["system", "inventory", "report"].includes(item.type) && preferences.systemAlerts === false) return false;
+    return true;
+  });
+
 const listMyNotifications = async (req, res) => {
   res.set("Cache-Control", "no-store");
   const userId = req.authUser._id;
   const user = await User.findById(userId).select("notifications lastLogin role");
   const userNotifications = user?.notifications?.toObject?.() || user?.notifications || {};
   if (userNotifications.inApp === false) {
-    return res.json({ notifications: [] });
+    return res.json({ notifications: [], unreadCount: 0 });
   }
 
   // Fetch beyond the drawer's display size before collapsing duplicates and
@@ -96,7 +105,9 @@ const listMyNotifications = async (req, res) => {
     : { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] };
   let notifications = await Notification.find({ user: userId, ...archiveScope }).sort({ createdAt: -1 }).limit(100);
 
-  if (!notifications.length && !archivedView) {
+  const hasAnyStoredNotification = notifications.length > 0
+    || Boolean(await Notification.exists({ user: userId }));
+  if (!hasAnyStoredNotification && !archivedView) {
     // Check if this is the user's first login
     const isFirstLogin = !user.lastLogin;
     const role = String(user?.role || "customer").toLowerCase();
@@ -123,16 +134,19 @@ const listMyNotifications = async (req, res) => {
     notifications = await Notification.find({ user: userId, ...archiveScope }).sort({ createdAt: -1 }).limit(100);
   }
 
-  notifications = collapseDuplicateNotifications(notifications).filter((item) => {
-    if (item.type === "account" && userNotifications.accountUpdates === false) return false;
-    if (["order", "payment", "delivery"].includes(item.type) && userNotifications.orderUpdates === false) return false;
-    if (["technician", "service", "warranty"].includes(item.type) && userNotifications.serviceUpdates === false) return false;
-    if (["system", "inventory", "report"].includes(item.type) && userNotifications.systemAlerts === false) return false;
-    return true;
-  }).slice(0, 30);
+  const activeNotifications = archivedView
+    ? await Notification.find({
+      user: userId,
+      $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }],
+    }).sort({ createdAt: -1 }).limit(100)
+    : notifications;
+  const unreadCount = applyNotificationPreferences(activeNotifications, userNotifications)
+    .filter((item) => item.unread || item.status === "unread").length;
+  notifications = applyNotificationPreferences(notifications, userNotifications).slice(0, 30);
 
   return res.json({
     notifications: sanitizeLegacyNotifications(notifications, user?.role),
+    unreadCount,
   });
 };
 
@@ -176,7 +190,10 @@ const markAllNotificationsRead = async (req, res) => {
   const result = await Notification.updateMany(
     {
       user: userId,
-      $or: [{ unread: true }, { status: "unread" }],
+      $and: [
+        { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] },
+        { $or: [{ unread: true }, { status: "unread" }] },
+      ],
     },
     { $set: { unread: false, status: "read" } }
   );

@@ -126,7 +126,7 @@ test("the no-history baseline adds exactly six calendar months and is not replac
   assert.equal(result.bestServicedBy, "2026-07-10T00:00:00.000Z");
   assert.equal(result.patternAnalysis.source, "system_default");
   assert.equal(result.historicalBasis.intervalDays, 180);
-  assert.match(result.recommendationBasis, /6 months \(180 days\)/);
+  assert.match(result.recommendationBasis, /6 calendar months \(180-day reference\)/);
 });
 test("recalculation preserves hold/retired status and does not invent missing dates", async (t) => {
   const chain = (rows) => ({ select() { return this; }, sort() { return this; }, lean: async () => rows });
@@ -160,7 +160,42 @@ test("a repair does not move the cleaning anchor and an incomplete record stays 
   assert.equal(result.bestServicedBy, "2026-07-01T00:00:00.000Z");
   assert.equal(result.dataQuality.excludedRecordCount, 1);
   assert.equal(fixture.status, "on_hold");
-  assert.match(result.recommendationBasis, /6 months \(180 days\)/);
+  assert.match(result.recommendationBasis, /6 calendar months \(180-day reference\)/);
+});
+
+test("technician report validation rejects placeholder and repeated-character text", () => {
+  for (const findings of ["testing only", "aaaaaaaaaaaa", "123456789012", "qwertyqwerty"]) {
+    assert.equal(validateStrictServicePayload({
+      ...finding,
+      findings,
+      serviceActions: [finding.actionTaken],
+      serviceDate: "2026-09-05",
+    }).ok, false);
+  }
+  assert.equal(validateStrictServicePayload({
+    ...finding,
+    findings: "Madumi ang filter at mahina ang buga ng hangin.",
+    serviceActions: ["Nilinis ang filter at sinubukan ang paglamig."],
+    serviceDate: "2026-09-05",
+  }).ok, true);
+});
+
+test("permanent customer service history includes recorded work resources and costs", () => {
+  const { serializeCustomerUnit } = require("../src/controllers/ampController");
+  const result = serializeCustomerUnit({ _id: "unit", installation: {} }, [{
+    _id: "service-1",
+    serviceDate: "2026-09-05",
+    ...finding,
+    hoursSpent: 2.5,
+    laborCost: 500,
+    partsCost: 200,
+    additionalCost: 0,
+    totalServiceCost: 700,
+  }]);
+  assert.equal(result.serviceHistory[0].hoursSpent, 2.5);
+  assert.equal(result.serviceHistory[0].laborCost, 500);
+  assert.equal(result.serviceHistory[0].partsCost, 200);
+  assert.equal(result.serviceHistory[0].totalServiceCost, 700);
 });
 test("the latest validated AI visit follow-up overrides the routine plan without changing the cleaning anchor", async (t) => {
   const summary = "The technician recorded an unusual fan noise. An inspection is recommended by 2026-10-01.";

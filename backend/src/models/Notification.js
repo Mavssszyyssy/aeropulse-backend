@@ -45,20 +45,25 @@ notificationSchema.pre("save", function syncUnreadStatus() {
   }
 });
 
-notificationSchema.post("save", function sendPushForNewNotification(doc) {
+notificationSchema.post("save", async function sendPushForNewNotification(doc) {
   if (!doc.$locals?.wasNew) return;
-  // A push delivery problem must never block the action that created the alert.
-  require("../services/pushNotificationService")
-    .sendPushForNotification(doc)
-    .catch((error) => console.warn("Failed to send notification push:", error.message));
+  // Await the attempt so a serverless runtime cannot terminate it early.
+  // Delivery failures still cannot fail the action that saved the alert.
+  try {
+    await require("../services/pushNotificationService").sendPushForNotification(doc);
+  } catch (error) {
+    console.warn("Failed to send notification push:", error.message);
+  }
 });
 
-notificationSchema.post("insertMany", function sendPushForInsertedNotifications(docs) {
-  for (const doc of docs || []) {
-    require("../services/pushNotificationService")
-      .sendPushForNotification(doc)
-      .catch((error) => console.warn("Failed to send notification push:", error.message));
-  }
+notificationSchema.post("insertMany", async function sendPushForInsertedNotifications(docs) {
+  await Promise.all((docs || []).map(async (doc) => {
+    try {
+      await require("../services/pushNotificationService").sendPushForNotification(doc);
+    } catch (error) {
+      console.warn("Failed to send notification push:", error.message);
+    }
+  }));
 });
 
 notificationSchema.set("toJSON", {

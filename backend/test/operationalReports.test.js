@@ -43,7 +43,20 @@ test("sales totals use stored order charges and only confirmed non-cancelled pai
     deliveryFees: 350, discounts: 100, totalOrderValue: 2490, amountCollected: 2490,
   });
   assert.equal(report.transactions[0].transactionDate, "2026-09-10T15:00:00.000Z");
+  assert.equal(report.transactions[0].sku, "M1");
+  assert.equal(report.products[0].sku, "M1");
   assert.equal(report.products[0].merchandiseSales, 2000);
+});
+
+test("sales report prefers the persisted catalog SKU over legacy model data", () => {
+  const report = summarizeSalesOrders([{
+    orderCode: "ORD-SKU", customerName: "Customer", stockSourceBranch: "Cavite",
+    createdAt: "2026-09-10T10:00:00.000Z", paymentStatus: "paid", workflowStatus: "complete",
+    items: [{ productId: "p1", sku: "SKU-ACTUAL", model: "SKU-LEGACY", name: "AC One", quantity: 1, price: 1000 }],
+    totalAmount: 1000,
+  }], { status: "paid" });
+  assert.equal(report.transactions[0].sku, "SKU-ACTUAL");
+  assert.equal(report.products[0].sku, "SKU-ACTUAL");
 });
 
 test("legacy totals fall back to item lines without inventing charges", () => {

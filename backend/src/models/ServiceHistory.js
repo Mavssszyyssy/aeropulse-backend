@@ -38,6 +38,11 @@ const serviceHistorySchema = new mongoose.Schema(
     findings: { type: String, default: "", trim: true },
     actionTaken: { type: String, default: "", trim: true },
     partsUsed: [{ type: String, trim: true }],
+    hoursSpent: { type: Number, default: null, min: 0, max: 1000 },
+    laborCost: { type: Number, default: null, min: 0, max: 1000000 },
+    partsCost: { type: Number, default: null, min: 0, max: 1000000 },
+    additionalCost: { type: Number, default: null, min: 0, max: 1000000 },
+    totalServiceCost: { type: Number, default: null, min: 0, max: 3000000 },
 
     conditionRating: {
       type: String,
@@ -83,6 +88,9 @@ const serviceHistorySchema = new mongoose.Schema(
       requestId: { type: String, default: "", trim: true },
       generatedAt: { type: Date, default: null },
       warning: { type: String, default: "", trim: true },
+      analysisAttempts: { type: Number, default: 0, min: 0, max: 10 },
+      lastAnalysisAttemptAt: { type: Date, default: null },
+      nextAnalysisAttemptAt: { type: Date, default: null, index: true },
     },
   },
   { timestamps: true },

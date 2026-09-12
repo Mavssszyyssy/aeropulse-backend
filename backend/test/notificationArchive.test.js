@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
 
-const loadController = () => {
+const loadController = ({ items = null, anyStored = true } = {}) => {
   const findQueries = [];
   const updates = [];
   const item = {
@@ -15,13 +15,16 @@ const loadController = () => {
     toJSON() { return { ...this, id: this._id }; },
   };
   const user = { role: "admin", notifications: {}, lastLogin: new Date() };
+  const visibleItems = items === null ? [item] : items;
   const original = Module._load;
   const mocks = {
     "../models/Notification": {
       find: (query) => {
         findQueries.push(query);
-        return { sort() { return this; }, limit: async () => [item] };
+        return { sort() { return this; }, limit: async () => visibleItems };
       },
+      exists: async () => anyStored,
+      insertMany: async (created) => created,
       findOneAndUpdate: async (query, update) => {
         updates.push({ query, update });
         return item;
@@ -72,4 +75,11 @@ test("archive and restore are scoped to the signed-in user", async () => {
     query: { _id: "notification-1", user: "user-1" },
     update: { $set: { archivedAt: null } },
   });
+});
+
+test("archiving every notification does not recreate welcome notices", async () => {
+  const fixture = loadController({ items: [], anyStored: true });
+  const res = response();
+  await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, res);
+  assert.deepEqual(res.data.notifications, []);
 });

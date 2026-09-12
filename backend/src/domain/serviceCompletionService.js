@@ -6,6 +6,10 @@ const { isDetailedFinding, detailedActions } = require("./serviceEvidence");
 const { formatDateKeyInTimeZone } = require("../utils/dateTime");
 const { callStructuredAmpAnalysis } = require("../services/openAiAmpService");
 const { buildVisitEvidence, finalizeVisitAnalysis } = require("./ampVisitAnalysis");
+const { serviceCosts, validateServiceCosts } = require("./serviceCosts");
+
+const AI_ANALYSIS_MAX_ATTEMPTS = 3;
+const AI_RETRY_DELAYS_MS = [15 * 60 * 1000, 6 * 60 * 60 * 1000];
 
 const clean = (value, max = 1000) => String(value || "").trim().slice(0, max);
 const list = (value) => (Array.isArray(value) ? value : String(value || "").split(","))
@@ -75,6 +79,13 @@ const analyzeCompletedVisit = async ({
     providerResult = { provider: "system-fallback", insight: null, error: "AI analysis could not be completed. The technician's original report remains available." };
   }
   const interpretation = finalizeVisitAnalysis({ providerResult, evidence, recommendation, serviceHistory });
+  const analysisAttempts = Number(serviceHistory.aiInterpretation?.analysisAttempts || 0) + 1;
+  const lastAnalysisAttemptAt = new Date();
+  interpretation.analysisAttempts = analysisAttempts;
+  interpretation.lastAnalysisAttemptAt = lastAnalysisAttemptAt;
+  interpretation.nextAnalysisAttemptAt = interpretation.provider !== "openai" && analysisAttempts < AI_ANALYSIS_MAX_ATTEMPTS
+    ? new Date(lastAnalysisAttemptAt.getTime() + AI_RETRY_DELAYS_MS[Math.min(analysisAttempts - 1, AI_RETRY_DELAYS_MS.length - 1)])
+    : null;
   serviceHistory.aiInterpretation = interpretation;
   await serviceHistory.save();
 
@@ -118,6 +129,33 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     const error = new Error("A service date cannot precede the recorded installation date."); error.status = 400; throw error;
   }
   const partsUsed = list(payload.parts_used || payload.partsUsed);
+  const normalizedCosts = {
+    ...payload,
+    serviceLogs: Array.isArray(payload.serviceLogs)
+      ? payload.serviceLogs.map((entry) => ({ ...entry }))
+      : payload.serviceLogs,
+  };
+  const costError = validateServiceCosts(normalizedCosts);
+  if (costError) {
+    const error = new Error(costError);
+    error.status = 400;
+    error.errors = { serviceCosts: costError };
+    throw error;
+  }
+  const costs = serviceCosts(normalizedCosts);
+  const latestLog = Array.isArray(normalizedCosts.serviceLogs)
+    ? normalizedCosts.serviceLogs.filter((entry) => entry && typeof entry === "object").at(-1) || {}
+    : {};
+  const rawHoursSpent = payload.hoursSpent ?? payload.hours_spent ?? latestLog.hoursSpent;
+  const hoursSpent = rawHoursSpent === "" || rawHoursSpent === null || rawHoursSpent === undefined
+    ? null
+    : Number(rawHoursSpent);
+  if (hoursSpent !== null && (!Number.isFinite(hoursSpent) || hoursSpent <= 0 || hoursSpent > 1000)) {
+    const error = new Error("Hours worked must be a positive number no greater than 1000.");
+    error.status = 400;
+    error.errors = { hoursSpent: error.message };
+    throw error;
+  }
 
   const historyData = {
     unit: unit._id,
@@ -130,13 +168,22 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     findings,
     actionTaken: actions.join(", "),
     partsUsed,
+    hoursSpent,
+    ...costs,
     technicianInputs: {
       notes: findings,
     },
     serviceActions: actions,
   };
+  const recordedResourceFields = Object.fromEntries(Object.entries({ hoursSpent, ...costs }).filter(([, value]) => value !== null));
+  const historyInsertData = { ...historyData };
+  Object.keys(recordedResourceFields).forEach((field) => delete historyInsertData[field]);
   const serviceHistory = sourceTaskId
-    ? await ServiceHistory.findOneAndUpdate({ unit: unit._id, sourceTaskId: String(sourceTaskId) }, { $setOnInsert: historyData }, { upsert: true, returnDocument: "after", runValidators: true })
+    ? await ServiceHistory.findOneAndUpdate(
+      { unit: unit._id, sourceTaskId: String(sourceTaskId) },
+      { $setOnInsert: historyInsertData, ...(Object.keys(recordedResourceFields).length ? { $set: recordedResourceFields } : {}) },
+      { upsert: true, returnDocument: "after", runValidators: true },
+    )
     : await ServiceHistory.create(historyData);
   let recommendation = await calculateMaintenanceRecommendation(unit._id);
   serviceHistory.ampSnapshot = {
@@ -186,4 +233,9 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
   return { unit: await Unit.findById(unit._id), serviceHistory, recommendation, interpretation: analysis.interpretation };
 };
 
-module.exports = { analyzeCompletedVisit, completeServiceForUnit, validateStrictServicePayload };
+module.exports = {
+  AI_ANALYSIS_MAX_ATTEMPTS,
+  analyzeCompletedVisit,
+  completeServiceForUnit,
+  validateStrictServicePayload,
+};

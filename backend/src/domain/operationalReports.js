@@ -135,6 +135,10 @@ const paymentMethodLabel = (value = "") => {
   return method ? method.replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Not recorded";
 };
 
+const itemSku = (item = {}) => String(
+  item.sku || item.productSku || item.model || "",
+).trim();
+
 const summarizeSalesOrders = (orders = [], options = {}) => {
   const status = normalizeSalesStatus(options.status);
   const interval = normalizeInterval(options.interval);
@@ -178,20 +182,23 @@ const summarizeSalesOrders = (orders = [], options = {}) => {
       const productKey = String(item.productId || `${item.name || "Unidentified product"}|${item.model || ""}`);
       const current = products.get(productKey) || {
         productId: String(item.productId || ""),
-        sku: String(item.sku || ""),
+        sku: itemSku(item),
         name: String(item.name || "Unidentified product"),
         model: String(item.model || item.specs || ""),
         unitsSold: 0,
         merchandiseSales: 0,
       };
+      if (!current.sku) current.sku = itemSku(item);
       current.unitsSold += Math.max(0, Number(item.quantity || 0));
       current.merchandiseSales += Math.max(0, Number(item.quantity || 0)) * Math.max(0, Number(item.price || 0));
       products.set(productKey, current);
     }
 
+    const skus = [...new Set((order.items || []).map(itemSku).filter(Boolean))];
     return {
       transactionDate: date.toISOString(),
       orderCode: String(order.orderCode || order._id || order.id || ""),
+      sku: skus.join(", ") || "Not recorded",
       customer: String(order.customerName || "Not recorded"),
       branch: String(order.stockSourceBranch || order.customerBranch || "Unassigned"),
       paymentMethod: paymentMethodLabel(order.paymentMethod),

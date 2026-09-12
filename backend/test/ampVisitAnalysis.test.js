@@ -114,8 +114,27 @@ test("completed visit analysis is stored separately and updates the shared unit 
   });
   assert.equal(saved.saveCalls, 1);
   assert.equal(saved.aiInterpretation.provider, "openai");
+  assert.equal(saved.aiInterpretation.analysisAttempts, 1);
+  assert.equal(saved.aiInterpretation.nextAnalysisAttemptAt, null);
   assert.equal(saved.findings, service.findings);
   assert.equal(unitUpdate.sourceServiceHistoryId, "visit-1");
   assert.equal(unitUpdate.recommendedService, "repair");
   assert.equal(result.recommendation, finalRecommendation);
+});
+
+test("temporary AI failure records a bounded automatic retry schedule", async (t) => {
+  const saved = { ...service, _id: "visit-retry", aiInterpretation: {}, async save() {} };
+  const chain = { sort() { return this; }, limit() { return this; }, lean: async () => [] };
+  t.mock.method(ServiceHistory, "find", () => chain);
+  const result = await analyzeCompletedVisit({
+    unit: { _id: "unit-1", brand: "LG", modelName: "Dual Inverter", category: "split", capacityHp: 1.5 },
+    serviceHistory: saved,
+    recommendation,
+    technicianId: "technician-1",
+    providerCall: async () => ({ provider: "system-fallback", insight: null, error: "Temporary provider failure" }),
+  });
+  assert.equal(result.interpretation.status, "unavailable");
+  assert.equal(result.interpretation.analysisAttempts, 1);
+  assert.ok(result.interpretation.nextAnalysisAttemptAt instanceof Date);
+  assert.ok(result.interpretation.nextAnalysisAttemptAt > result.interpretation.lastAnalysisAttemptAt);
 });
