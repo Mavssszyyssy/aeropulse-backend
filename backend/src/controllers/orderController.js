@@ -12,6 +12,7 @@ const mongoose = require("mongoose");
 const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
+const { resolveOrderPaymentStatus } = require("../domain/orderPayment");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const {
@@ -35,14 +36,14 @@ const {
   gcashRetryableStatus,
 } = require("../domain/gcashPaymentAttempts");
 
-const workflowLabel = (status) => {
+const workflowLabel = (status, deliveryStatus = "") => {
   switch (status) {
     case "to_pay":
       return "TO PAY";
     case "to_deliver":
       return "TO DELIVER";
     case "to_dispatch":
-      return "TO DISPATCH";
+      return String(deliveryStatus || "").toLowerCase() === "dispatched" ? "DISPATCH" : "TO DISPATCH";
     case "to_install":
       return "TO INSTALL";
     case "for_rescheduling":
@@ -104,7 +105,7 @@ const buildTrackingTimeline = (order = {}, task = null) => {
     ensure("confirmed", order.paymongo?.paidAt || order.updatedAt, "Order approved");
     ensure("preparing", order.updatedAt, "Preparing your assigned unit");
   }
-  if (["to_install", "complete"].includes(order.workflowStatus)) {
+  if (["to_dispatch", "to_install", "complete"].includes(order.workflowStatus) && order.dispatchedAt) {
     ensure("dispatched", order.dispatchedAt || order.updatedAt, "Order dispatched");
   }
   const taskStatus = String(task?.status || "").toLowerCase();
@@ -610,12 +611,12 @@ const lifecycleActions = {
   },
   dispatch: {
     from: ["to_deliver", "to_dispatch"],
-    to: "to_install",
+    to: "to_dispatch",
     status: "paid",
     deliveryStatus: "dispatched",
     title: "Order dispatched",
     message: (orderCode) =>
-      `Your order ${orderCode} is on the way and moved to TO INSTALL stage.`,
+      `Your order ${orderCode} has been dispatched. Installation starts only after the technician checks in and confirms someone is available.`,
   },
   complete: {
     from: ["to_install"],
@@ -837,9 +838,11 @@ const orderToResponse = (order) => {
   if (!response.id && response._id) response.id = String(response._id);
   delete response._id;
   delete response.__v;
+  response.paymentStatus = resolveOrderPaymentStatus(response);
+  if (response.receipt) response.receipt = { ...response.receipt, paymentStatus: response.paymentStatus };
   return {
     ...response,
-    workflowLabel: workflowLabel(response.workflowStatus),
+    workflowLabel: workflowLabel(response.workflowStatus, response.deliveryStatus),
   };
 };
 
@@ -2674,6 +2677,9 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   }
   if (action === "dispatch" && linkedTaskBeforeAction && ["completed", "failed"].includes(String(linkedTaskBeforeAction.status || "").toLowerCase())) {
     throw new HttpError(409, `Order ${order.orderCode} has a ${linkedTaskBeforeAction.status} technician task and cannot be dispatched again.`);
+  }
+  if (action === "dispatch" && order.workflowStatus === "to_dispatch" && order.deliveryStatus === "dispatched") {
+    throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is waiting for technician arrival confirmation.`);
   }
 
   if (action === "dispatch" && order.stockReservationStatus === "pending") {

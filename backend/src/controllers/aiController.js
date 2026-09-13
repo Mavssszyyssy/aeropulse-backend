@@ -13,6 +13,7 @@ const { effectiveWarrantyStatus } = require("../domain/warrantyService");
 const { savePredictionSnapshot, loadPredictionReview } = require("../domain/maintenancePredictionReview");
 const { assertAmpBranch } = require("../domain/ampAccess");
 const { ENGINE_VERSION, validPrediction } = require("../domain/ampPrediction");
+const { explanationForRecommendation } = require("../domain/ampCustomerExplanation");
 
 const REPORT_TYPES = {
   predictive_maintenance: { label: "Next Maintenance Recommendation", filenameLabel: "Maintenance_Recommendation" },
@@ -163,6 +164,7 @@ const generateAmpReport = async (req, res) => {
       reportType: type,
     });
     const insight = !predictionResult && ai.insight ? validateAmpInsight(ai.insight, recommendation) : null;
+    const customerExplanation = explanationForRecommendation(recommendation);
     const generatedAt = new Date().toISOString(); const date = formatDateKeyInTimeZone(generatedAt);
     const identifier = slugSegment(unit.serialNumber || unit.qrUnitId, "AC-UNIT");
     const fileIdentifier = aggregate ? `Branch-${slugSegment(branch, "AEROPULSE")}` : identifier;
@@ -187,6 +189,8 @@ const generateAmpReport = async (req, res) => {
           latestVisitAnalysis: recommendation.latestVisitAnalysis,
           conditionBasedFollowUp: recommendation.conditionBasedFollowUp,
           dataQuality: recommendation.dataQuality, overdue: recommendation.overdue,
+          aiAssessment: customerExplanation.aiAssessment,
+          whyThisDate: customerExplanation.whyThisDate,
           interpretation: insight?.recommendation_summary || recommendation.recommendationBasis,
         },
         serviceHistory: history.map((item) => ({ ...formatHistory(item), evidence: assessServiceEvidence(item, { installedAt: unit.installation?.installedAt }) })), serviceRequests: requests.map((item) => ({ date: item.createdAt, type: item.serviceType || item.issueType || "service", status: item.status || "" })),

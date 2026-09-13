@@ -175,8 +175,14 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const followUp = followUpDate
     ? `${actionLabel(ai?.follow_up_action, recommendation.recommendedService)} is recommended by ${dateKey(followUpDate)}.`
     : "A follow-up date could not be calculated from the available records.";
+  const aiAssessment = ai
+    ? `${recorded} ${predictedRisk} ${guidanceFor(ai.repair_or_replacement)}`
+    : `${recorded} The automatic review is temporarily unavailable, so no new issue has been added by the system.`;
+  const whyThisDate = followUpDate
+    ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[ai?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
+    : "A date could not be selected from the available records.";
   const customerSummary = ai
-    ? `${recorded} Condition-based AI assessment: ${predictedRisk} Evidence confidence is ${ai.evidence_confidence}, based only on the submitted report and recorded service history. ${guidanceFor(ai.repair_or_replacement)} ${followUp}`
+    ? `${aiAssessment} ${followUp}`
     : `${recorded} The automatic follow-up review is temporarily unavailable. ${followUp}`;
   const recommendedActions = [
     guidanceFor(ai?.repair_or_replacement || "not_assessed"),
@@ -201,6 +207,8 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     recommendedFollowUpDays: ai?.follow_up_days || null,
     recommendedFollowUpDate: followUpDate,
     evidenceFactIds: ai?.evidence_fact_ids || ["latest_findings", "latest_work_performed"].filter((id) => evidence.fact_catalog?.[id]),
+    aiAssessment: clean(aiAssessment, 1800),
+    whyThisDate: clean(whyThisDate, 1000),
     customerSummary: clean(customerSummary, 1800),
     model: ai ? providerResult.model || "" : "",
     requestId: ai ? providerResult.requestId || "" : "",

@@ -114,7 +114,7 @@ test('delivery attempt preserves payment and fulfillment while syncing next appo
   assert.equal((await f.call('scheduleNextVisit', 'superadmin', { attemptId, scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' })).statusCode, 200);
   assert.equal(f.order.installationDate, '2099-12-12');
   assert.equal(f.order.installationTimeSlot, '10:00 AM – 12:00 PM');
-  assert.equal(f.order.workflowStatus, 'to_install');
+  assert.equal(f.order.workflowStatus, 'to_dispatch');
   assert.equal(f.order.fulfillmentTimeline.length, 2);
   assert.equal(f.order.visitAttempt.awaitingAdmin, false);
   assert.equal(f.order.paymentStatus, 'unpaid');
@@ -127,4 +127,27 @@ test('delivery attempt preserves payment and fulfillment while syncing next appo
   assert.equal(f.order.workflowStatus, 'to_dispatch');
   assert.equal(f.order.deliveryStatus, 'failed_installation');
   assert.equal(f.order.paymentStatus, 'unpaid');
+});
+
+test('failed installation records confirmed GCash and card payments as paid even when the legacy status is pending', async () => {
+  for (const paymentMethod of ['gcash', 'card']) {
+    const f = fixture({ delivery: true });
+    f.order.paymentMethod = paymentMethod;
+    f.order.paymentProvider = 'paymongo';
+    f.order.paymentStatus = 'pending';
+    f.order.totalAmount = 25000;
+    f.order.paymongo = { paidAt: '2026-09-13T02:00:00.000Z', referenceNumber: `PAY-${paymentMethod}` };
+
+    assert.equal((await f.call('submitVisitAttempt', 'technician')).statusCode, 200);
+    assert.deepEqual(f.task().payload.visitAttempt.payment, {
+      method: paymentMethod,
+      provider: 'paymongo',
+      status: 'paid',
+      amount: 25000,
+      paidAt: '2026-09-13T02:00:00.000Z',
+      reference: `PAY-${paymentMethod}`,
+    });
+    assert.equal(f.order.workflowStatus, 'for_rescheduling');
+    assert.equal(f.order.paymentStatus, 'pending');
+  }
 });

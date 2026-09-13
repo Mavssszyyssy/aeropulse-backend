@@ -23,23 +23,23 @@ test("legacy pending COD dispatch reserves once and does not record arrival or p
   await assert.rejects(apply(order, "approve"), /do not require payment approval/);
   await assert.rejects(apply(order, "dispatch"), /Assign a technician/);
   await apply(order, "dispatch", { assignedTechnicianId: "tech" });
-  assert.equal(order.workflowStatus, "to_install");
+  assert.equal(order.workflowStatus, "to_dispatch");
   assert.equal(order.deliveryStatus, "dispatched");
   assert.equal(order.status, "pending");
   assert.equal(order.paymentStatus, "pending");
   assert.equal(state.reservations, 1);
   assert.equal(state.activated, true);
   assert.deepEqual(state.events, ["dispatched"]);
-  await assert.rejects(apply(order, "dispatch"), /Cannot dispatch/);
+  await assert.rejects(apply(order, "dispatch"), /already dispatched/);
   assert.equal(state.reservations, 1);
-  await assert.rejects(apply(order, "complete"), /confirm cash collection/);
+  await assert.rejects(apply(order, "complete"), /Cannot complete/);
 });
 test("new checkout-reserved COD dispatch does not reserve stock again", async () => {
   const state = { reservations: 0, events: [] };
   const apply = buildAction(state);
   const order = { orderCode: "COD-2", workflowStatus: "to_deliver", paymentMethod: "cod", paymentStatus: "pending", status: "pending", stockReservationStatus: "reserved", save: noop };
   await apply(order, "dispatch", { assignedTechnicianId: "tech" });
-  assert.equal(order.workflowStatus, "to_install");
+  assert.equal(order.workflowStatus, "to_dispatch");
   assert.equal(state.reservations, 0);
   assert.equal(state.activated, true);
 });

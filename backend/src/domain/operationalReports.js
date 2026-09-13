@@ -1,4 +1,5 @@
 const { BRANCHES } = require("./branchRouting");
+const { orderIsPaid } = require("./orderPayment");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SALES_STATUSES = ["all", "paid", "complete", "to_pay", "to_deliver", "to_dispatch", "to_install", "for_rescheduling", "cancelled"];
@@ -56,12 +57,6 @@ const normalizeInterval = (value = "daily") => {
   if (["month", "monthly"].includes(interval)) return "monthly";
   return "daily";
 };
-
-const orderIsPaid = (order = {}) => Boolean(
-  ["paid", "completed", "succeeded"].includes(String(order.paymentStatus || order.status || "").toLowerCase())
-  || order.paymongo?.paidAt
-  || order.codCollection?.collectedAt,
-);
 
 const orderMatchesSalesStatus = (order = {}, status = "paid") => {
   const workflow = String(order.workflowStatus || "").toLowerCase();

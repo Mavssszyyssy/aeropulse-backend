@@ -135,6 +135,8 @@ const serializeCustomerUnit = (unit, history = [], recommendation = null, produc
     lastServiceDate: recommendation ? recommendation.lastServiceDate : json.amp?.lastServiceDate || null,
     lastCleaningDate: recommendation ? recommendation.lastCleaningDate : json.amp?.lastCleaningDate || null,
     recommendationBasis: recommendation?.recommendationBasis || json.amp?.recommendationBasis || "",
+    aiAssessment: recommendation?.aiAssessment || "",
+    whyThisDate: recommendation?.whyThisDate || "",
     historicalBasis: recommendation?.historicalBasis || null,
     predictionSource: recommendation?.predictionSource || "system",
     capacityAssessment: recommendation?.capacityAssessment || json.amp?.capacityAssessment || null,

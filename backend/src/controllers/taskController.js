@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const crypto = require("node:crypto");
 const { awaitingVisitFollowUp, FOLLOW_UP_REQUIRED } = require('../domain/visitAttempt');
 const { cancelWarrantyForRequest } = require('../domain/warrantyCancellation');
 const Task = require("../models/Task");
@@ -7,8 +8,9 @@ const Product = require("../models/Product");
 const Order = require("../models/Order");
 const Unit = require("../models/Unit");
 const ServiceRequest = require("../models/ServiceRequest");
-const { servicePaymentSummary, servicePaymentBlocker } = require("../domain/servicePayment");
+const { servicePaymentSummary, servicePaymentBlocker, servicePaymentRecord } = require("../domain/servicePayment");
 const { serviceCosts, validateServiceCosts } = require("../domain/serviceCosts");
+const { buildOrderPaymentSnapshot } = require("../domain/orderPayment");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff, createDedupedNotification } = require("../services/operationalNotificationService");
 const ServiceHistory = require("../models/ServiceHistory");
@@ -482,7 +484,12 @@ const syncOrderWorkflowForTask = async (task, status) => {
     order.assignedTechnician = task.assignedTechnicianName;
   }
   if (trackingStatus === "arrived") order.deliveryStatus = "arrived";
-  if (trackingStatus === "installing") order.deliveryStatus = "installing";
+  if (trackingStatus === "installing") {
+    order.workflowStatus = "to_install";
+    order.deliveryStatus = "installing";
+    task.payload = { ...(task.payload || {}), orderWorkflowStatus: "to_install", deliveryStatus: "installing" };
+    await task.save();
+  }
   if (normalizedStatus !== "completed") {
     await order.save();
     if (!["pending", "accepted"].includes(normalizedStatus)) {
@@ -586,6 +593,35 @@ const getServiceCompletionPaymentBlocker = async (task) => {
   const requestId = task.payload?.requestId;
   if (!requestId) return "";
   return servicePaymentBlocker(await ServiceRequest.findById(requestId));
+};
+
+const serviceCostFieldsPresent = (payload = {}) => ["serviceLogs", "laborCost", "partsCost"].some((key) => Object.hasOwn(payload, key));
+
+const serviceCostMutationBlocker = async (task, payload = {}) => {
+  if (!serviceCostFieldsPresent(payload) || !task.payload?.requestId) return "";
+  const request = await ServiceRequest.findById(task.payload.requestId);
+  if (!request?.servicePayment?.collectedAt) return "";
+  const current = servicePaymentRecord(request, task.payload || {});
+  const next = servicePaymentRecord(request, { ...(task.payload || {}), ...payload });
+  return current.laborCost !== next.laborCost || current.partsCost !== next.partsCost
+    ? "Payment was already collected. Labor or parts costs can no longer be changed on this visit."
+    : "";
+};
+
+const syncServicePaymentForTask = async (task) => {
+  const requestId = String(task.payload?.requestId || "").trim();
+  if (!mongoose.Types.ObjectId.isValid(requestId)) return null;
+  const request = await ServiceRequest.findById(requestId);
+  if (!request || request.payload?.warrantyClaimId || request.servicePayment?.collectedAt) return request;
+  const next = servicePaymentRecord(request, task.payload || {});
+  const current = servicePaymentSummary(request);
+  const changed = current?.baseAmount !== next.baseAmount || current?.laborCost !== next.laborCost || current?.partsCost !== next.partsCost || current?.amount !== next.amount;
+  if (!changed) return request;
+  next.quoteId = crypto.randomUUID();
+  next.quotedAt = new Date();
+  request.servicePayment = next;
+  await request.save();
+  return request;
 };
 
 const validateCompletionReport = (task, payload = {}) => {
@@ -1052,6 +1088,8 @@ const updateTask = async (req, res) => {
     const requestedStatus = parseTaskStatus(payload.status);
     const costError = validateServiceCosts(payload);
     if (costError) return res.status(400).json({ message: costError });
+    const costMutationError = await serviceCostMutationBlocker(task, payload);
+    if (costMutationError) return res.status(409).json({ message: costMutationError });
     if (normalizeStatus(task.status) === "completed" && requestedStatus === "completed") {
       await reconcileCompletedTask(task);
       return res.json({ task: hydrateTaskResponse(task), replayed: true });
@@ -1174,6 +1212,7 @@ const updateTask = async (req, res) => {
     task.payload = updatedPayload;
 
     await task.save();
+    await syncServicePaymentForTask(task);
     if (reassigned) await notifyTaskAssignment(task);
     await syncOrderWorkflowForTask(task, nextStatus);
     await syncServiceRequestForTask(task, nextStatus);
@@ -1197,14 +1236,7 @@ const getTaskById = async (req, res) => {
     const unit = await getTaskUnitSummary(task);
     const order = await findLinkedOrderForTask(task);
     const codPayment = order && isCodOrder(order) ? { amount: order.totalAmount, collectedAt: order.codCollection?.collectedAt || null } : null;
-    const orderPayment = order ? {
-      method: order.paymentMethod || "",
-      provider: order.paymentProvider || "",
-      status: order.paymentStatus || order.status || "pending",
-      amount: Number(order.totalAmount || 0),
-      paidAt: order.paymongo?.paidAt || order.codCollection?.collectedAt || null,
-      reference: order.paymongo?.referenceNumber || order.receipt?.paymentReference || "",
-    } : null;
+    const orderPayment = order ? buildOrderPaymentSnapshot(order) : null;
     const serviceRequest = task.payload?.requestId ? await ServiceRequest.findById(task.payload.requestId) : null;
     return res.json({ task: { ...hydrateTaskResponse(task), unit, codPayment, orderPayment, servicePayment: servicePaymentSummary(serviceRequest) } });
   } catch (error) {
@@ -1714,6 +1746,8 @@ const updateTaskStatus = async (req, res) => {
     const payload = req.body || {};
     const costError = validateServiceCosts(payload);
     if (costError) return res.status(400).json({ message: costError });
+    const costMutationError = await serviceCostMutationBlocker(task, payload);
+    if (costMutationError) return res.status(409).json({ message: costMutationError });
     const proof = buildTaskProof({ task, payload, req, nextStatus: status });
     if (["arrived", "installing"].includes(status) && !hasVerifiedTaskCheckIn(task)) {
       return res.status(409).json({ message: "The assigned technician must check in with GPS before arrival or installation can be confirmed." });
@@ -1784,6 +1818,7 @@ const updateTaskStatus = async (req, res) => {
       task.payload.installationStartedAt = new Date().toISOString();
     }
     await task.save();
+    await syncServicePaymentForTask(task);
     await syncOrderWorkflowForTask(task, status);
     await syncServiceRequestForTask(task, status);
     // Installation work orders are not linked to a service-request record,

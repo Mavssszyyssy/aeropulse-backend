@@ -5,6 +5,7 @@ const ServiceRequest = require('../models/ServiceRequest');
 const Order = require('../models/Order');
 const { notifyOperationalStaff, createDedupedNotification } = require('../services/operationalNotificationService');
 const { awaitingVisitFollowUp, visitAttemptError, nextVisitError } = require('../domain/visitAttempt');
+const { buildOrderPaymentSnapshot } = require('../domain/orderPayment');
 
 async function scopedTask(req) {
   const id = String(req.params.taskId || '');
@@ -41,7 +42,7 @@ async function syncAttempt(task, attempt, resolved = false) {
       : attempt.outcome === 'reschedule' ? 'Visit rescheduling requested' : 'Visit closed — no one available';
   const description = resolved
     ? installationAttempt
-      ? `Next visit: ${task.scheduledDate} · ${task.timeSlot}. The ticket is now To Install and a new GPS check-in is required.`
+      ? `Next visit: ${task.scheduledDate} · ${task.timeSlot}. The installation has been dispatched for the new visit. A new GPS check-in and customer-presence confirmation are required before installation starts.`
       : `Next visit: ${task.scheduledDate} · ${task.timeSlot}. A new GPS check-in is required.`
     : installationAttempt
       ? `${attempt.note} Installation was not started. ${summary?.nextWorkflowStatus === 'to_dispatch' ? 'This revisit must return to To Dispatch.' : 'Admin must confirm the next schedule.'}`
@@ -61,7 +62,7 @@ async function syncAttempt(task, attempt, resolved = false) {
         order.fulfillmentTimeline.push({ stage: eventId, label: title, detail: description, timestamp: new Date() });
       }
       if (resolved) {
-        order.workflowStatus = 'to_install';
+        order.workflowStatus = 'to_dispatch';
         order.deliveryStatus = 'dispatched';
         order.installationDate = task.scheduledDate;
         order.estimatedArrival = task.scheduledDate;
@@ -117,13 +118,7 @@ async function submitVisitAttempt(req, res) {
       const order = await linkedInstallationOrder(task);
       const attemptCount = Number(previousAttempt?.attemptNumber || 0) + 1;
       const isRevisitFailure = Boolean(previousAttempt?.resolution) || attemptCount > 1;
-      const payment = order ? {
-        method: order.paymentMethod || '',
-        status: order.paymentStatus || order.status || 'pending',
-        amount: Number(order.totalAmount || 0),
-        paidAt: order.paymongo?.paidAt || order.codCollection?.collectedAt || null,
-        reference: order.paymongo?.referenceNumber || order.receipt?.paymentReference || '',
-      } : null;
+      const payment = order ? buildOrderPaymentSnapshot(order) : null;
       const summary = {
         id: String(attempt._id), outcome: attempt.outcome, note: attempt.note,
         submittedAt: attempt.submittedAt, awaitingAdmin: true, attemptNumber: attemptCount,

@@ -89,6 +89,8 @@ const serviceHistorySchema = new mongoose.Schema(
       recommendedFollowUpDays: { type: Number, default: null, min: 1, max: 365 },
       recommendedFollowUpDate: { type: Date, default: null },
       evidenceFactIds: [{ type: String, trim: true }],
+      aiAssessment: { type: String, default: "", trim: true },
+      whyThisDate: { type: String, default: "", trim: true },
       customerSummary: { type: String, default: "", trim: true },
       model: { type: String, default: "", trim: true },
       requestId: { type: String, default: "", trim: true },

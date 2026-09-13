@@ -104,6 +104,8 @@ const analyzeCompletedVisit = async ({
         recommendedService: interpretation.recommendedService,
         recommendedFollowUpDays: interpretation.recommendedFollowUpDays,
         recommendedDate: interpretation.recommendedFollowUpDate,
+        aiAssessment: interpretation.aiAssessment,
+        whyThisDate: interpretation.whyThisDate,
         customerSummary: interpretation.customerSummary,
         generatedAt: interpretation.generatedAt,
       },

@@ -7,6 +7,7 @@ const { serviceTypeFor, assessServiceEvidence } = require("./serviceEvidence");
 const { maintenanceSignalsFor } = require("./ampMaintenanceSignals");
 const { businessDay } = require("../utils/dateTime");
 const { predictionEvidence, predictionBasis, savedPredictionIsCurrent } = require("./ampPrediction");
+const { explanationForRecommendation } = require("./ampCustomerExplanation");
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SERVICE_INTERVAL_DAYS = 180;
@@ -258,6 +259,15 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
   }
   const excludedRecordCount = allHistory.length - ownHistory.length;
   const dataQuality = { excludedRecordCount, message: excludedRecordCount ? `${excludedRecordCount} service record(s) have missing details or invalid dates and are excluded from maintenance timing. Ask the service team to review them.` : "", anchorType: lastCleaningDate ? "last_cleaning" : installedAt ? "installation" : "missing" };
+  const customerExplanation = explanationForRecommendation({
+    bestServicedBy: bestServicedBy?.toISOString() || null,
+    lastCleaningDate: lastCleaningDate?.toISOString() || null,
+    predictionSource,
+    historicalBasis: { level: cohort.level, intervalDays, sampleSize: cohort.sampleSize },
+    patternAnalysis,
+    latestVisitAnalysis: visitFollowUpIsCurrent ? visitFollowUp : null,
+    conditionBasedFollowUp: visitFollowUpIsCurrent && visitFollowUp.recommendationMode === "condition_based" ? visitFollowUp : null,
+  });
 
   if (options.persist !== false) {
     unit.amp = {
@@ -265,6 +275,8 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
       bestServicedBy,
       recommendedService,
       recommendationBasis: basis,
+      aiAssessment: customerExplanation.aiAssessment,
+      whyThisDate: customerExplanation.whyThisDate,
       basisLevel: cohort.level,
       intervalDays,
       predictionSource,
@@ -291,7 +303,7 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     await unit.save();
   }
 
-  return {
+  const result = {
     unitId: String(unit._id),
     serialNumber: unit.serialNumber,
     brand: unit.brand,
@@ -328,6 +340,7 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     overdue: Boolean(bestServicedBy && bestServicedBy < asOfDate),
     generatedAt: new Date().toISOString(),
   };
+  return { ...result, ...customerExplanation };
 };
 
 const refreshMaintenanceRecommendations = async (query = {}, asOfDate = new Date()) => {

@@ -156,6 +156,8 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         zipCode: unit.installation?.zipCode || "", addressLine: unit.installation?.addressLine || "",
         bestServicedBy: dueDate.toISOString(), recommendedService: unit.amp.recommendedService || "regular_cleaning",
         recommendationBasis: unit.amp.recommendationBasis || "", daysUntilDue: daysBetween(now, dueDate),
+        aiAssessment: unit.amp.aiAssessment || "",
+        whyThisDate: unit.amp.whyThisDate || unit.amp.recommendationBasis || "",
         overdue: dueDate < now, lastServiceDate: unit.amp.lastServiceDate || null,
         warrantyStatus: effectiveWarrantyStatus(unit.warranty || {}),
         capacityAssessment: unit.amp.capacityAssessment || null,

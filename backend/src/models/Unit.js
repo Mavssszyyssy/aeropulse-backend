@@ -54,6 +54,8 @@ const unitSchema = new mongoose.Schema(
         default: "regular_cleaning",
       },
       recommendationBasis: { type: String, default: "", trim: true },
+      aiAssessment: { type: String, default: "", trim: true },
+      whyThisDate: { type: String, default: "", trim: true },
       basisLevel: {
         type: String,
         enum: ["same_unit", "same_model", "same_brand_type", "same_brand", "similar_category", "system_default"],
@@ -103,6 +105,8 @@ const unitSchema = new mongoose.Schema(
         recommendedService: { type: String, enum: ["", "regular_cleaning", "deep_cleaning", "inspection", "repair"], default: "" },
         recommendedFollowUpDays: { type: Number, default: null, min: 1, max: 365 },
         recommendedDate: { type: Date, default: null },
+        aiAssessment: { type: String, default: "", trim: true },
+        whyThisDate: { type: String, default: "", trim: true },
         customerSummary: { type: String, default: "", trim: true },
         generatedAt: { type: Date, default: null },
       },

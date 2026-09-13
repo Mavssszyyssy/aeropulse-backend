@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const { isValidObjectId } = require("mongoose");
 const ServiceRequest = require("../models/ServiceRequest");
 const Task = require("../models/Task");
-const { servicePaymentSummary } = require("../domain/servicePayment");
+const { servicePaymentSummary, servicePaymentRecord } = require("../domain/servicePayment");
 const { notifyOperationalStaff, createDedupedNotification } = require("../services/operationalNotificationService");
 const { hasVerifiedTaskCheckIn } = require("../domain/taskWorkflow");
 
@@ -25,7 +25,12 @@ const setServiceQuote = async (req, res) => {
   const raw = req.body?.amount;
   const amount = Number(raw);
   if (!["number", "string"].includes(typeof raw) || String(raw).trim() === "" || !Number.isFinite(amount) || amount < 0 || amount > 1000000 || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) return res.status(400).json({ message: "Enter a non-negative PHP quote with at most two decimal places." });
-  const saved = await ServiceRequest.findOneAndUpdate({ _id: request._id, updatedAt: request.updatedAt, "servicePayment.collectedAt": null, status: { $nin: ["Completed", "Cancelled"] } }, { $set: { servicePayment: { amount, quoteId: crypto.randomUUID(), quotedAt: new Date(), quotedBy: String(req.authUser._id) } } }, { returnDocument: "after" });
+  const linkedTaskId = request.payload?.linkedTaskId;
+  const linkedTask = linkedTaskId && isValidObjectId(linkedTaskId)
+    ? await Task.findById(linkedTaskId).select("payload")
+    : null;
+  const paymentRecord = servicePaymentRecord(request, linkedTask?.payload || {}, { baseAmount: amount, quoteId: crypto.randomUUID(), quotedAt: new Date(), quotedBy: String(req.authUser._id) });
+  const saved = await ServiceRequest.findOneAndUpdate({ _id: request._id, updatedAt: request.updatedAt, "servicePayment.collectedAt": null, status: { $nin: ["Completed", "Cancelled"] } }, { $set: { servicePayment: paymentRecord } }, { returnDocument: "after" });
   if (!saved) return res.status(409).json({ message: "This request changed. Refresh before setting the quote." });
   await notifyPayment(saved, "quoted");
   return res.json({ servicePayment: servicePaymentSummary(saved) });
@@ -42,6 +47,7 @@ const collectServicePayment = async (req, res) => {
   const payment = servicePaymentSummary(request);
   if (payment.status === "paid") return res.json({ servicePayment: payment });
   if (payment.status !== "due") return res.status(409).json({ message: payment.status === "quote_required" ? "Admin must set the service quote first." : "No cash collection is required for this service." });
+  if (!Array.isArray(task.payload?.serviceLogs) || task.payload.serviceLogs.length === 0) return res.status(409).json({ message: "Save the technician service note and any labor or parts costs before collecting payment." });
   if (req.body?.confirmed !== true || req.body?.amount !== payment.amount || req.body?.quoteId !== payment.quoteId) return res.status(409).json({ message: "Confirm the current full service amount. Refresh if the quote changed." });
   const saved = await ServiceRequest.findOneAndUpdate({ _id: request._id, updatedAt: request.updatedAt, assignedTechnicianId: String(req.authUser._id), "servicePayment.collectedAt": null, status: "In Progress" }, { $set: { servicePayment: { ...(request.servicePayment || {}), amount: payment.amount, quoteId: payment.quoteId, collectedAt: new Date(), collectedBy: String(req.authUser._id), taskId: String(task._id), method: "cash" } } }, { returnDocument: "after" });
   if (!saved) return res.status(409).json({ message: "Service details changed. Refresh before confirming collection." });
