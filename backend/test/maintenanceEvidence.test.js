@@ -202,7 +202,7 @@ test("the latest validated AI visit follow-up overrides the routine plan without
   const fixture = {
     _id: "fixture", brand: "LG", modelName: "Test", category: "split", status: "active",
     installation: { installedAt: "2025-01-01" },
-    amp: { visitFollowUp: { sourceServiceHistoryId: "visit-1", provider: "openai", severity: "soon", recommendedService: "inspection", recommendedDate: "2026-10-01", customerSummary: summary } },
+    amp: { visitFollowUp: { sourceServiceHistoryId: "visit-1", provider: "openai", severity: "soon", recommendationMode: "condition_based", recommendedService: "inspection", recommendedDate: "2026-10-01", customerSummary: summary } },
     save: async () => {},
   };
   const rows = [
@@ -219,6 +219,9 @@ test("the latest validated AI visit follow-up overrides the routine plan without
   assert.equal(result.recommendationBasis, summary);
   assert.equal(result.lastCleaningDate, "2026-01-01T00:00:00.000Z");
   assert.equal(result.latestVisitAnalysis.sourceServiceHistoryId, "visit-1");
+  assert.equal(result.conditionBasedFollowUp.sourceServiceHistoryId, "visit-1");
+  assert.equal(result.routineMaintenance.bestServicedBy, "2026-07-01T00:00:00.000Z");
+  assert.equal(result.routineMaintenance.recommendedService, "regular_cleaning");
 });
 test("equal horsepower in a different category is brand evidence, not same-type evidence", async (t) => {
   const unit = { _id: "target", brand: "LG", modelName: "Split A", category: "split", capacityHp: 1, installation: { installedAt: "2026-06-01" } };

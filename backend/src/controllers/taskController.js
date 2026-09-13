@@ -692,7 +692,7 @@ const notifyCustomerOfCompletedService = async (task, request = {}, completedHis
   if (alreadyNotified) return;
   const message = String(interpretation?.customerSummary || "").trim()
     || `Your technician service for ${request.issue || task.issueType || "your AC unit"} has been completed.`;
-  const severity = interpretation?.severity === "urgent" ? "critical"
+  const severity = ["critical", "urgent"].includes(interpretation?.severity) ? "critical"
     : ["soon", "monitor"].includes(interpretation?.severity) ? "warning" : "info";
   await Notification.create({
     user: customerId,

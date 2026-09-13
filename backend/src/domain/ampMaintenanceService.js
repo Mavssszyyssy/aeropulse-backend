@@ -237,6 +237,13 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
   const capacityAssessment = capacityAssessmentFor(unit);
   let basis = aiCurrent ? predictionBasis(savedAi.prediction, evidence) : anchor ? basisText(cohort) : "A completed cleaning or installation date is needed before a servicing date can be suggested.";
   let predictionSource = aiCurrent ? "openai" : "system";
+  const routineMaintenance = {
+    bestServicedBy: bestServicedBy?.toISOString() || null,
+    recommendedService,
+    recommendationBasis: basis,
+    predictionSource,
+    intervalDays,
+  };
   const visitFollowUp = unit.amp?.visitFollowUp?.toObject?.() || unit.amp?.visitFollowUp || null;
   const latestCompletedVisit = newestFirst.find((history) => normalizeServiceType(history) !== "installation") || null;
   const visitFollowUpIsCurrent = Boolean(visitFollowUp?.provider === "openai"
@@ -272,6 +279,13 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
       nextIdealServicePeriod: bestServicedBy ? `Suggested servicing date: ${bestServicedBy.toISOString().slice(0, 10)}` : "Installation or cleaning date required",
       lastCalculatedAt: new Date(),
       dataQuality,
+      routineMaintenance: {
+        bestServicedBy: routineMaintenance.bestServicedBy,
+        recommendedService: routineMaintenance.recommendedService,
+        recommendationBasis: routineMaintenance.recommendationBasis,
+        predictionSource: routineMaintenance.predictionSource,
+        intervalDays: routineMaintenance.intervalDays,
+      },
     };
     if (["active", "service_due"].includes(unit.status) && bestServicedBy) unit.status = bestServicedBy < asOfDate ? "service_due" : "active";
     await unit.save();
@@ -296,6 +310,8 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     predictionEvidence: evidence,
     aiPrediction: aiCurrent ? { model: savedAi.model, generatedAt: savedAi.generatedAt, engineVersion: savedAi.engineVersion } : null,
     latestVisitAnalysis: visitFollowUpIsCurrent ? visitFollowUp : null,
+    conditionBasedFollowUp: visitFollowUpIsCurrent && visitFollowUp.recommendationMode === "condition_based" ? visitFollowUp : null,
+    routineMaintenance,
     historicalBasis: {
       level: cohort.level,
       intervalDays,

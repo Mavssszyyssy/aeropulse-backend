@@ -110,3 +110,27 @@ it("shows saved plans with technician outcomes as review evidence, never as an A
   expect(screen.getByText(/Dust buildup found on the coil/)).toBeVisible();
   expect(screen.queryByText(/accuracy/i)).not.toBeInTheDocument();
 });
+
+it("separates a condition-based AI follow-up from the routine cleaning plan", async () => {
+  apiRequest.mockResolvedValue({ provider: "openai", report: {
+    reportId: "CONDITION-1", reportType: "predictive_maintenance", branch: "Cavite",
+    maintenance: {
+      predictionSource: "openai", bestServicedBy: "2026-09-18", recommendedService: "repair",
+      recommendationBasis: "Condition follow-up based on the completed report.",
+      latestVisitAnalysis: { provider: "openai", severity: "urgent", predictedRisk: "The report indicates a possible developing component-wear risk involving the fan motor.", affectedComponent: "fan_motor", evidenceConfidence: "high", customerSummary: "The fan motor needs an earlier assessment." },
+      conditionBasedFollowUp: { provider: "openai", recommendationMode: "condition_based" },
+      routineMaintenance: { bestServicedBy: "2027-03-13", recommendedService: "regular_cleaning", intervalDays: 180, recommendationBasis: "6-month routine cleaning schedule." },
+    }, serviceHistory: [],
+  } });
+  render(<AmpReportCenter units={[{ id: "unit-1", model: "AC" }]} />);
+  fireEvent.change(screen.getByLabelText("Installed AC unit"), { target: { value: "unit-1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Generate report" }));
+  expect(await screen.findByText("AI-reviewed technician follow-up")).toBeVisible();
+  expect(screen.getByText("Condition follow-up date")).toBeVisible();
+  expect(screen.getByText(/possible developing component-wear risk/)).toBeVisible();
+  expect(screen.getByText("Urgent")).toBeVisible();
+  expect(screen.getByText("High")).toBeVisible();
+  expect(screen.getByText("Fan Motor")).toBeVisible();
+  expect(screen.getByText("Separate routine cleaning plan")).toBeVisible();
+  expect(screen.getByText("March 13, 2027")).toBeVisible();
+});

@@ -183,6 +183,9 @@ const generateAmpReport = async (req, res) => {
           recommendedServiceLabel: displayService(recommendation.recommendedService), recommendationBasis: recommendation.recommendationBasis,
           historicalBasis: recommendation.historicalBasis, capacityAssessment: recommendation.capacityAssessment,
           patternAnalysis: recommendation.patternAnalysis, maintenanceSignals: recommendation.maintenanceSignals,
+          routineMaintenance: recommendation.routineMaintenance,
+          latestVisitAnalysis: recommendation.latestVisitAnalysis,
+          conditionBasedFollowUp: recommendation.conditionBasedFollowUp,
           dataQuality: recommendation.dataQuality, overdue: recommendation.overdue,
           interpretation: insight?.recommendation_summary || recommendation.recommendationBasis,
         },
@@ -190,7 +193,7 @@ const generateAmpReport = async (req, res) => {
         technicianTasks: tasks.map((item) => ({ date: item.completedAt || item.updatedAt, title: cleanText(item.title), status: item.status || "" })),
         aggregateReliability: aggregate,
         predictionReview, predictionReviewWarning,
-        note: "This is a suggested maintenance schedule, not a confirmed booking or technician diagnosis. Book a service visit in the Cold Air mobile app." + (ai.error ? ` ${ai.error}` : ""),
+        note: "This is a suggested maintenance schedule, not a confirmed booking or confirmed failure diagnosis. Condition follow-ups are limited to the technician's submitted findings and recorded history. Book a service visit in the Cold Air mobile app." + (ai.error ? ` ${ai.error}` : ""),
       },
     });
   } catch (error) {

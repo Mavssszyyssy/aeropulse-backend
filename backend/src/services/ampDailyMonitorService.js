@@ -81,7 +81,7 @@ const retryUnavailableVisitAnalyses = async ({ now = new Date(), batchSize = 50 
             user: unit.customer,
             type: "service",
             category: "service_follow_up_updated",
-            severity: result.interpretation.severity === "urgent" ? "critical" : result.interpretation.severity === "soon" ? "warning" : "info",
+            severity: ["critical", "urgent"].includes(result.interpretation.severity) ? "critical" : result.interpretation.severity === "soon" ? "warning" : "info",
             title: "Your AC follow-up recommendation is ready",
             message: result.interpretation.customerSummary,
             targetId: String(unit._id),

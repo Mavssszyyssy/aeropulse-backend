@@ -45,3 +45,19 @@ test("visit analysis can recommend an inspection instead of labeling it cleaning
   expect(screen.getByText("Recommended service")).toBeTruthy();
   expect(screen.getByText("AC inspection")).toBeTruthy();
 });
+test("condition follow-up is shown separately from the routine cleaning plan", async () => {
+  const maintenance = {
+    ...report.maintenance,
+    bestServicedBy: "2026-09-18",
+    recommendedService: "repair",
+    latestVisitAnalysis: { provider: "openai", severity: "urgent", predictedRisk: "Possible fan motor wear based on the submitted report.", affectedComponent: "fan_motor", evidenceConfidence: "high", customerSummary: "Arrange an early repair assessment." },
+    conditionBasedFollowUp: { provider: "openai", recommendationMode: "condition_based" },
+    routineMaintenance: { bestServicedBy: "2027-03-13", recommendedService: "regular_cleaning", intervalDays: 180, recommendationBasis: "6-month routine cleaning schedule." },
+  };
+  await render(<CustomerAmpReport report={{ ...report, maintenance }} provider="openai" />);
+  expect(screen.getByText("AI-reviewed technician follow-up")).toBeTruthy();
+  expect(screen.getByText("Condition follow-up date")).toBeTruthy();
+  expect(screen.getByText(/Possible fan motor wear/)).toBeTruthy();
+  expect(screen.getByText("Routine cleaning plan")).toBeTruthy();
+  expect(screen.getByText("March 13, 2027")).toBeTruthy();
+});

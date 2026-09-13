@@ -61,7 +61,7 @@ const analyzeCompletedVisit = async ({
   providerCall = callStructuredAmpAnalysis,
   recalculate = calculateMaintenanceRecommendation,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed") {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 2) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
@@ -92,10 +92,17 @@ const analyzeCompletedVisit = async ({
   if (interpretation.provider === "openai" && interpretation.recommendedFollowUpDate) {
     await Unit.updateOne({ _id: unit._id }, { $set: {
       "amp.visitFollowUp": {
+        analysisVersion: interpretation.analysisVersion,
         sourceServiceHistoryId: String(serviceHistory._id),
         provider: "openai",
         severity: interpretation.severity,
+        riskType: interpretation.riskType,
+        predictedRisk: interpretation.predictedRisk,
+        affectedComponent: interpretation.affectedComponent,
+        evidenceConfidence: interpretation.evidenceConfidence,
+        recommendationMode: interpretation.recommendationMode,
         recommendedService: interpretation.recommendedService,
+        recommendedFollowUpDays: interpretation.recommendedFollowUpDays,
         recommendedDate: interpretation.recommendedFollowUpDate,
         customerSummary: interpretation.customerSummary,
         generatedAt: interpretation.generatedAt,
