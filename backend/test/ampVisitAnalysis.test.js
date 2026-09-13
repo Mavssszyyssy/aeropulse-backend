@@ -29,13 +29,14 @@ const insight = (overrides = {}) => ({
   follow_up_action: "repair_assessment",
   follow_up_days: 21,
   repair_or_replacement: "repair_may_be_needed",
-  evidence_fact_ids: ["latest_findings"],
+  evidence_fact_ids: ["latest_observations"],
   ...overrides,
 });
 
 test("visit evidence keeps technician facts separate and excludes customer identity", () => {
   const evidence = buildVisitEvidence({ unit: { brand: "LG", modelName: "Dual Inverter", category: "split", capacityHp: 1.5, customer: "private-customer" }, serviceHistory: service, recommendation, priorHistory: [{ serviceDate: "2026-03-01", serviceType: "inspection", findings: "Filter had visible dust.", actionTaken: "Recorded the filter condition." }] });
   assert.equal(evidence.visit.findings, service.findings);
+  assert.match(evidence.fact_catalog.latest_observations, /fan motor made an unusual noise/i);
   assert.equal(evidence.fact_catalog.latest_work_performed, service.actionTaken);
   assert.equal(evidence.existing_schedule.baseline_interval_days, 180);
   assert.deepEqual(evidence.follow_up_policy.severity_ranges_days.urgent, [3, 7]);
@@ -61,6 +62,32 @@ test("critical follow-up requires explicit safety evidence and accepts an adapti
   assert.equal(validVisitAnalysis(insight({ severity: "critical", risk_type: "electrical_or_safety", affected_component: "electrical_system", follow_up_days: 2 }), evidence), true);
 });
 
+test("free-text technician notes identify an unlisted control-board concern and support an earlier date", () => {
+  const noteOnlyConcern = {
+    ...service,
+    findings: "The unit completed cleaning and was tested after service.",
+    conditionRating: "fair",
+    technicianInputs: { notes: "The inverter main board is intermittently failing and may need repair if the issue continues." },
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: noteOnlyConcern, recommendation });
+  assert.match(evidence.visit.technician_notes, /main board/i);
+  assert.ok(evidence.allowed_affected_components.includes("control_board"));
+  const contextual = insight({ affected_component: "control_board", evidence_confidence: "high", severity: "urgent", follow_up_days: 5, evidence_fact_ids: ["latest_observations"] });
+  assert.equal(validVisitAnalysis(contextual, evidence), true);
+  const result = finalizeVisitAnalysis({ serviceHistory: noteOnlyConcern, recommendation, evidence, providerResult: { provider: "openai", insight: contextual } });
+  assert.equal(result.analysisVersion, 3);
+  assert.match(result.aiAssessment, /inverter main board/i);
+  assert.match(result.whyThisDate, /prompt attention/i);
+  assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-17");
+});
+
+test("negated free-text component concerns do not create a false failure", () => {
+  const normal = { ...service, findings: "The AC is operating normally after cleaning.", technicianInputs: { notes: "There are no signs of control board failure or unusual noise." } };
+  const evidence = buildVisitEvidence({ serviceHistory: normal, recommendation });
+  const routine = insight({ severity: "routine", risk_type: "no_problem_indicated", affected_component: "not_specified", evidence_confidence: "high", follow_up_action: "routine_cleaning", follow_up_days: 180, repair_or_replacement: "not_indicated" });
+  assert.equal(validVisitAnalysis(routine, evidence), true);
+});
+
 test("a normal technician report keeps an evidence-based routine interval", () => {
   const normal = { ...service, findings: "The AC was operating normally with no unusual noise or leak; no repair or replacement was needed after cleaning." };
   const evidence = buildVisitEvidence({ serviceHistory: normal, recommendation });
@@ -83,10 +110,10 @@ test("customer visit summary uses the original log and stores contextual follow-
   const evidence = buildVisitEvidence({ serviceHistory: service, recommendation });
   const result = finalizeVisitAnalysis({
     serviceHistory: service, recommendation, evidence,
-    providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_findings", "latest_work_performed"] }) },
+    providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_observations", "latest_work_performed"] }) },
   });
   assert.equal(result.provider, "openai");
-  assert.equal(result.analysisVersion, 2);
+  assert.equal(result.analysisVersion, 3);
   assert.equal(result.recommendedService, "repair");
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-10-03");
   assert.equal(result.recommendationMode, "condition_based");
@@ -129,7 +156,7 @@ test("existing AI service sends structured technician visit analysis", async () 
     assert.equal(requestBody.text.format.schema.properties.follow_up_days.enum, undefined);
     assert.equal(requestBody.text.format.schema.properties.follow_up_days.maximum, 365);
     assert.equal(requestBody.store, false);
-    assert.deepEqual(result.insight.evidence_fact_ids, ["latest_findings"]);
+    assert.deepEqual(result.insight.evidence_fact_ids, ["latest_observations"]);
   } finally {
     env.openAiApiKey = originalKey;
     global.fetch = originalFetch;

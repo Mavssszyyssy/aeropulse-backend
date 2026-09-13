@@ -61,7 +61,7 @@ const analyzeCompletedVisit = async ({
   providerCall = callStructuredAmpAnalysis,
   recalculate = calculateMaintenanceRecommendation,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 2) {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 3) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
@@ -153,7 +153,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
   }
   const costs = serviceCosts(normalizedCosts);
   const latestLog = Array.isArray(normalizedCosts.serviceLogs)
-    ? normalizedCosts.serviceLogs.filter((entry) => entry && typeof entry === "object").at(-1) || {}
+    ? normalizedCosts.serviceLogs.filter((entry) => entry && typeof entry === "object")[0] || {}
     : {};
   const rawHoursSpent = payload.hoursSpent ?? payload.hours_spent ?? latestLog.hoursSpent;
   const hoursSpent = rawHoursSpent === "" || rawHoursSpent === null || rawHoursSpent === undefined
@@ -165,6 +165,10 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     error.errors = { hoursSpent: error.message };
     throw error;
   }
+  const technicianNotes = clean(
+    payload.notes ?? payload.additionalNotes ?? latestLog.notes ?? latestLog.additionalNotes,
+    1000,
+  );
 
   const historyData = {
     unit: unit._id,
@@ -180,7 +184,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     hoursSpent,
     ...costs,
     technicianInputs: {
-      notes: findings,
+      notes: technicianNotes || findings,
     },
     serviceActions: actions,
   };

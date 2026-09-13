@@ -1,6 +1,8 @@
 const { buildRecordedPartsPreparation } = require("../domain/partsPredictionService");
 const Unit = require("../models/Unit");
 const Task = require("../models/Task");
+const ServiceRequest = require("../models/ServiceRequest");
+const { resolveServiceVisitBranch } = require("../domain/serviceVisitBranch");
 
 const getRecordedPartsPreparation = async (req, res) => {
   try {
@@ -13,16 +15,9 @@ const getRecordedPartsPreparation = async (req, res) => {
     if (!unit) {
       return res.status(404).json({ message: "Installed AC unit not found." });
     }
-    if (
-      !["superadmin", "owner"].includes(req.authUser.role) &&
-      req.activeBranch &&
-      unit.serviceBranch &&
-      unit.serviceBranch !== req.activeBranch
-    ) {
-      return res.status(403).json({ message: "This AC unit belongs to another branch." });
-    }
+    let assignedTask = null;
     if (req.authUser.role === "technician") {
-      const isAssigned = await Task.exists({
+      assignedTask = await Task.findOne({
         assignedTechnicianId: String(req.authUser._id || ""),
         $or: [
           { unitId: String(unitId) },
@@ -31,11 +26,30 @@ const getRecordedPartsPreparation = async (req, res) => {
           { "payload.items.serialNumbers": unit.serialNumber },
           { "payload.items.serialUnits.serialNumber": unit.serialNumber },
         ],
-      });
-      if (!isAssigned) {
+      }).sort({ updatedAt: -1 }).lean();
+      if (!assignedTask) {
         return res.status(403).json({
           message: "This AC unit is not part of one of your assigned work orders.",
         });
+      }
+    }
+    const requestId = String(assignedTask?.payload?.requestId || assignedTask?.requestId || "").trim();
+    const serviceRequest = /^[a-f\d]{24}$/i.test(requestId)
+      ? await ServiceRequest.findById(requestId).select("branch unitId").lean()
+      : null;
+    if (serviceRequest?.unitId && String(serviceRequest.unitId) !== String(unitId)) {
+      return res.status(409).json({ message: "The service request is linked to a different AC unit. Ask an administrator to correct the booking." });
+    }
+    if (!["superadmin", "owner"].includes(req.authUser.role)) {
+      const branchContext = resolveServiceVisitBranch({
+        requestBranch: serviceRequest?.branch,
+        taskBranch: assignedTask?.branch || assignedTask?.payload?.branch,
+        unitBranch: unit.serviceBranch,
+        technicianBranch: req.activeBranch,
+      });
+      if (branchContext.conflict) return res.status(409).json({ message: branchContext.conflict });
+      if (branchContext.technicianMismatch) {
+        return res.status(403).json({ message: "This AC unit belongs to another branch." });
       }
     }
 

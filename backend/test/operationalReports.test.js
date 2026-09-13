@@ -65,7 +65,7 @@ test("legacy totals fall back to item lines without inventing charges", () => {
   });
 });
 
-test("inventory report uses branch stock and exposes serial-record variance", () => {
+test("inventory report keeps useful branch stock data and omits operational lifecycle fields", () => {
   const report = summarizeInventoryProducts([{
     name: "AC One", sku: "AC-1", brand: "Cold Air", category: "Split", specs: "1 HP", price: 20000, threshold: 2,
     branchStock: new Map([["Cavite", 3]]),
@@ -73,8 +73,9 @@ test("inventory report uses branch stock and exposes serial-record variance", ()
   }], ["Cavite"]);
   assert.equal(report.rows[0].currentStock, 3);
   assert.equal(report.rows[0].availableSerials, 2);
-  assert.equal(report.rows[0].assignedUnits, 1);
-  assert.equal(report.rows[0].inventoryVariance, 1);
   assert.equal(report.rows[0].stockValue, 60000);
-  assert.equal(report.summary.inventoryVarianceItems, 1);
+  for (const field of ["assignedUnits", "serviceUnits", "retiredUnits", "trackedUnits", "inventoryVariance", "reorderLevel"]) {
+    assert.equal(Object.hasOwn(report.rows[0], field), false);
+  }
+  assert.equal(Object.hasOwn(report.summary, "inventoryVarianceItems"), false);
 });

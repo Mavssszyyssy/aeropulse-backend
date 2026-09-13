@@ -10,6 +10,7 @@ const Unit = require("../models/Unit");
 const ServiceRequest = require("../models/ServiceRequest");
 const { servicePaymentSummary, servicePaymentBlocker, servicePaymentRecord } = require("../domain/servicePayment");
 const { serviceCosts, validateServiceCosts } = require("../domain/serviceCosts");
+const { resolveServiceVisitBranch } = require("../domain/serviceVisitBranch");
 const { buildOrderPaymentSnapshot } = require("../domain/orderPayment");
 const Notification = require("../models/Notification");
 const { notifyOperationalStaff, createDedupedNotification } = require("../services/operationalNotificationService");
@@ -1477,13 +1478,30 @@ const getTechnicianUnitHistoryBySerial = async (req, res) => {
     if (!unit) return res.status(404).json({ message: "No installed AC unit was found for this QR label." });
 
     const { product, serialUnit } = await findProductSerialUnit(unit.serialNumber);
-    const branch = serialUnit?.branch || await resolvePreferredBranch({
+    const requestId = String(task.payload?.requestId || task.requestId || "").trim();
+    const serviceRequest = mongoose.Types.ObjectId.isValid(requestId)
+      ? await ServiceRequest.findById(requestId).select("branch unitId assignedTechnicianId").lean()
+      : null;
+    if (serviceRequest?.unitId && String(serviceRequest.unitId) !== String(unit._id)) {
+      return res.status(409).json({ message: "The service request is linked to a different AC unit. Ask an administrator to correct the booking." });
+    }
+    const routedBranch = await resolvePreferredBranch({
       city: unit.installation?.city,
       province: unit.installation?.province,
     });
-    if (req.activeBranch && branch && branch !== req.activeBranch) {
+    const branchContext = resolveServiceVisitBranch({
+      requestBranch: serviceRequest?.branch,
+      taskBranch: task.branch || task.payload?.branch,
+      unitBranch: unit.serviceBranch,
+      routedBranch,
+      inventoryBranch: serialUnit?.branch,
+      technicianBranch: req.activeBranch,
+    });
+    if (branchContext.conflict) return res.status(409).json({ message: branchContext.conflict });
+    if (branchContext.technicianMismatch) {
       return res.status(403).json({ message: "This AC unit belongs to another branch." });
     }
+    const branch = branchContext.branch;
 
     const serviceHistory = await ServiceHistory.find({ unit: unit._id })
       .populate("technician", "name name_first name_last")

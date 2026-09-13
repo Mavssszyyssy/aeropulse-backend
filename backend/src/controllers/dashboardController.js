@@ -170,9 +170,18 @@ const getCustomerAcquisitionBySource = async () => {
     .sort((left, right) => right.count - left.count);
 };
 
-const getTechnicianKPIs = async (activeBranch = "") => {
-  const techQuery = { role: "technician" };
+const activeTechnicianQuery = (activeBranch = "") => {
+  const techQuery = {
+    role: "technician",
+    isDeleted: { $ne: true },
+    accountStatus: { $nin: ["disabled", "deleted"] },
+  };
   if (activeBranch) techQuery.$or = [{ assignedBranch: activeBranch }, { assignedBranch: "" }];
+  return techQuery;
+};
+
+const getTechnicianKPIs = async (activeBranch = "") => {
+  const techQuery = activeTechnicianQuery(activeBranch);
   const technicians = await User.find(techQuery).lean();
   const today = startOfToday();
   const weekStart = new Date(Date.now() - 7 * DAY_MS);
@@ -211,9 +220,9 @@ const getTechnicianDashboard = async (activeBranch = "") => {
   };
 };
 
-const getAdminDashboard = async (activeBranch = "") => {
+const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = false } = {}) => {
   const taskQuery = { status: { $in: ["pending", "accepted", "on-the-way", "arrived", "installing", "in-progress", "on-hold"] } };
-  const techQuery = { role: "technician" };
+  const techQuery = activeTechnicianQuery();
   const customerQuery = { role: "customer" };
   const serviceQuery = {};
   if (activeBranch) {
@@ -243,11 +252,11 @@ const getAdminDashboard = async (activeBranch = "") => {
       serviceRequests,
       branchLabel: activeBranch || "All branches",
     },
-    analytics: { ...commerce, technicianKPIs: technicianKPIs.slice(0, 10) },
+    analytics: { ...commerce, technicianKPIs: includeAllTechnicians ? technicianKPIs : technicianKPIs.slice(0, 10) },
   };
 };
 
-const getSuperAdminDashboard = async () => {
+const getSuperAdminDashboard = async ({ includeAllTechnicians = false } = {}) => {
   const oneDayAgo = new Date(Date.now() - DAY_MS);
   const [totalUsers, admins, technicians, customers, recentlyActiveUsers, commerce, customerAcquisition, technicianKPIs] = await Promise.all([
     User.countDocuments({}),
@@ -261,16 +270,17 @@ const getSuperAdminDashboard = async () => {
   ]);
   return {
     stats: { totalUsers, admins, technicians, customers, recentlyActiveUsers, totalSales: commerce.summary.revenue, totalOrders: commerce.summary.totalOrders, paidOrders: commerce.summary.paidOrders, averageOrderValue: commerce.summary.averageOrderValue },
-    analytics: { ...commerce, customerAcquisition, technicianKPIs: technicianKPIs.slice(0, 10) },
+    analytics: { ...commerce, customerAcquisition, technicianKPIs: includeAllTechnicians ? technicianKPIs : technicianKPIs.slice(0, 10) },
   };
 };
 
 const getMyDashboard = async (req, res) => {
   try {
     const role = req.authUser.role;
+    const includeAllTechnicians = String(req.query?.includeAllTechnicians || "").toLowerCase() === "true";
     if (role === "technician") return res.json({ role, ...(await getTechnicianDashboard(req.activeBranch)) });
-    if (role === "admin") return res.json({ role, ...(await getAdminDashboard(req.activeBranch)) });
-    if (role === "superadmin") return res.json({ role, ...(await getSuperAdminDashboard()) });
+    if (role === "admin") return res.json({ role, ...(await getAdminDashboard(req.activeBranch, { includeAllTechnicians })) });
+    if (role === "superadmin") return res.json({ role, ...(await getSuperAdminDashboard({ includeAllTechnicians })) });
     return res.json({ role, stats: { message: "Customer dashboard uses storefront pages." } });
   } catch (error) {
     console.error("Failed to load dashboard:", error);
@@ -278,4 +288,4 @@ const getMyDashboard = async (req, res) => {
   }
 };
 
-module.exports = { getMyDashboard };
+module.exports = { activeTechnicianQuery, getMyDashboard };

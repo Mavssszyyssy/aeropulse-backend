@@ -249,14 +249,8 @@ const summarizeInventoryProducts = (products = [], selectedBranches = BRANCHES) 
         model: String(product.specs || ""),
         unitPrice: Math.max(0, Number(product.price || 0)),
         currentStock,
-        reorderLevel: threshold,
         availableSerials: counts.available,
-        assignedUnits: counts.assigned,
         soldUnits: counts.sold,
-        serviceUnits: counts.service,
-        retiredUnits: counts.retired,
-        trackedUnits: units.length,
-        inventoryVariance: currentStock - counts.available,
         stockValue: roundMoney(currentStock * Math.max(0, Number(product.price || 0))),
         stockStatus,
       });
@@ -269,7 +263,6 @@ const summarizeInventoryProducts = (products = [], selectedBranches = BRANCHES) 
     inventoryValue: roundMoney(rows.reduce((sum, row) => sum + row.stockValue, 0)),
     outOfStockItems: rows.filter((row) => row.stockStatus === "Out of stock").length,
     lowStockItems: rows.filter((row) => row.stockStatus === "Low stock").length,
-    inventoryVarianceItems: rows.filter((row) => row.inventoryVariance !== 0).length,
   };
   return { summary, rows };
 };

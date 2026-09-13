@@ -26,20 +26,21 @@ const sentence = (value) => {
 };
 
 const concernText = (text) => String(text || "")
-  .replace(/\bno\s+(?:signs?\s+of\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement))*\b/gi, "")
-  .replace(/\b(?:is|was|were|does|did)?\s*not\s+(?:showing\s+)?(?:making\s+)?(?:leaking|damaged|worn|noisy|sparking|smoking|burning|overheating)\b/gi, "")
-  .replace(/\bwithout\s+(?:any\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|problems?|issues?|sparking|smoke|burning|overheating)\b/gi, "");
-const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|leak|weak cooling|not cooling|fault|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
+  .replace(/\bno\s+signs?\s+of\s+(?:[a-z0-9/-]+\s+){0,6}(?:faults?|failures?|malfunctions?|damage|wear)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating))*\b/gi, "")
+  .replace(/\bno\s+(?:signs?\s+of\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement))*\b/gi, "")
+  .replace(/\b(?:is|was|were|does|did)?\s*not\s+(?:showing\s+)?(?:making\s+)?(?:leaking|damaged|worn|noisy|failing|malfunctioning|sparking|smoking|burning|overheating)\b/gi, "")
+  .replace(/\bwithout\s+(?:any\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating)\b/gi, "");
+const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|leak|weak cooling|not cooling|fault|fail|malfunction|intermittent|not respond|error code|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
 const replacementSignal = (text) => /replace|replacement/i.test(concernText(text));
 const criticalSignal = (text) => /danger|unsafe|smoke|burning|sparking|electrical fire|fire risk|stop using/i.test(concernText(text));
-const urgentSignal = (text) => /urgent|overheat|not working|failed|completely broken|severe|major leak/i.test(concernText(text)) || criticalSignal(text);
+const urgentSignal = (text) => /urgent|overheat|not working|fail(?:ed|ing|ure)?|completely broken|severe|major leak/i.test(concernText(text)) || criticalSignal(text);
 const riskSupported = (riskType, text) => ({
   no_problem_indicated: !repairSignal(text),
-  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|fault|replace/i.test(concernText(text)),
+  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|fault|fail|malfunction|intermittent|not respond|error code|replace/i.test(concernText(text)),
   performance_decline: /weak cooling|not cooling|poor cooling|slow cooling|reduced cooling|performance/i.test(concernText(text)),
   leak_or_drainage: /leak|drain|drainage|water/i.test(concernText(text)),
   electrical_or_safety: /electrical|wiring|wire|capacitor|breaker|sparking|smoke|burning|unsafe|fire risk|stop using/i.test(concernText(text)),
-  other_recorded_risk: repairSignal(text),
+  other_recorded_risk: repairSignal(text) || /condition:\s*(?:fair|poor)/i.test(text),
 }[riskType] === true);
 
 const COMPONENT_PATTERNS = [
@@ -50,7 +51,7 @@ const COMPONENT_PATTERNS = [
   ["evaporator_or_condenser_coil", /evaporator|condenser|\bcoil\b/i],
   ["drain_system", /drain|drainage/i],
   ["refrigerant_system", /refrigerant|freon/i],
-  ["control_board", /control board|circuit board|\bpcb\b/i],
+  ["control_board", /control board|circuit board|main board|motherboard|controller board|inverter board|electronic board|\bpcb\b|pcb module/i],
   ["electrical_system", /electrical|wiring|wire|capacitor|breaker|sparking/i],
   ["thermostat_or_sensor", /thermostat|sensor/i],
   ["casing_or_mount", /casing|housing|mount|bracket/i],
@@ -61,31 +62,56 @@ const componentCandidates = (findings) => [...new Set([
 ])];
 
 function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [], recommendation = {} } = {}) {
-  const findings = clean(serviceHistory.findings || serviceHistory.technicianInputs?.notes, 1000);
+  const findings = clean(serviceHistory.findings, 1000);
+  const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 1000);
   const actions = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 1000);
   const condition = clean(serviceHistory.conditionRating, 30).toLowerCase();
   const parts = list(serviceHistory.partsUsed).slice(0, 12);
+  const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== findings.toLowerCase()
+    ? technicianNotes : "";
+  const currentObservations = clean([
+    findings ? `Findings: ${findings}` : "",
+    distinctNotes ? `Additional technician notes: ${distinctNotes}` : "",
+    condition ? `Condition: ${condition}` : "",
+    parts.length ? `Parts recorded: ${parts.join(", ")}` : "",
+  ].filter(Boolean).join(" "), 2400);
+  const concernEvidence = clean([
+    findings,
+    distinctNotes,
+    condition ? `Condition: ${condition}` : "",
+  ].filter(Boolean).join(" "), 2200);
   const facts = {
+    latest_observations: currentObservations,
     latest_findings: findings,
+    latest_technician_notes: distinctNotes,
     latest_work_performed: actions,
     latest_condition: condition ? `Technician condition rating: ${condition}.` : "",
     latest_parts: parts.length ? `Parts recorded by the technician: ${parts.join(", ")}.` : "",
     unit_profile: clean([unit.brand, unit.modelName || unit.model, unit.category, unit.capacityHp ? `${unit.capacityHp} HP` : ""].filter(Boolean).join(" · "), 300),
   };
   priorHistory.slice(0, 5).forEach((history, index) => {
-    const previousFinding = clean(history.findings || history.technicianInputs?.notes, 500);
+    const previousFinding = clean(history.findings, 500);
+    const previousNotes = clean(history.technicianInputs?.notes, 400);
     const previousWork = clean(history.actionTaken || list(history.serviceActions).join(", "), 400);
-    if (previousFinding) facts[`prior_visit_${index + 1}`] = `${dateKey(history.serviceDate) || "Earlier visit"} · ${serviceLabel(serviceTypeFor(history))}: ${previousFinding}${previousWork ? ` Work performed: ${previousWork}` : ""}`;
+    const previousParts = list(history.partsUsed).slice(0, 8);
+    const previousDetail = [
+      previousFinding,
+      previousNotes && previousNotes.toLowerCase() !== previousFinding.toLowerCase() ? `Notes: ${previousNotes}` : "",
+      previousParts.length ? `Parts: ${previousParts.join(", ")}` : "",
+    ].filter(Boolean).join(" ");
+    if (previousDetail) facts[`prior_visit_${index + 1}`] = `${dateKey(history.serviceDate) || "Earlier visit"} · ${serviceLabel(serviceTypeFor(history))}: ${previousDetail}${previousWork ? ` Work performed: ${previousWork}` : ""}`;
   });
   Object.keys(facts).forEach((key) => { if (!facts[key]) delete facts[key]; });
   const baselineDays = Math.min(365, Math.max(91, Math.round(Number(recommendation.historicalBasis?.intervalDays || recommendation.predictionEvidence?.baselineIntervalDays || 180))));
   return {
-    version: 2,
+    version: 3,
     visit: {
       service_date: dateKey(serviceHistory.serviceDate),
       service_type: serviceTypeFor(serviceHistory),
       condition,
       findings,
+      technician_notes: distinctNotes,
+      observation_text: concernEvidence,
       work_performed: actions,
       parts_used: parts,
     },
@@ -106,7 +132,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       severity_ranges_days: FOLLOW_UP_RANGE,
       instruction: "Choose an exact evidence-based day count within the selected severity range. Use the routine baseline only when no condition-based concern is indicated.",
     },
-    allowed_affected_components: componentCandidates(findings),
+    allowed_affected_components: componentCandidates(`${concernEvidence} ${parts.join(" ")}`),
     fact_catalog: facts,
   };
 }
@@ -123,8 +149,8 @@ function validVisitAnalysis(raw, evidence = {}) {
   if (!Array.isArray(raw.evidence_fact_ids) || raw.evidence_fact_ids.length < 1 || raw.evidence_fact_ids.length > 4) return false;
   const factIds = Object.keys(evidence.fact_catalog || {});
   if (new Set(raw.evidence_fact_ids).size !== raw.evidence_fact_ids.length || !raw.evidence_fact_ids.every((id) => factIds.includes(id))) return false;
-  if (!raw.evidence_fact_ids.includes("latest_findings")) return false;
-  const recordedFindings = evidence.visit?.findings || "";
+  if (!raw.evidence_fact_ids.includes("latest_observations")) return false;
+  const recordedFindings = evidence.visit?.observation_text || evidence.visit?.findings || "";
   // Completed work (for example, "replaced the filter") is not evidence that
   // another replacement or repair is still required. Future-risk decisions
   // must be supported by the technician's findings themselves.
@@ -133,7 +159,7 @@ function validVisitAnalysis(raw, evidence = {}) {
   if (raw.severity === "urgent" && !urgentSignal(recordedFindings)) return false;
   if (raw.severity === "critical" && !criticalSignal(recordedFindings)) return false;
   if (raw.follow_up_action === "repair_assessment" && !repairSignal(recordedFindings)) return false;
-  if (raw.risk_type === "no_problem_indicated" && (repairSignal(recordedFindings) || raw.severity !== "routine" || raw.follow_up_action !== "routine_cleaning" || raw.repair_or_replacement !== "not_indicated" || raw.affected_component !== "not_specified")) return false;
+  if (raw.risk_type === "no_problem_indicated" && (repairSignal(recordedFindings) || /condition:\s*(?:fair|poor)/i.test(recordedFindings) || raw.severity !== "routine" || raw.follow_up_action !== "routine_cleaning" || raw.repair_or_replacement !== "not_indicated" || raw.affected_component !== "not_specified")) return false;
   if (raw.risk_type === "no_problem_indicated" && raw.follow_up_days !== evidence.existing_schedule?.baseline_interval_days) return false;
   if (raw.risk_type !== "no_problem_indicated" && raw.severity === "routine") return false;
   if (!riskSupported(raw.risk_type, recordedFindings)) return false;
@@ -165,9 +191,13 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     : ai?.follow_up_action === "inspection" ? "inspection"
       : recommendation.recommendedService || "regular_cleaning";
   const finding = clean(serviceHistory.findings || serviceHistory.technicianInputs?.notes, 700);
+  const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 700);
+  const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== finding.toLowerCase()
+    ? technicianNotes : "";
+  const parts = list(serviceHistory.partsUsed).slice(0, 12);
   const work = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 700);
   const visitLabel = serviceLabel(serviceTypeFor(serviceHistory));
-  const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded: ${sentence(finding)} Work completed: ${sentence(work)}`;
+  const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded: ${sentence(finding)}${distinctNotes ? ` Additional notes: ${sentence(distinctNotes)}` : ""}${parts.length ? ` Parts recorded: ${sentence(parts.join(", "))}` : ""} Work completed: ${sentence(work)}`;
   const componentLabels = { fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor", air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil", drain_system: "drain system", refrigerant_system: "refrigerant system", control_board: "control board", electrical_system: "electrical system", thermostat_or_sensor: "thermostat or sensor", casing_or_mount: "casing or mounting", not_specified: "component not specified" };
   const riskLabels = { no_problem_indicated: "No developing problem is indicated in the submitted report", component_deterioration: "The report indicates a possible developing component-wear risk", performance_decline: "The report indicates a possible decline in AC performance", leak_or_drainage: "The report indicates a possible leak or drainage risk", electrical_or_safety: "The report indicates a possible electrical or safety risk", other_recorded_risk: "The report indicates another concern that should be monitored" };
   const affectedComponent = ai?.affected_component || "not_specified";
@@ -189,11 +219,11 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     followUp,
   ];
   return {
-    analysisVersion: 2,
+    analysisVersion: 3,
     provider: ai ? "openai" : "system-fallback",
     status: ai ? "completed" : "unavailable",
     whatHappened: `${visitLabel}: ${work}`,
-    problemsFound: finding,
+    problemsFound: [finding, distinctNotes].filter(Boolean).join(" "),
     severity: ai?.severity || "not_assessed",
     riskType: ai?.risk_type || "not_assessed",
     predictedRisk,
@@ -206,7 +236,7 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     recommendedService,
     recommendedFollowUpDays: ai?.follow_up_days || null,
     recommendedFollowUpDate: followUpDate,
-    evidenceFactIds: ai?.evidence_fact_ids || ["latest_findings", "latest_work_performed"].filter((id) => evidence.fact_catalog?.[id]),
+    evidenceFactIds: ai?.evidence_fact_ids || ["latest_observations", "latest_work_performed"].filter((id) => evidence.fact_catalog?.[id]),
     aiAssessment: clean(aiAssessment, 1800),
     whyThisDate: clean(whyThisDate, 1000),
     customerSummary: clean(customerSummary, 1800),

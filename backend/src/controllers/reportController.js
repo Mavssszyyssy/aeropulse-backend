@@ -92,7 +92,6 @@ const inventorySummary = (rows) => ({
   inventoryValue: Math.round(rows.reduce((sum, row) => sum + row.stockValue, 0) * 100) / 100,
   outOfStockItems: rows.filter((row) => row.stockStatus === "Out of stock").length,
   lowStockItems: rows.filter((row) => row.stockStatus === "Low stock").length,
-  inventoryVarianceItems: rows.filter((row) => row.inventoryVariance !== 0).length,
 });
 
 const getInventoryReport = async (req, res) => {
@@ -123,7 +122,7 @@ const getInventoryReport = async (req, res) => {
       stockFilter,
       search,
       updatedAt: new Date().toISOString(),
-      basis: "Current assigned-branch stock and serial/QR unit records. Inventory variance is current stock minus available serial records.",
+      basis: "Current stock and available serial/QR unit records for the selected branch.",
       summary: inventorySummary(rows),
       rows,
     });
