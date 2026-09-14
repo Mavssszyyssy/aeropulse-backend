@@ -195,5 +195,9 @@ orderSchema.index(
 // two concurrent admin dashboards from repeatedly scanning historic orders.
 orderSchema.index({ customerBranch: 1, createdAt: -1 });
 orderSchema.index({ stockSourceBranch: 1, createdAt: -1 });
+// Customer dashboards always read their own newest orders. Without this
+// compound index, accounts with long histories force a collection scan and
+// sort on every mobile refresh.
+orderSchema.index({ customer: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", orderSchema);

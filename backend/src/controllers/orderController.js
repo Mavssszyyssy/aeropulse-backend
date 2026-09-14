@@ -2842,10 +2842,22 @@ const approveOrder = async (req, res) => {
 
 const listMyOrders = async (req, res) => {
   res.set("Cache-Control", "no-store");
-  const orders = await Order.find({ customer: req.authUser._id }).sort({
-    createdAt: -1,
+  const requestedLimit = Number(req.query?.limit);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
+    : 100;
+  // Customer Home and My Orders do not use PayMongo's raw provider payload or
+  // payment-proof image bytes. Loading those fields and every linked Task made
+  // /orders/me exceed Vercel's 30-second runtime while the other customer
+  // endpoints remained healthy.
+  const orders = await Order.find({ customer: req.authUser._id })
+    .select("-paymongo.raw -proofOfPayment.imageUrl")
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .lean();
+  const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
+    includeTaskDetails: false,
   });
-  const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders);
   return res.json({ orders: hydratedOrders });
 };
 
