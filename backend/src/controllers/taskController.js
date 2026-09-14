@@ -902,7 +902,11 @@ const hydrateTaskResponse = (task, { includeProofMedia = true } = {}) => {
     ? withoutEmbeddedProofMedia(task.payload)
     : null;
   const progress = getRegistrationProgress(task);
-  const base = task.toJSON();
+  const base = typeof task.toJSON === "function"
+    ? task.toJSON()
+    : { ...task, id: String(task.id || task._id || "") };
+  delete base._id;
+  delete base.__v;
   const proof = includeProofMedia ? (task.proof || {}) : summarizeTaskProof(task.proof || {});
   if (base.payload) base.payload = payload || {};
   if (!payload) {
@@ -1002,10 +1006,29 @@ const listTasks = async (req, res) => {
     }
 
     const requestedLimit = Number(req.query?.limit);
+    const defaultLimit = ["customer", "technician"].includes(role) ? 100 : 200;
     const limit = Number.isFinite(requestedLimit)
       ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
-      : 200;
-    const tasks = await Task.find(query).sort({ updatedAt: -1 }).limit(limit);
+      : defaultLimit;
+    // List screens do not display embedded camera/signature media. Excluding
+    // it in MongoDB (rather than after retrieval) prevents old base64 proof
+    // records from making /api/tasks exceed Vercel's 30-second response limit.
+    const tasks = await Task.find(query)
+      .select([
+        "-proof.beforePhotos",
+        "-proof.afterPhotos",
+        "-proof.customerSignature.signature",
+        "-payload.proof",
+        "-payload.beforePhotos",
+        "-payload.afterPhotos",
+        "-payload.beforePhotoUri",
+        "-payload.afterPhotoUri",
+        "-payload.customerSignature",
+        "-payload.signature",
+      ].join(" "))
+      .sort({ updatedAt: -1 })
+      .limit(limit)
+      .lean();
     return res.json({ tasks: tasks.map((task) => hydrateTaskResponse(task, { includeProofMedia: false })) });
   } catch (error) {
     console.error("Failed to list tasks:", error);

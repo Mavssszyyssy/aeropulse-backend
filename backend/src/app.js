@@ -50,6 +50,18 @@ app.use(
 );
 app.use(morgan("dev"));
 
+// Every API response is live account/operations data. Express ETags allowed
+// Vercel/mobile clients to revalidate these responses as 304, which can leave
+// Expo Go screens without a response body after a long session. Never cache
+// authenticated dashboard, task, notification, order, or unit responses.
+app.disable("etag");
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
+
 // Only registration and recovery endpoints use server-side session data.
 // Keeping this store off ordinary token-authenticated API requests prevents a
 // stale session-store socket from delaying Admin, order, and catalog screens.

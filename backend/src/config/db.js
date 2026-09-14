@@ -61,28 +61,14 @@ const pingConnection = async () => {
   return true;
 };
 
-const connectDb = async () => {
+const ensureConnection = async () => {
   if (mongoose.connection.readyState === 1) {
     const now = Date.now();
     const lastPing = Number(global.__aeropulseMongoLastPingAt || 0);
     if (now - lastPing < PING_INTERVAL_MS) return mongoose.connection;
-    if (global.__aeropulseMongoPing) {
-      try {
-        await global.__aeropulseMongoPing;
-        return mongoose.connection;
-      } catch (_error) {
-        // The heartbeat failed; close the stale socket and reconnect below.
-      }
-    }
-    global.__aeropulseMongoPing = pingConnection()
-      .then(() => {
-        global.__aeropulseMongoLastPingAt = Date.now();
-      })
-      .finally(() => {
-        global.__aeropulseMongoPing = null;
-      });
     try {
-      await global.__aeropulseMongoPing;
+      await pingConnection();
+      global.__aeropulseMongoLastPingAt = Date.now();
       return mongoose.connection;
     } catch (_error) {
       global.__aeropulseMongoLastPingAt = 0;
@@ -96,21 +82,9 @@ const connectDb = async () => {
   const mongoUri = buildMongoUri();
 
   try {
-    // A previously resolved promise is only valid while the underlying
-    // connection remains open. Warm Vercel instances can outlive an Atlas
-    // socket, so discard the stale cache and reconnect when needed.
-    if (global.__aeropulseMongoConnection) {
-      try {
-        await global.__aeropulseMongoConnection;
-        if (mongoose.connection.readyState === 1) return mongoose.connection;
-      } catch (_error) {
-        // Create a fresh connection below.
-      }
-      global.__aeropulseMongoConnection = null;
-    }
-
-    // If another request started connecting before the cache was created,
-    // wait for that connection before opening a second one.
+    // If Mongoose was already connecting before this module acquired the
+    // shared readiness lock, wait for that attempt instead of starting a
+    // competing connection.
     if (mongoose.connection.readyState === 2) {
       try {
         await mongoose.connection.asPromise();
@@ -120,24 +94,36 @@ const connectDb = async () => {
       }
     }
 
-    global.__aeropulseMongoConnection = mongoose
-      .connect(mongoUri, connectionOptions)
-      .then((instance) => {
-        if (mongoose.connection.readyState !== 1) {
-          throw new Error("MongoDB connection did not reach the connected state.");
-        }
-        return instance;
-      });
-
-    await global.__aeropulseMongoConnection;
+    await mongoose.connect(mongoUri, connectionOptions);
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error("MongoDB connection did not reach the connected state.");
+    }
+    global.__aeropulseMongoLastPingAt = Date.now();
     console.log(`MongoDB connected: ${displayMongoTarget(mongoUri)}`);
     return mongoose.connection;
   } catch (error) {
-    global.__aeropulseMongoConnection = null;
     console.error(`Failed to connect to MongoDB at ${displayMongoTarget(mongoUri)}`);
     console.error("Start MongoDB or set MONGODB_URI in backend/.env to a reachable database.");
     throw error;
   }
+};
+
+const connectDb = async () => {
+  // Customer and Technician dashboards load several endpoints together.
+  // A single warm Vercel function must perform exactly one ping/reconnect
+  // sequence; otherwise concurrent requests can disconnect a socket while a
+  // sibling request is using it and all requests eventually hit 504.
+  if (global.__aeropulseMongoReadiness) {
+    return global.__aeropulseMongoReadiness;
+  }
+
+  const readiness = ensureConnection().finally(() => {
+    if (global.__aeropulseMongoReadiness === readiness) {
+      global.__aeropulseMongoReadiness = null;
+    }
+  });
+  global.__aeropulseMongoReadiness = readiness;
+  return readiness;
 };
 
 module.exports = connectDb;

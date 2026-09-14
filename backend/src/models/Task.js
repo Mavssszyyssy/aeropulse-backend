@@ -69,6 +69,9 @@ taskSchema.set("toJSON", {
 });
 
 taskSchema.index({ branch: 1, updatedAt: -1 });
+taskSchema.index({ assignedTechnicianId: 1, updatedAt: -1 });
+taskSchema.index({ customerId: 1, updatedAt: -1 });
+taskSchema.index({ "payload.customerId": 1, updatedAt: -1 });
 taskSchema.index({ "payload.orderCode": 1, updatedAt: -1 });
 
 module.exports = mongoose.model("Task", taskSchema);
