@@ -196,6 +196,34 @@ const guidanceFor = (value) => ({
   not_assessed: "Please review the technician's original report for the recorded condition and work performed.",
 }[value] || "Please review the technician's original report for the recorded condition and work performed.");
 
+const serviceActionsFor = ({ ai, componentLabel, followUp }) => {
+  if (!ai) return [guidanceFor("not_assessed"), followUp];
+  if (ai.risk_type === "no_problem_indicated") {
+    return [
+      "Continue routine operation and monitor the AC for any new noise, leak, weak cooling, or other change.",
+      followUp,
+    ];
+  }
+  const subject = ai.affected_component === "not_specified"
+    ? "the symptom recorded in the technician's report"
+    : `the recorded ${componentLabel} concern`;
+  const actions = [
+    `Arrange a qualified technician assessment of ${subject}; confirm the cause before approving repair or replacement work.`,
+  ];
+  if (ai.repair_or_replacement === "replacement_may_be_needed") {
+    actions.push(`Confirm the exact ${ai.affected_component === "not_specified" ? "component" : componentLabel} specification and stock availability before replacement is approved.`);
+  } else if (ai.repair_or_replacement === "repair_may_be_needed") {
+    actions.push(`Request a written repair scope and parts requirement for ${subject} after inspection.`);
+  } else {
+    actions.push(`Keep the original technician log available so ${subject} can be verified during the follow-up.`);
+  }
+  if (ai.risk_type === "electrical_or_safety" && ["critical", "urgent"].includes(ai.severity)) {
+    actions.push("If the recorded electrical or safety symptom returns, stop using the unit and contact the service team promptly.");
+  }
+  actions.push(followUp);
+  return actions;
+};
+
 function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendation = {}, serviceHistory = {} } = {}) {
   const ai = providerResult.provider === "openai" && validVisitAnalysis(providerResult.insight, evidence)
     ? providerResult.insight : null;
@@ -233,15 +261,16 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const whyThisDate = followUpDate
     ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[ai?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
     : "A date could not be selected from the available records.";
-  const customerSummary = ai
-    ? `${aiAssessment} ${followUp}`
-    : `${recordedContext} The automatic follow-up review is temporarily unavailable. ${followUp}`;
-  const recommendedActions = [
-    guidanceFor(ai?.repair_or_replacement || "not_assessed"),
+  const recommendedActions = serviceActionsFor({
+    ai,
+    componentLabel: componentLabels[affectedComponent] || "component",
     followUp,
-  ];
+  });
+  const customerSummary = ai
+    ? `${aiAssessment} Recommended next step: ${recommendedActions[0]} ${followUp}`
+    : `${recordedContext} The automatic follow-up review is temporarily unavailable. ${followUp}`;
   return {
-    analysisVersion: 3,
+    analysisVersion: 4,
     provider: ai ? "openai" : "system-fallback",
     status: ai ? "completed" : "unavailable",
     whatHappened: `${visitLabel}: ${work}`,

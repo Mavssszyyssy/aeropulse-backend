@@ -19,6 +19,7 @@ test("sales report filters by payment method and order, customer, or SKU text", 
   assert.deepEqual(filterSalesOrders(orders, { paymentMethod: "gcash" }).map((order) => order.orderCode), ["ORD-GCASH"]);
   assert.deepEqual(filterSalesOrders(orders, { paymentMethod: "card", search: "AC-C-2" }).map((order) => order.orderCode), ["ORD-CARD"]);
   assert.deepEqual(filterSalesOrders(orders, { search: "ana" }).map((order) => order.orderCode), ["ORD-GCASH"]);
+  assert.deepEqual(filterSalesOrders(orders, { sku: "AC-C", customer: "Ben" }).map((order) => order.orderCode), ["ORD-CARD"]);
   assert.throws(() => normalizePaymentMethodFilter("bank-transfer"), /unsupported payment method/i);
 });
 
@@ -30,6 +31,7 @@ test("inventory report filters by category and brand", () => {
   ];
   assert.deepEqual(filterInventoryRows(rows, { category: "split", brand: "lg" }).map((row) => row.sku), ["L-1"]);
   assert.deepEqual(filterInventoryRows(rows, { category: "window" }).map((row) => row.sku), ["T-1"]);
+  assert.deepEqual(filterInventoryRows(rows, { brand: "daikin", sku: "D-1" }).map((row) => row.sku), ["D-1"]);
 });
 
 test("technician report counts completed work in the selected dataset and supports search", () => {

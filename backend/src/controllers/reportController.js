@@ -50,6 +50,8 @@ const getSalesReport = async (req, res) => {
     const status = normalizeSalesStatus(req.query.status);
     const paymentMethod = normalizePaymentMethodFilter(req.query.paymentMethod);
     const search = reportTextFilter(req.query.search, { label: "Sales search" });
+    const sku = reportTextFilter(req.query.sku, { label: "Sales SKU", maxLength: 80 });
+    const customer = reportTextFilter(req.query.customer, { label: "Sales customer", maxLength: 100 });
     const { from, to } = resolveReportRange(req.query);
     const topN = Math.min(50, Math.max(1, Number(req.query.topN) || 10));
     const activeBranch = reportBranch(req);
@@ -86,13 +88,15 @@ const getSalesReport = async (req, res) => {
         sku: String(item.sku || skuByProductId.get(String(item.productId || "")) || item.productSku || item.model || "").trim(),
       })),
     }));
-    const filteredOrders = filterSalesOrders(ordersWithSkus, { paymentMethod, search });
+    const filteredOrders = filterSalesOrders(ordersWithSkus, { paymentMethod, search, sku, customer });
     const report = summarizeSalesOrders(filteredOrders, { status, interval, from, to });
     return res.json({
       interval: report.interval,
       status: report.status,
       paymentMethod,
       search,
+      sku,
+      customer,
       from: from.toISOString(),
       to: to.toISOString(),
       branch: activeBranch || "all",
@@ -136,6 +140,7 @@ const getInventoryReport = async (req, res) => {
     const search = reportTextFilter(req.query.search, { label: "Inventory search" }).toLowerCase();
     const category = reportTextFilter(req.query.category || "all", { label: "Inventory category", maxLength: 40 }).toLowerCase();
     const brand = reportTextFilter(req.query.brand, { label: "Inventory brand", maxLength: 60 });
+    const sku = reportTextFilter(req.query.sku, { label: "Inventory SKU", maxLength: 80 });
     const stockRows = report.rows.filter((row) => {
       const stockMatches = stockFilter === "all"
         || (stockFilter === "out" && row.stockStatus === "Out of stock")
@@ -145,13 +150,14 @@ const getInventoryReport = async (req, res) => {
         .some((value) => String(value || "").toLowerCase().includes(search));
       return stockMatches && searchMatches;
     });
-    const rows = filterInventoryRows(stockRows, { category, brand });
+    const rows = filterInventoryRows(stockRows, { category, brand, sku });
     return res.json({
       branch: activeBranch || "all",
       stockFilter,
       search,
       category,
       brand,
+      sku,
       updatedAt: new Date().toISOString(),
       basis: "Current stock and available serial/QR unit records for the selected branch.",
       summary: inventorySummary(rows),

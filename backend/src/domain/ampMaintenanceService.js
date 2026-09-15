@@ -34,6 +34,27 @@ const addCalendarMonths = (date, intervalDays) => {
 };
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const normalize = (value) => String(value || "").trim().toLowerCase();
+const componentName = (value) => ({
+  fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor",
+  air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil",
+  drain_system: "drain system", refrigerant_system: "refrigerant system",
+  control_board: "control board", electrical_system: "electrical system",
+  thermostat_or_sensor: "thermostat or sensor", casing_or_mount: "casing or mounting",
+})[String(value || "")] || "recorded symptom";
+const ensureVisitActions = (visit = null) => {
+  if (!visit) return null;
+  if (Array.isArray(visit.recommendedActions) && visit.recommendedActions.length) return visit;
+  if (!['repair', 'inspection'].includes(String(visit.recommendedService || ''))) return visit;
+  const subject = componentName(visit.affectedComponent);
+  const date = asDate(visit.recommendedDate)?.toISOString().slice(0, 10);
+  return {
+    ...visit,
+    recommendedActions: [
+      `Arrange a qualified technician assessment of the ${subject}; confirm the cause before approving repair or replacement work.`,
+      date ? `${visit.recommendedService === 'repair' ? 'Repair assessment' : 'AC inspection'} is recommended by ${date}.` : "Arrange the recommended follow-up with the service team.",
+    ],
+  };
+};
 
 const average = (values = [], fallback = DEFAULT_SERVICE_INTERVAL_DAYS) => {
   const valid = values.filter((value) => Number.isFinite(value) && value >= 30 && value <= 730);
@@ -252,7 +273,7 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     predictionSource,
     intervalDays,
   };
-  const visitFollowUp = unit.amp?.visitFollowUp?.toObject?.() || unit.amp?.visitFollowUp || null;
+  const visitFollowUp = ensureVisitActions(unit.amp?.visitFollowUp?.toObject?.() || unit.amp?.visitFollowUp || null);
   const latestCompletedVisit = newestFirst.find((history) => normalizeServiceType(history) !== "installation") || null;
   const visitFollowUpIsCurrent = Boolean(visitFollowUp?.provider === "openai"
     && visitFollowUp.sourceServiceHistoryId

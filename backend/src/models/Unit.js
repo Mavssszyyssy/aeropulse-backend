@@ -108,6 +108,7 @@ const unitSchema = new mongoose.Schema(
         aiAssessment: { type: String, default: "", trim: true },
         whyThisDate: { type: String, default: "", trim: true },
         customerSummary: { type: String, default: "", trim: true },
+        recommendedActions: [{ type: String, trim: true }],
         generatedAt: { type: Date, default: null },
       },
     },

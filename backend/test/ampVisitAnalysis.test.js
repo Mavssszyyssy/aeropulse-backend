@@ -88,7 +88,9 @@ test("free-text technician notes identify an unlisted control-board concern and 
     evidence,
     providerResult: { provider: "openai", insight: contextual },
   });
-  assert.equal(result.analysisVersion, 3);
+  assert.equal(result.analysisVersion, 4);
+  assert.match(result.recommendedActions.join(" "), /control board concern/i);
+  assert.match(result.recommendedActions.join(" "), /confirm the cause before approving repair or replacement/i);
   assert.match(result.aiAssessment, /inverter main board/i);
   assert.match(result.whyThisDate, /prompt attention/i);
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-17");
@@ -153,7 +155,7 @@ test("customer visit summary uses the original log and stores contextual follow-
     providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_observations", "latest_work_performed"] }) },
   });
   assert.equal(result.provider, "openai");
-  assert.equal(result.analysisVersion, 3);
+  assert.equal(result.analysisVersion, 4);
   assert.equal(result.recommendedService, "repair");
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-10-03");
   assert.equal(result.recommendationMode, "condition_based");
@@ -162,8 +164,8 @@ test("customer visit summary uses the original log and stores contextual follow-
   assert.match(result.predictedRisk, /fan motor/);
   assert.match(result.customerSummary, /fan motor made an unusual noise/);
   assert.match(result.customerSummary, /Cleaned the filter and tested cooling/);
-  assert.equal(result.recommendedActions.length, 2);
-  assert.match(result.recommendedActions[1], /2026-10-03/);
+  assert.equal(result.recommendedActions.length, 3);
+  assert.match(result.recommendedActions.at(-1), /2026-10-03/);
 });
 
 test("fallback preserves the existing schedule without inventing a diagnosis", () => {

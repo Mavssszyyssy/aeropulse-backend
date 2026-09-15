@@ -45,7 +45,7 @@ test("sales report endpoint restores the catalog SKU for legacy order items", as
 
   const req = {
     authUser: { role: "superadmin" },
-    query: { from: "2026-09-01", to: "2026-09-13", status: "paid", branch: "all" },
+    query: { from: "2026-09-01", to: "2026-09-13", status: "paid", branch: "all", sku: "CATALOG-SKU", customer: "Customer" },
   };
   const res = {
     statusCode: 200,
@@ -56,4 +56,6 @@ test("sales report endpoint restores the catalog SKU for legacy order items", as
   assert.equal(res.statusCode, 200);
   assert.equal(res.data.transactions[0].sku, "CATALOG-SKU-1");
   assert.equal(res.data.products[0].sku, "CATALOG-SKU-1");
+  assert.equal(res.data.sku, "CATALOG-SKU");
+  assert.equal(res.data.customer, "Customer");
 });

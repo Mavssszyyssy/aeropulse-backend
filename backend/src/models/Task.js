@@ -42,6 +42,12 @@ const taskSchema = new mongoose.Schema(
     timeSlot: { type: String, required: true },
     assignedRole: { type: String, default: "technician" },
     branch: { type: String, default: "", index: true },
+    schedule: {
+      driverName: { type: String, default: "", trim: true },
+      teamMemberIds: [{ type: String, trim: true }],
+      teamMemberNames: [{ type: String, trim: true }],
+      notes: { type: String, default: "", trim: true },
+    },
     completedAt: { type: Date, default: null },
     proof: {
       beforePhotos: { type: [mongoose.Schema.Types.Mixed], default: [] },
@@ -69,7 +75,9 @@ taskSchema.set("toJSON", {
 });
 
 taskSchema.index({ branch: 1, updatedAt: -1 });
+taskSchema.index({ branch: 1, scheduledDate: 1, status: 1 });
 taskSchema.index({ assignedTechnicianId: 1, updatedAt: -1 });
+taskSchema.index({ "schedule.teamMemberIds": 1, scheduledDate: 1 });
 taskSchema.index({ customerId: 1, updatedAt: -1 });
 taskSchema.index({ "payload.customerId": 1, updatedAt: -1 });
 taskSchema.index({ "payload.orderCode": 1, updatedAt: -1 });

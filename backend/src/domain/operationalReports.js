@@ -70,11 +70,21 @@ const canonicalPaymentMethod = (value = "") => {
   return method;
 };
 
-const filterSalesOrders = (orders = [], { paymentMethod = "all", search = "" } = {}) => {
+const filterSalesOrders = (orders = [], {
+  paymentMethod = "all",
+  search = "",
+  sku = "",
+  customer = "",
+} = {}) => {
   const normalizedMethod = normalizePaymentMethodFilter(paymentMethod);
   const needle = String(search || "").trim().toLowerCase();
+  const skuNeedle = String(sku || "").trim().toLowerCase();
+  const customerNeedle = String(customer || "").trim().toLowerCase();
   return (orders || []).filter((order) => {
     if (normalizedMethod !== "all" && canonicalPaymentMethod(order.paymentMethod) !== normalizedMethod) return false;
+    if (customerNeedle && !String(order.customerName || "").toLowerCase().includes(customerNeedle)) return false;
+    if (skuNeedle && !(order.items || []).some((item) => [item.sku, item.productSku]
+      .some((value) => String(value || "").toLowerCase().includes(skuNeedle)))) return false;
     if (!needle) return true;
     return [
       order.orderCode,
@@ -84,12 +94,14 @@ const filterSalesOrders = (orders = [], { paymentMethod = "all", search = "" } =
   });
 };
 
-const filterInventoryRows = (rows = [], { category = "all", brand = "" } = {}) => {
+const filterInventoryRows = (rows = [], { category = "all", brand = "", sku = "" } = {}) => {
   const normalizedCategory = String(category || "all").trim().toLowerCase();
   const normalizedBrand = String(brand || "").trim().toLowerCase();
+  const normalizedSku = String(sku || "").trim().toLowerCase();
   return (rows || []).filter((row) => (
     (normalizedCategory === "all" || String(row.category || "").trim().toLowerCase() === normalizedCategory)
     && (!normalizedBrand || String(row.brand || "").toLowerCase().includes(normalizedBrand))
+    && (!normalizedSku || String(row.sku || "").toLowerCase().includes(normalizedSku))
   ));
 };
 

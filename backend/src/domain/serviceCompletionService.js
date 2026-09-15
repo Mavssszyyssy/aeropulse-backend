@@ -61,7 +61,7 @@ const analyzeCompletedVisit = async ({
   providerCall = callStructuredAmpAnalysis,
   recalculate = calculateMaintenanceRecommendation,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 3) {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 4) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
@@ -107,6 +107,7 @@ const analyzeCompletedVisit = async ({
         aiAssessment: interpretation.aiAssessment,
         whyThisDate: interpretation.whyThisDate,
         customerSummary: interpretation.customerSummary,
+        recommendedActions: interpretation.recommendedActions,
         generatedAt: interpretation.generatedAt,
       },
     } });

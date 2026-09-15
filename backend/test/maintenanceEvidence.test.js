@@ -220,6 +220,8 @@ test("the latest validated AI visit follow-up overrides the routine plan without
   assert.equal(result.lastCleaningDate, "2026-01-01T00:00:00.000Z");
   assert.equal(result.latestVisitAnalysis.sourceServiceHistoryId, "visit-1");
   assert.equal(result.conditionBasedFollowUp.sourceServiceHistoryId, "visit-1");
+  assert.match(result.latestVisitAnalysis.recommendedActions[0], /recorded symptom/);
+  assert.match(result.latestVisitAnalysis.recommendedActions[1], /2026-10-01/);
   assert.equal(result.routineMaintenance.bestServicedBy, "2026-07-01T00:00:00.000Z");
   assert.equal(result.routineMaintenance.recommendedService, "regular_cleaning");
 });
