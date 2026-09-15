@@ -40,9 +40,29 @@ const canCustomerCancelServiceRequest = (currentValue) =>
     normalizeServiceRequestStatus(currentValue, "Pending"),
   );
 
+const resolveServiceAppointmentDate = ({ preferredDate, scheduledDate, requestedDate } = {}) => {
+  const preferred = String(preferredDate || "").trim();
+  const confirmed = String(scheduledDate || "").trim();
+  const requested = String(requestedDate || "").trim();
+  const lockedDate = confirmed || preferred;
+  if (lockedDate && requested && requested !== lockedDate) {
+    return {
+      date: lockedDate,
+      locked: true,
+      error: "The appointment date already recorded for this service request cannot be changed from the assignment screen. Use the visit follow-up workflow when rescheduling is required.",
+    };
+  }
+  return {
+    date: lockedDate || requested,
+    locked: Boolean(lockedDate),
+    error: "",
+  };
+};
+
 module.exports = {
   SERVICE_REQUEST_STATUSES,
   normalizeServiceRequestStatus,
   canTransitionServiceRequest,
   canCustomerCancelServiceRequest,
+  resolveServiceAppointmentDate,
 };

@@ -13,6 +13,7 @@ const {
   normalizeServiceRequestStatus,
   canTransitionServiceRequest,
   canCustomerCancelServiceRequest,
+  resolveServiceAppointmentDate,
 } = require("../domain/serviceRequestWorkflow");
 const env = require("../config/env");
 const { servicePaymentSummary } = require("../domain/servicePayment");
@@ -541,15 +542,29 @@ const updateServiceRequestStatus = async (req, res) => {
       });
     }
 
-    const scheduleChanged = ['scheduledDate', 'timeSlot'].some(key => Object.hasOwn(req.body || {}, key) && String(req.body[key]) !== String(request.payload?.[key] || ''));
-    if (scheduleChanged && ['Completed', 'Cancelled'].includes(request.status)) return res.status(409).json({ message: 'Closed service requests cannot be rescheduled.' });
+    const savedPreferredDate = String(request.payload?.preferredDate || '').trim();
+    if (Object.hasOwn(req.body || {}, 'preferredDate') && String(req.body.preferredDate || '').trim() !== savedPreferredDate) {
+      return res.status(409).json({ message: 'The customer-selected appointment date cannot be changed by an administrator.' });
+    }
+    delete req.body?.preferredDate;
+    const appointment = resolveServiceAppointmentDate({
+      preferredDate: savedPreferredDate,
+      scheduledDate: request.payload?.scheduledDate,
+      requestedDate: req.body?.scheduledDate,
+    });
+    if (appointment.error) return res.status(409).json({ message: appointment.error });
+    if (Object.hasOwn(req.body || {}, 'scheduledDate') && appointment.date) {
+      req.body.scheduledDate = appointment.date;
+    }
     if (['Assigned', 'In Progress'].includes(nextStatus)) {
-      const scheduledDate = String(req.body?.scheduledDate || request.payload?.scheduledDate || request.payload?.preferredDate || '');
+      const scheduledDate = appointment.date;
       const timeSlot = String(req.body?.timeSlot || request.payload?.timeSlot || request.payload?.preferredSchedule || '').trim();
       const scheduleError = getScheduledDateError(scheduledDate, 'Appointment date');
       if (!scheduledDate || scheduleError || !timeSlot || timeSlot === 'TBD' || timeSlot.length > 80) return res.status(400).json({ message: scheduleError || 'Choose an appointment date and time slot before assigning the technician.' });
       req.body = { ...req.body, scheduledDate, timeSlot };
     }
+    const scheduleChanged = ['scheduledDate', 'timeSlot'].some(key => Object.hasOwn(req.body || {}, key) && String(req.body[key]) !== String(request.payload?.[key] || ''));
+    if (scheduleChanged && ['Completed', 'Cancelled'].includes(request.status)) return res.status(409).json({ message: 'Closed service requests cannot be rescheduled.' });
     const linkedTaskId = String(request.payload?.linkedTaskId || "").trim();
     let linkedTask = null;
     if (linkedTaskId) {
