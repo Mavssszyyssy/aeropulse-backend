@@ -18,9 +18,26 @@ test('dispatch activates work but does not claim travel, arrival or installation
 test('only a valid technician check-in advances arrival', () => {
   const arrived = { ...task, payload: { checkIn: { checkedInAt: now, latitude: 14.5, longitude: 121 } } };
   assert.equal(build(order, arrived).currentStage, 'arrived');
+  assert.equal(build(order, arrived).timeline.some((event) => event.stage === 'out_for_delivery'), false);
   for (const latitude of [null, '', 100, undefined]) {
     assert.equal(build(order, { ...arrived, payload: { checkIn: { ...arrived.payload.checkIn, latitude } } }).currentStage, 'dispatched');
   }
+});
+test('a genuine on-the-way milestone remains before arrival when timestamps match', () => {
+  const arrived = {
+    ...task,
+    status: 'in-progress',
+    payload: { onTheWayAt: now, checkIn: { checkedInAt: now, latitude: 14.5, longitude: 121 } },
+  };
+  const result = build({
+    ...order,
+    fulfillmentTimeline: [
+      { stage: 'arrived', timestamp: now },
+      { stage: 'out_for_delivery', timestamp: now },
+    ],
+  }, arrived);
+  assert.equal(result.timeline.map((event) => event.stage).join(','), 'placed,confirmed,preparing,dispatched,out_for_delivery,arrived');
+  assert.equal(result.currentStage, 'arrived');
 });
 test('legacy inferred arrival events cannot override missing check-in evidence', () => {
   assert.equal(build({ ...order, fulfillmentTimeline: [{ stage: 'arrived', timestamp: now }, { stage: 'installation', timestamp: now }] }, task).currentStage, 'dispatched');

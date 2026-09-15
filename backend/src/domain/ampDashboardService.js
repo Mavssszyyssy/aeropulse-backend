@@ -1,7 +1,7 @@
 const Unit = require("../models/Unit");
 const ServiceHistory = require("../models/ServiceHistory");
 const { summarizeMajorComponentUse } = require("./ampComponentCategories");
-const { normalizeServiceType, refreshMaintenanceRecommendations } = require("./ampMaintenanceService");
+const { normalizeServiceType } = require("./ampMaintenanceService");
 const { assessServiceEvidence } = require("./serviceEvidence");
 const { effectiveWarrantyStatus } = require("./warrantyService");
 const { businessDay } = require("../utils/dateTime");
@@ -87,7 +87,10 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
   const currentPage = boundedNumber(page, { fallback: 1, min: 1, max: 1000000, integer: true, label: "Pipeline page" });
   const currentPageSize = boundedNumber(pageSize, { fallback: 50, min: 10, max: 200, integer: true, label: "Pipeline page size" });
   const now = businessDay();
-  await refreshMaintenanceRecommendations(includeAllBranches ? {} : branchFilterMatch(branch));
+  // Dashboard requests are read-only. Recommendation persistence belongs to
+  // installation/service completion and the scheduled AMP monitor; rewriting
+  // every active unit here made both Admin and Superadmin page loads exceed the
+  // web request timeout as inventory grew.
   const windowEnd = addDays(now, windowDays);
   const baseMatch = {
     status: { $in: ["active", "service_due"] },
@@ -172,7 +175,9 @@ const getOwnerServiceForecast = async ({ months = 12, averageRevenue } = {}) => 
   const forecastMonths = boundedNumber(months, { fallback: 12, min: 1, max: 24, integer: true, label: "Forecast months" });
   const serviceRevenue = boundedNumber(averageRevenue, { fallback: DEFAULT_AVERAGE_SERVICE_REVENUE, min: 1, max: 1000000, label: "Assumed service value" });
   const now = businessDay(); const firstMonth = startOfMonth(now); const afterLastMonth = addMonths(firstMonth, forecastMonths);
-  await refreshMaintenanceRecommendations();
+  // Use the recommendations already stored by lifecycle events and the daily
+  // monitor. A company forecast must not synchronously recalculate the entire
+  // installed-unit collection before it can render.
   const activeUnits = await Unit.find({ status: { $in: ["active", "service_due"] } }).select("_id installation.installedAt").lean();
   const installedDates = new Map(activeUnits.map((unit) => [String(unit._id), unit.installation?.installedAt]));
   const [buckets, serviceTypes, componentRows, branchRows, recordedTrends] = await Promise.all([

@@ -85,6 +85,21 @@ const appendFulfillmentEvent = (order, stage, detail = "", timestamp = new Date(
 };
 
 const buildTrackingTimeline = (order = {}, task = null) => {
+  const stageOrder = [
+    "placed",
+    "confirmed",
+    "preparing",
+    "dispatched",
+    "out_for_delivery",
+    "arrived",
+    "installation",
+    "failed_installation",
+    "for_rescheduling",
+    "revisit_confirmed",
+    "completed",
+    "cancelled",
+  ];
+  const stageRank = new Map(stageOrder.map((stage, index) => [stage, index]));
   const checkedIn = require("../domain/taskWorkflow").hasVerifiedTaskCheckIn(task);
   const stored = Array.isArray(order.fulfillmentTimeline)
     ? order.fulfillmentTimeline.map((event) => ({
@@ -110,9 +125,9 @@ const buildTrackingTimeline = (order = {}, task = null) => {
   }
   const taskStatus = String(task?.status || "").toLowerCase();
   const arrivedAt = checkedIn ? task.payload.checkIn.checkedInAt : null;
-  const onTheWayAt = task?.payload?.onTheWayAt || arrivedAt || task?.updatedAt;
+  const onTheWayAt = task?.payload?.onTheWayAt || (taskStatus === "on-the-way" ? task?.updatedAt : null);
   const installationStartedAt = task?.payload?.installationStartedAt || arrivedAt || task?.updatedAt;
-  if (task?.payload?.onTheWayAt || taskStatus === "on-the-way" || checkedIn) {
+  if (onTheWayAt) {
     ensure("out_for_delivery", onTheWayAt, "Technician is on the way");
   }
   if (checkedIn) {
@@ -131,7 +146,10 @@ const buildTrackingTimeline = (order = {}, task = null) => {
   const timeline = [...byStage.values()].sort((left, right) => {
     const leftTime = new Date(left.timestamp || 0).getTime();
     const rightTime = new Date(right.timestamp || 0).getTime();
-    return leftTime - rightTime;
+    const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
+    const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
+    if (safeLeftTime !== safeRightTime) return safeLeftTime - safeRightTime;
+    return (stageRank.get(left.stage) ?? stageOrder.length) - (stageRank.get(right.stage) ?? stageOrder.length);
   });
   const current = timeline[timeline.length - 1] || null;
   return { timeline, currentStage: current?.stage || "placed", currentLabel: current?.label || "Order Placed" };

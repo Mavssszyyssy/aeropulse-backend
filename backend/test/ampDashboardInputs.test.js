@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { boundedNumber, branchFilterMatch } = require("../src/domain/ampDashboardService");
 const { resolveManagerPipelineScope } = require("../src/controllers/ampController");
 
@@ -67,4 +69,12 @@ test("AMP service pipeline explicitly matches units without a branch", () => {
       { serviceBranch: "Unassigned" },
     ],
   });
+});
+
+test("AMP dashboards remain read-only instead of recalculating every installed unit", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../src/domain/ampDashboardService.js"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /refreshMaintenanceRecommendations/);
 });
