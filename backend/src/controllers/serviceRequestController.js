@@ -159,6 +159,8 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
     customerId: request.customerId,
     serviceType: request.payload?.serviceType || request.issueType || "Service Request",
     issueDescription: request.issue,
+    customerNotes: request.payload?.notes || "",
+    customerOther: request.payload?.other || request.payload?.otherIssue || request.payload?.otherDescription || "",
     unitSerialNumber: request.payload?.unitSerialNumber || "",
     qrCode: request.payload?.qrCode || "",
     // Assigning a technician from Admin is the activation step for service
@@ -439,6 +441,7 @@ const createMyServiceRequest = async (req, res) => {
         preferredDate: payload.preferredDate,
         preferredSchedule: String(payload.preferredSchedule || ""),
         notes: String(payload.notes || "").trim().slice(0, 2000),
+        other: String(payload.other || payload.otherIssue || payload.otherDescription || "").trim().slice(0, 1000),
         issueDescription: issue,
         status: "Submitted",
         userId: String(req.authUser._id || ""),

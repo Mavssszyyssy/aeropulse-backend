@@ -57,6 +57,14 @@ const serviceHistorySchema = new mongoose.Schema(
       notes: { type: String, default: "", trim: true },
     },
 
+    // Snapshot the customer's original request context beside the completed
+    // visit. Technician findings remain authoritative and separate.
+    customerInputs: {
+      reportedIssue: { type: String, default: "", trim: true },
+      notes: { type: String, default: "", trim: true },
+      other: { type: String, default: "", trim: true },
+    },
+
     serviceActions: [{ type: String, trim: true }],
 
     ampSnapshot: {

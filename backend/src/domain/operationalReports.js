@@ -3,6 +3,7 @@ const { orderIsPaid } = require("./orderPayment");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SALES_STATUSES = ["all", "paid", "complete", "to_pay", "to_deliver", "to_dispatch", "to_install", "for_rescheduling", "cancelled"];
+const SALES_PAYMENT_METHODS = ["all", "cod", "gcash", "card"];
 
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const finiteNumber = (value) => {
@@ -49,6 +50,70 @@ const normalizeSalesStatus = (value = "paid") => {
     throw error;
   }
   return status;
+};
+
+const normalizePaymentMethodFilter = (value = "all") => {
+  const method = String(value || "all").trim().toLowerCase();
+  if (!SALES_PAYMENT_METHODS.includes(method)) {
+    const error = new Error("Unsupported payment method filter.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return method;
+};
+
+const canonicalPaymentMethod = (value = "") => {
+  const method = String(value || "").trim().toLowerCase();
+  if (method === "cod") return "cod";
+  if (method === "gcash") return "gcash";
+  if (["card", "credit", "credit_card"].includes(method)) return "card";
+  return method;
+};
+
+const filterSalesOrders = (orders = [], { paymentMethod = "all", search = "" } = {}) => {
+  const normalizedMethod = normalizePaymentMethodFilter(paymentMethod);
+  const needle = String(search || "").trim().toLowerCase();
+  return (orders || []).filter((order) => {
+    if (normalizedMethod !== "all" && canonicalPaymentMethod(order.paymentMethod) !== normalizedMethod) return false;
+    if (!needle) return true;
+    return [
+      order.orderCode,
+      order.customerName,
+      ...(order.items || []).flatMap((item) => [item.sku, item.productSku, item.name, item.model]),
+    ].some((value) => String(value || "").toLowerCase().includes(needle));
+  });
+};
+
+const filterInventoryRows = (rows = [], { category = "all", brand = "" } = {}) => {
+  const normalizedCategory = String(category || "all").trim().toLowerCase();
+  const normalizedBrand = String(brand || "").trim().toLowerCase();
+  return (rows || []).filter((row) => (
+    (normalizedCategory === "all" || String(row.category || "").trim().toLowerCase() === normalizedCategory)
+    && (!normalizedBrand || String(row.brand || "").toLowerCase().includes(normalizedBrand))
+  ));
+};
+
+const buildTechnicianPerformanceReport = (technicians = [], completedTasks = [], { search = "" } = {}) => {
+  const needle = String(search || "").trim().toLowerCase();
+  const completions = new Map();
+  (completedTasks || []).forEach((task) => {
+    const technicianId = String(task.assignedTechnicianId || "");
+    if (technicianId) completions.set(technicianId, (completions.get(technicianId) || 0) + 1);
+  });
+  const rows = (technicians || []).map((technician) => ({
+    technician: technician.name || [technician.name_first, technician.name_last].filter(Boolean).join(" ") || technician.email || "Technician",
+    branch: technician.activeBranch || technician.assignedBranch || "Unassigned",
+    completedWorkOrders: completions.get(String(technician._id || technician.id || "")) || 0,
+  })).filter((row) => !needle || [row.technician, row.branch]
+    .some((value) => String(value || "").toLowerCase().includes(needle)))
+    .sort((left, right) => right.completedWorkOrders - left.completedWorkOrders || left.technician.localeCompare(right.technician));
+  return {
+    summary: {
+      technicianCount: rows.length,
+      completedInPeriod: rows.reduce((sum, row) => sum + row.completedWorkOrders, 0),
+    },
+    rows,
+  };
 };
 
 const normalizeInterval = (value = "daily") => {
@@ -268,8 +333,13 @@ const summarizeInventoryProducts = (products = [], selectedBranches = BRANCHES) 
 };
 
 module.exports = {
+  SALES_PAYMENT_METHODS,
   SALES_STATUSES,
+  buildTechnicianPerformanceReport,
+  filterInventoryRows,
+  filterSalesOrders,
   normalizeInterval,
+  normalizePaymentMethodFilter,
   normalizeSalesStatus,
   normalizedOrderTotals,
   orderIsPaid,

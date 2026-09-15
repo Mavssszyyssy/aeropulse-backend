@@ -9,9 +9,17 @@ const textFor = (record = {}) => [
   ...(Array.isArray(record.serviceActions) ? record.serviceActions : []),
   ...(Array.isArray(record.partsUsed) ? record.partsUsed : []),
   record.technicianInputs?.notes,
+  record.customerInputs?.reportedIssue,
+  record.customerInputs?.notes,
+  record.customerInputs?.other,
   record.payload?.serviceType,
   record.payload?.issueType,
   record.payload?.concern,
+  record.payload?.issueDescription,
+  record.payload?.notes,
+  record.payload?.other,
+  record.payload?.otherIssue,
+  record.payload?.otherDescription,
 ].map(normalize).filter(Boolean).join(" ");
 
 const SIGNALS = [

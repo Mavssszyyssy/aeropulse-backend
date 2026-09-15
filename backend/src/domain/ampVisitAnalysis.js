@@ -30,13 +30,13 @@ const concernText = (text) => String(text || "")
   .replace(/\bno\s+(?:signs?\s+of\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement))*\b/gi, "")
   .replace(/\b(?:is|was|were|does|did)?\s*not\s+(?:showing\s+)?(?:making\s+)?(?:leaking|damaged|worn|noisy|failing|malfunctioning|sparking|smoking|burning|overheating)\b/gi, "")
   .replace(/\bwithout\s+(?:any\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating)\b/gi, "");
-const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|leak|weak cooling|not cooling|fault|fail|malfunction|intermittent|not respond|error code|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
+const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|vibrat|leak|weak cooling|not cooling|fault|fail|malfunction|intermittent|not respond|error code|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
 const replacementSignal = (text) => /replace|replacement/i.test(concernText(text));
 const criticalSignal = (text) => /danger|unsafe|smoke|burning|sparking|electrical fire|fire risk|stop using/i.test(concernText(text));
 const urgentSignal = (text) => /urgent|overheat|not working|fail(?:ed|ing|ure)?|completely broken|severe|major leak/i.test(concernText(text)) || criticalSignal(text);
 const riskSupported = (riskType, text) => ({
   no_problem_indicated: !repairSignal(text),
-  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|fault|fail|malfunction|intermittent|not respond|error code|replace/i.test(concernText(text)),
+  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|vibrat|fault|fail|malfunction|intermittent|not respond|error code|replace/i.test(concernText(text)),
   performance_decline: /weak cooling|not cooling|poor cooling|slow cooling|reduced cooling|performance/i.test(concernText(text)),
   leak_or_drainage: /leak|drain|drainage|water/i.test(concernText(text)),
   electrical_or_safety: /electrical|wiring|wire|capacitor|breaker|sparking|smoke|burning|unsafe|fire risk|stop using/i.test(concernText(text)),
@@ -67,17 +67,26 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
   const actions = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 1000);
   const condition = clean(serviceHistory.conditionRating, 30).toLowerCase();
   const parts = list(serviceHistory.partsUsed).slice(0, 12);
+  const customerIssue = clean(serviceHistory.customerInputs?.reportedIssue, 1000);
+  const customerNotes = clean(serviceHistory.customerInputs?.notes, 1000);
+  const customerOther = clean(serviceHistory.customerInputs?.other, 1000);
   const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== findings.toLowerCase()
     ? technicianNotes : "";
   const currentObservations = clean([
     findings ? `Findings: ${findings}` : "",
     distinctNotes ? `Additional technician notes: ${distinctNotes}` : "",
+    customerIssue ? `Customer-reported concern: ${customerIssue}` : "",
+    customerNotes ? `Customer notes: ${customerNotes}` : "",
+    customerOther ? `Customer custom observation: ${customerOther}` : "",
     condition ? `Condition: ${condition}` : "",
     parts.length ? `Parts recorded: ${parts.join(", ")}` : "",
   ].filter(Boolean).join(" "), 2400);
   const concernEvidence = clean([
     findings,
     distinctNotes,
+    customerIssue ? `Customer-reported concern: ${customerIssue}` : "",
+    customerNotes ? `Customer notes: ${customerNotes}` : "",
+    customerOther ? `Customer custom observation: ${customerOther}` : "",
     condition ? `Condition: ${condition}` : "",
   ].filter(Boolean).join(" "), 2200);
   const facts = {
@@ -87,6 +96,9 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
     latest_work_performed: actions,
     latest_condition: condition ? `Technician condition rating: ${condition}.` : "",
     latest_parts: parts.length ? `Parts recorded by the technician: ${parts.join(", ")}.` : "",
+    customer_reported_issue: customerIssue ? `Customer-reported concern: ${customerIssue}` : "",
+    customer_notes: customerNotes ? `Customer notes: ${customerNotes}` : "",
+    customer_other_observation: customerOther ? `Customer custom observation: ${customerOther}` : "",
     unit_profile: clean([unit.brand, unit.modelName || unit.model, unit.category, unit.capacityHp ? `${unit.capacityHp} HP` : ""].filter(Boolean).join(" · "), 300),
   };
   priorHistory.slice(0, 5).forEach((history, index) => {
@@ -114,6 +126,9 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       observation_text: concernEvidence,
       work_performed: actions,
       parts_used: parts,
+      customer_reported_issue: customerIssue,
+      customer_notes: customerNotes,
+      customer_other_observation: customerOther,
     },
     unit: {
       brand: clean(unit.brand, 80),
@@ -196,8 +211,15 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     ? technicianNotes : "";
   const parts = list(serviceHistory.partsUsed).slice(0, 12);
   const work = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 700);
+  const customerIssue = clean(serviceHistory.customerInputs?.reportedIssue, 700);
+  const customerNotes = clean(serviceHistory.customerInputs?.notes, 700);
+  const customerOther = clean(serviceHistory.customerInputs?.other, 700);
   const visitLabel = serviceLabel(serviceTypeFor(serviceHistory));
   const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded: ${sentence(finding)}${distinctNotes ? ` Additional notes: ${sentence(distinctNotes)}` : ""}${parts.length ? ` Parts recorded: ${sentence(parts.join(", "))}` : ""} Work completed: ${sentence(work)}`;
+  const customerContext = [customerIssue, customerNotes, customerOther].filter(Boolean);
+  const recordedContext = customerContext.length
+    ? `${recorded} Customer observations considered: ${customerContext.map(sentence).join(" ")}`
+    : recorded;
   const componentLabels = { fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor", air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil", drain_system: "drain system", refrigerant_system: "refrigerant system", control_board: "control board", electrical_system: "electrical system", thermostat_or_sensor: "thermostat or sensor", casing_or_mount: "casing or mounting", not_specified: "component not specified" };
   const riskLabels = { no_problem_indicated: "No developing problem is indicated in the submitted report", component_deterioration: "The report indicates a possible developing component-wear risk", performance_decline: "The report indicates a possible decline in AC performance", leak_or_drainage: "The report indicates a possible leak or drainage risk", electrical_or_safety: "The report indicates a possible electrical or safety risk", other_recorded_risk: "The report indicates another concern that should be monitored" };
   const affectedComponent = ai?.affected_component || "not_specified";
@@ -206,14 +228,14 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     ? `${actionLabel(ai?.follow_up_action, recommendation.recommendedService)} is recommended by ${dateKey(followUpDate)}.`
     : "A follow-up date could not be calculated from the available records.";
   const aiAssessment = ai
-    ? `${recorded} ${predictedRisk} ${guidanceFor(ai.repair_or_replacement)}`
-    : `${recorded} The automatic review is temporarily unavailable, so no new issue has been added by the system.`;
+    ? `${recordedContext} ${predictedRisk} ${guidanceFor(ai.repair_or_replacement)}`
+    : `${recordedContext} The automatic review is temporarily unavailable, so no new issue has been added by the system.`;
   const whyThisDate = followUpDate
     ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[ai?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
     : "A date could not be selected from the available records.";
   const customerSummary = ai
     ? `${aiAssessment} ${followUp}`
-    : `${recorded} The automatic follow-up review is temporarily unavailable. ${followUp}`;
+    : `${recordedContext} The automatic follow-up review is temporarily unavailable. ${followUp}`;
   const recommendedActions = [
     guidanceFor(ai?.repair_or_replacement || "not_assessed"),
     followUp,

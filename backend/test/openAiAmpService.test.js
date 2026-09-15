@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const env = require("../src/config/env");
-const { callStructuredAmpAnalysis, validateAmpInsight } = require("../src/services/openAiAmpService");
+const { callStructuredAmpAnalysis, validateAmpInsight, resolveBusinessIntelligence, validBusinessIntelligenceSelection } = require("../src/services/openAiAmpService");
 
 test("AMP uses the deterministic fallback when no provider key exists", async () => {
   const originalKey = env.openAiApiKey;
@@ -72,4 +72,35 @@ test("validated AI output cannot replace authoritative calculations", () => {
     "recommendation_summary",
     "recommended_service",
   ]);
+});
+
+test("manager business intelligence lets AI prioritize only verified fact identifiers", async () => {
+  const originalKey = env.openAiApiKey;
+  const originalFetch = global.fetch;
+  let requestBody;
+  env.openAiApiKey = "test-business-key";
+  const facts = {
+    sales_total: { id: "sales_total", category: "sales", statement: "Verified sales total.", action: "Review sales." },
+    service_total: { id: "service_total", category: "service", statement: "Verified service total.", action: "Review workload." },
+    inventory_low: { id: "inventory_low", category: "inventory", statement: "Verified low stock.", action: "Review stock." },
+    amp_due: { id: "amp_due", category: "amp", statement: "Verified AMP due count.", action: "Review units." },
+  };
+  const selection = { sales_fact_ids: ["sales_total"], service_fact_ids: ["service_total"], inventory_fact_ids: ["inventory_low"], amp_fact_ids: ["amp_due"] };
+  global.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return { ok: true, headers: { get: () => "bi-request" }, text: async () => JSON.stringify({ output_text: JSON.stringify(selection) }) };
+  };
+  try {
+    const result = await callStructuredAmpAnalysis({ businessIntelligence: true, intelligenceFacts: facts, safetyIdentifier: `manager-${Date.now()}` });
+    assert.equal(result.provider, "openai");
+    assert.equal(requestBody.text.format.name, "manager_business_intelligence");
+    assert.equal(validBusinessIntelligenceSelection(selection, facts), true);
+    assert.equal(validBusinessIntelligenceSelection({ ...selection, sales_fact_ids: ["inventory_low"] }, facts), false);
+    const resolved = resolveBusinessIntelligence(facts, result);
+    assert.equal(resolved.provider, "openai");
+    assert.equal(resolved.insights.inventory[0].statement, "Verified low stock.");
+  } finally {
+    env.openAiApiKey = originalKey;
+    global.fetch = originalFetch;
+  }
 });

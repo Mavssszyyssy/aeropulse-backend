@@ -1,11 +1,49 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  buildTechnicianPerformanceReport,
+  filterInventoryRows,
+  filterSalesOrders,
+  normalizePaymentMethodFilter,
   normalizedOrderTotals,
   resolveReportRange,
   summarizeInventoryProducts,
   summarizeSalesOrders,
 } = require("../src/domain/operationalReports");
+
+test("sales report filters by payment method and order, customer, or SKU text", () => {
+  const orders = [
+    { orderCode: "ORD-GCASH", customerName: "Ana Cruz", paymentMethod: "gcash", items: [{ sku: "AC-G-1", name: "Split AC" }] },
+    { orderCode: "ORD-CARD", customerName: "Ben Reyes", paymentMethod: "credit_card", items: [{ sku: "AC-C-2", name: "Window AC" }] },
+  ];
+  assert.deepEqual(filterSalesOrders(orders, { paymentMethod: "gcash" }).map((order) => order.orderCode), ["ORD-GCASH"]);
+  assert.deepEqual(filterSalesOrders(orders, { paymentMethod: "card", search: "AC-C-2" }).map((order) => order.orderCode), ["ORD-CARD"]);
+  assert.deepEqual(filterSalesOrders(orders, { search: "ana" }).map((order) => order.orderCode), ["ORD-GCASH"]);
+  assert.throws(() => normalizePaymentMethodFilter("bank-transfer"), /unsupported payment method/i);
+});
+
+test("inventory report filters by category and brand", () => {
+  const rows = [
+    { category: "Split", brand: "Daikin", sku: "D-1" },
+    { category: "Window", brand: "TCL", sku: "T-1" },
+    { category: "Split", brand: "LG Premium", sku: "L-1" },
+  ];
+  assert.deepEqual(filterInventoryRows(rows, { category: "split", brand: "lg" }).map((row) => row.sku), ["L-1"]);
+  assert.deepEqual(filterInventoryRows(rows, { category: "window" }).map((row) => row.sku), ["T-1"]);
+});
+
+test("technician report counts completed work in the selected dataset and supports search", () => {
+  const technicians = [
+    { _id: "t1", name: "Alex Tech", activeBranch: "Cavite" },
+    { _id: "t2", name_first: "Bea", name_last: "Santos", assignedBranch: "Laguna" },
+  ];
+  const completedTasks = [
+    { assignedTechnicianId: "t1" }, { assignedTechnicianId: "t1" }, { assignedTechnicianId: "t2" },
+  ];
+  const report = buildTechnicianPerformanceReport(technicians, completedTasks, { search: "cavite" });
+  assert.deepEqual(report.summary, { technicianCount: 1, completedInPeriod: 2 });
+  assert.deepEqual(report.rows, [{ technician: "Alex Tech", branch: "Cavite", completedWorkOrders: 2 }]);
+});
 
 test("report range includes the complete selected end date and rejects a reversed range", () => {
   const range = resolveReportRange({ from: "2026-09-01", to: "2026-09-10" });

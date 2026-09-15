@@ -36,9 +36,71 @@ const formatHistory = (item = {}) => ({
   findings: cleanText(item.findings || item.technicianInputs?.notes || "", 500),
   actionTaken: cleanText(item.actionTaken || (item.serviceActions || []).join(", "), 500),
   partsUsed: Array.isArray(item.partsUsed) ? item.partsUsed.slice(0, 20) : [],
+  technicianNotes: cleanText(item.technicianInputs?.notes || "", 500),
+  customerObservations: [
+    item.customerInputs?.reportedIssue,
+    item.customerInputs?.notes,
+    item.customerInputs?.other,
+  ].map((value) => cleanText(value, 500)).filter(Boolean),
   evidence: assessServiceEvidence(item),
   aiInterpretation: item.aiInterpretation?.status ? item.aiInterpretation : null,
 });
+
+const addDistinct = (items, value, source) => {
+  const text = cleanText(value, 500);
+  if (!text || items.some((item) => item.value.toLowerCase() === text.toLowerCase())) return;
+  items.push({ source, value: text });
+};
+
+const buildPredictiveAssessment = ({ unit, recommendation, history = [], requests = [] }) => {
+  const factors = [];
+  const observations = [];
+  if (unit.brand) factors.push({ label: "AC brand", value: unit.brand });
+  if (unit.modelName) factors.push({ label: "AC model", value: unit.modelName });
+  if (unit.serialNumber) factors.push({ label: "Unit serial number", value: unit.serialNumber });
+  if (unit.installation?.installedAt) factors.push({ label: "Installation date", value: unit.installation.installedAt });
+  if (recommendation.lastServiceDate) factors.push({ label: "Last completed service", value: recommendation.lastServiceDate });
+  if (recommendation.lastCleaningDate) factors.push({ label: "Last recorded cleaning", value: recommendation.lastCleaningDate });
+  if (recommendation.historicalBasis?.sampleSize) factors.push({ label: "Verified cleaning intervals", value: String(recommendation.historicalBasis.sampleSize) });
+  const latest = history.find((item) => serviceTypeFor(item) !== "installation");
+  if (latest) {
+    addDistinct(observations, latest.findings, "Technician finding");
+    addDistinct(observations, latest.technicianInputs?.notes, "Technician comment");
+    addDistinct(observations, latest.customerInputs?.reportedIssue, "Customer-reported concern");
+    addDistinct(observations, latest.customerInputs?.notes, "Customer comment");
+    addDistinct(observations, latest.customerInputs?.other, "Customer custom / Other input");
+    if (latest.conditionRating) factors.push({ label: "Latest technician condition rating", value: latest.conditionRating });
+    if (latest.serviceType) factors.push({ label: "Latest service type", value: serviceLabel(latest.serviceType) });
+    if (latest.partsUsed?.length) factors.push({ label: "Parts recorded in latest visit", value: latest.partsUsed.join(", ") });
+  }
+  const latestRequest = requests[0];
+  if (latestRequest) {
+    addDistinct(observations, latestRequest.issue, "Customer-reported concern");
+    addDistinct(observations, latestRequest.payload?.notes, "Customer comment");
+    addDistinct(observations, latestRequest.payload?.other || latestRequest.payload?.otherIssue || latestRequest.payload?.otherDescription, "Customer custom / Other input");
+  }
+  const visit = recommendation.latestVisitAnalysis || {};
+  const recommendedActions = Array.isArray(visit.recommendedActions) && visit.recommendedActions.length
+    ? visit.recommendedActions.map((value) => cleanText(value, 500)).filter(Boolean)
+    : recommendation.bestServicedBy
+      ? [`Schedule ${serviceLabel(recommendation.recommendedService).toLowerCase()} by ${String(recommendation.bestServicedBy).slice(0, 10)}.`, "Review the original technician and customer observations before approving repair or replacement work."]
+      : ["Record a valid installation date or completed cleaning report before setting a servicing schedule."];
+  const severity = String(visit.severity || "").toLowerCase();
+  const priority = ({ critical: "Immediate attention", urgent: "Urgent", soon: "Schedule soon", monitor: "Monitor", routine: "Routine" })[severity]
+    || (recommendation.overdue ? "Schedule soon" : "Routine");
+  return {
+    recommendedServicingDate: recommendation.bestServicedBy || null,
+    recommendedService: recommendation.recommendedService || "",
+    assessmentSummary: recommendation.aiAssessment || visit.aiAssessment || recommendation.recommendationBasis || "Insufficient historical service data is available to establish a strong maintenance pattern.",
+    factorsConsidered: factors,
+    observationsConsidered: observations,
+    relevantServiceHistory: history.filter((item) => serviceTypeFor(item) !== "installation").slice(0, 5).map(formatHistory),
+    reasonForRecommendation: recommendation.whyThisDate || visit.whyThisDate || recommendation.recommendationBasis || "A completed cleaning or installation date is needed before a date can be calculated.",
+    recommendedActions,
+    priority,
+    evidenceNotice: "Recorded facts, detected patterns, and recommendations are shown separately. A recommendation is not a confirmed mechanical diagnosis or booking.",
+  };
+};
 
 const aggregateReliability = async (unit, branch) => {
   const query = { status: { $ne: "retired" } };
@@ -110,9 +172,14 @@ const getMaintenanceRecommendation = async (req, res) => {
     const unitId = String(req.body?.unitId || req.body?.unit?.id || "");
     const loaded = await loadUnitAndRecommendation(req, unitId);
     const { ai, recommendation } = await predictAndSave(req, loaded.unit, loaded.recommendation);
+    const [history, requests] = await Promise.all([
+      ServiceHistory.find({ unit: loaded.unit._id }).sort({ serviceDate: -1 }).limit(20).lean(),
+      ServiceRequest.find({ unitId: String(loaded.unit._id) }).sort({ createdAt: -1 }).limit(10).lean(),
+    ]);
+    const predictiveAssessment = buildPredictiveAssessment({ unit: loaded.unit, recommendation, history, requests });
     return res.json({
       provider: ai.provider,
-      recommendation,
+      recommendation: { ...recommendation, predictiveAssessment },
       insight: {
         best_serviced_by: recommendation.bestServicedBy?.slice(0, 10) || "", recommended_service: recommendation.recommendedService,
         recommendation_summary: recommendation.recommendationBasis, capacity_assessment: recommendation.capacityAssessment.status,
@@ -165,6 +232,7 @@ const generateAmpReport = async (req, res) => {
     });
     const insight = !predictionResult && ai.insight ? validateAmpInsight(ai.insight, recommendation) : null;
     const customerExplanation = explanationForRecommendation(recommendation);
+    const predictiveAssessment = buildPredictiveAssessment({ unit, recommendation: { ...recommendation, ...customerExplanation }, history, requests });
     const generatedAt = new Date().toISOString(); const date = formatDateKeyInTimeZone(generatedAt);
     const identifier = slugSegment(unit.serialNumber || unit.qrUnitId, "AC-UNIT");
     const fileIdentifier = aggregate ? `Branch-${slugSegment(branch, "AEROPULSE")}` : identifier;
@@ -191,9 +259,10 @@ const generateAmpReport = async (req, res) => {
           dataQuality: recommendation.dataQuality, overdue: recommendation.overdue,
           aiAssessment: customerExplanation.aiAssessment,
           whyThisDate: customerExplanation.whyThisDate,
+          predictiveAssessment,
           interpretation: insight?.recommendation_summary || recommendation.recommendationBasis,
         },
-        serviceHistory: history.map((item) => ({ ...formatHistory(item), evidence: assessServiceEvidence(item, { installedAt: unit.installation?.installedAt }) })), serviceRequests: requests.map((item) => ({ date: item.createdAt, type: item.serviceType || item.issueType || "service", status: item.status || "" })),
+        serviceHistory: history.map((item) => ({ ...formatHistory(item), evidence: assessServiceEvidence(item, { installedAt: unit.installation?.installedAt }) })), serviceRequests: requests.map((item) => ({ date: item.createdAt, type: item.serviceType || item.issueType || "service", status: item.status || "", customerObservation: cleanText(item.issue || item.payload?.issueDescription, 500), customerNotes: cleanText(item.payload?.notes, 500), other: cleanText(item.payload?.other || item.payload?.otherIssue || item.payload?.otherDescription, 500) })),
         technicianTasks: tasks.map((item) => ({ date: item.completedAt || item.updatedAt, title: cleanText(item.title), status: item.status || "" })),
         aggregateReliability: aggregate,
         predictionReview, predictionReviewWarning,

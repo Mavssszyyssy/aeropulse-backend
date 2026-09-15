@@ -67,22 +67,62 @@ test("free-text technician notes identify an unlisted control-board concern and 
     ...service,
     findings: "The unit completed cleaning and was tested after service.",
     conditionRating: "fair",
-    technicianInputs: { notes: "The inverter main board is intermittently failing and may need repair if the issue continues." },
+    technicianInputs: {
+      notes: "The inverter main board is intermittently failing and may need repair if the issue continues.",
+    },
   };
   const evidence = buildVisitEvidence({ serviceHistory: noteOnlyConcern, recommendation });
   assert.match(evidence.visit.technician_notes, /main board/i);
   assert.ok(evidence.allowed_affected_components.includes("control_board"));
-  const contextual = insight({ affected_component: "control_board", evidence_confidence: "high", severity: "urgent", follow_up_days: 5, evidence_fact_ids: ["latest_observations"] });
+  const contextual = insight({
+    affected_component: "control_board",
+    evidence_confidence: "high",
+    severity: "urgent",
+    follow_up_days: 5,
+    evidence_fact_ids: ["latest_observations"],
+  });
   assert.equal(validVisitAnalysis(contextual, evidence), true);
-  const result = finalizeVisitAnalysis({ serviceHistory: noteOnlyConcern, recommendation, evidence, providerResult: { provider: "openai", insight: contextual } });
+  const result = finalizeVisitAnalysis({
+    serviceHistory: noteOnlyConcern,
+    recommendation,
+    evidence,
+    providerResult: { provider: "openai", insight: contextual },
+  });
   assert.equal(result.analysisVersion, 3);
   assert.match(result.aiAssessment, /inverter main board/i);
   assert.match(result.whyThisDate, /prompt attention/i);
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-17");
 });
 
+test("customer comments and custom Other text are labeled evidence without becoming technician findings", () => {
+  const withCustomerContext = {
+    ...service,
+    findings: "The unit was cleaned and tested.",
+    customerInputs: {
+      reportedIssue: "Customer reports unusual vibration when the compressor starts.",
+      notes: "The vibration is intermittent.",
+      other: "A new custom symptom not present in the dropdown.",
+    },
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: withCustomerContext, recommendation });
+  assert.match(evidence.fact_catalog.customer_reported_issue, /unusual vibration/i);
+  assert.match(evidence.fact_catalog.customer_other_observation, /custom symptom/i);
+  assert.match(evidence.visit.observation_text, /Customer-reported concern/);
+  assert.equal(evidence.visit.findings, "The unit was cleaned and tested.");
+  const monitored = insight({ severity: "monitor", risk_type: "component_deterioration", affected_component: "compressor", evidence_confidence: "medium", follow_up_action: "inspection", follow_up_days: 45, repair_or_replacement: "inspection_needed", evidence_fact_ids: ["latest_observations", "customer_reported_issue"] });
+  assert.equal(validVisitAnalysis(monitored, evidence), true);
+  const result = finalizeVisitAnalysis({ serviceHistory: withCustomerContext, recommendation, evidence, providerResult: { provider: "openai", insight: monitored } });
+  assert.match(result.aiAssessment, /Customer observations considered/);
+  assert.match(result.aiAssessment, /unusual vibration/i);
+  assert.match(result.predictedRisk, /possible developing/i);
+});
+
 test("negated free-text component concerns do not create a false failure", () => {
-  const normal = { ...service, findings: "The AC is operating normally after cleaning.", technicianInputs: { notes: "There are no signs of control board failure or unusual noise." } };
+  const normal = {
+    ...service,
+    findings: "The AC is operating normally after cleaning.",
+    technicianInputs: { notes: "There are no signs of control board failure or unusual noise." },
+  };
   const evidence = buildVisitEvidence({ serviceHistory: normal, recommendation });
   const routine = insight({ severity: "routine", risk_type: "no_problem_indicated", affected_component: "not_specified", evidence_confidence: "high", follow_up_action: "routine_cleaning", follow_up_days: 180, repair_or_replacement: "not_indicated" });
   assert.equal(validVisitAnalysis(routine, evidence), true);

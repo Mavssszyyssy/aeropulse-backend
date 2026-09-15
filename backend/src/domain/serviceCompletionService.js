@@ -169,6 +169,12 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     payload.notes ?? payload.additionalNotes ?? latestLog.notes ?? latestLog.additionalNotes,
     1000,
   );
+  const customerReportedIssue = clean(
+    payload.customerObservation ?? payload.issueDescription ?? payload.concern,
+    1000,
+  );
+  const customerNotes = clean(payload.customerNotes ?? payload.requestNotes, 1000);
+  const customerOther = clean(payload.customerOther ?? payload.other ?? payload.otherIssue ?? payload.otherDescription, 1000);
 
   const historyData = {
     unit: unit._id,
@@ -186,6 +192,11 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     technicianInputs: {
       notes: technicianNotes || findings,
     },
+    customerInputs: {
+      reportedIssue: customerReportedIssue,
+      notes: customerNotes,
+      other: customerOther,
+    },
     serviceActions: actions,
   };
   const recordedResourceFields = Object.fromEntries(Object.entries({ hoursSpent, ...costs }).filter(([, value]) => value !== null));
@@ -194,7 +205,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
   const serviceHistory = sourceTaskId
     ? await ServiceHistory.findOneAndUpdate(
       { unit: unit._id, sourceTaskId: String(sourceTaskId) },
-      { $setOnInsert: historyInsertData, ...(Object.keys(recordedResourceFields).length ? { $set: recordedResourceFields } : {}) },
+      { $setOnInsert: historyInsertData, $set: { ...recordedResourceFields, customerInputs: historyData.customerInputs } },
       { upsert: true, returnDocument: "after", runValidators: true },
     )
     : await ServiceHistory.create(historyData);
