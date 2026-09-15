@@ -46,7 +46,7 @@ router.get(
 
 router.patch(
   "/units/:unitId/room-size",
-  allowRoles("customer", "technician", "admin", "superadmin"),
+  allowRoles("technician", "admin", "superadmin"),
   updateRoomSize,
 );
 

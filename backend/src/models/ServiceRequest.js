@@ -36,6 +36,8 @@ serviceRequestSchema.index(
   },
 );
 serviceRequestSchema.index({ unitId: 1, createdAt: -1 });
+serviceRequestSchema.index({ customerId: 1, createdAt: -1 });
+serviceRequestSchema.index({ createdBy: 1, createdAt: -1 });
 
 serviceRequestSchema.set("toJSON", {
   transform: (_doc, ret) => {

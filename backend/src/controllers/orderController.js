@@ -1161,6 +1161,32 @@ const assertPaymongoAmountMatchesOrder = (order, eventOrSession = {}) => {
   }
 };
 
+const orderDisplayName = (order = {}) => {
+  const names = [...new Set((Array.isArray(order.items) ? order.items : [])
+    .map((item) => String(item?.name || "").trim())
+    .filter(Boolean))];
+  if (!names.length) return "Cold Air ACT order";
+  if (names.length === 1) return names[0];
+  return `${names[0]} and ${names.length - 1} more item${names.length > 2 ? "s" : ""}`;
+};
+
+const sendConfirmedOnlinePaymentEmail = async (order) => {
+  if (!canSendEmail()) return;
+  try {
+    const customer = await User.findById(order.customer).select("email").lean();
+    if (!customer?.email) return;
+    const orderName = orderDisplayName(order);
+    await sendEmail({
+      to: customer.email,
+      subject: `Payment Confirmed - ${order.orderCode}`,
+      text: `${orderName}\nPayment for ${order.orderCode} is confirmed. Total paid: PHP ${Number(order.totalAmount || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
+      html: `<h1>${escapeHtml(orderName)}</h1><p>Your payment for order <strong>${escapeHtml(order.orderCode)}</strong> is confirmed.</p><p>Total paid: <strong>PHP ${Number(order.totalAmount || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></p>`,
+    });
+  } catch (emailError) {
+    console.error("Failed to send confirmed payment email:", emailError);
+  }
+};
+
 const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   if (!order) return null;
   const eventType = String(event.eventType || "").toLowerCase();
@@ -1178,7 +1204,9 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   const isPaid =
     eventType === "payment.paid" ||
     eventType === "checkout_session.payment.paid" ||
-    eventType === "checkout_session.completed" ||
+    ["paid", "succeeded"].includes(
+      String(event.attributes?.payment_status || "").toLowerCase(),
+    ) ||
     String(event.attributes?.status || "").toLowerCase() === "paid" ||
     String(event.attributes?.status || "").toLowerCase() === "succeeded";
   const isFailed =
@@ -1206,7 +1234,7 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
   };
 
   if (isPaid) {
-    // PayMongo may deliver both payment.paid and checkout_session.completed.
+    // PayMongo may deliver both payment.paid and checkout_session.payment.paid.
     // Once the order is paid, do not issue a second receipt, reserve stock a
     // second time, or send duplicate customer notifications.
     const wasAlreadyPaid = String(order.paymentStatus || "").toLowerCase() === "paid";
@@ -1266,6 +1294,7 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
       title: "Payment completed",
       message: `PayMongo confirmed payment for ${order.orderCode}. The order is ready for fulfilment.`,
     });
+    await sendConfirmedOnlinePaymentEmail(order);
     return order;
   }
 
@@ -1333,8 +1362,8 @@ const checkoutSessionLooksPaid = (session = {}) => {
   const paymentStatus = String(attributes.payment_status || "").toLowerCase();
   const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
   return (
-    ["paid", "succeeded", "completed"].includes(status) ||
-    ["paid", "succeeded", "completed"].includes(paymentStatus) ||
+    ["paid", "succeeded"].includes(status) ||
+    ["paid", "succeeded"].includes(paymentStatus) ||
     payments.some((payment) =>
       ["paid", "succeeded"].includes(
         String(payment?.attributes?.status || payment?.status || "").toLowerCase(),
@@ -2527,8 +2556,9 @@ const createOrder = async (req, res) => {
         });
         await notifyBranchAdminsForOrder(order);
 
-        // Send real email receipt
-        if (canSendEmail()) {
+        // Online confirmation is sent only after a verified PayMongo success.
+        // COD keeps its existing order-received email at order creation.
+        if (!usesOnlinePayment && canSendEmail()) {
           try {
             await sendEmail({
               to: user.email,

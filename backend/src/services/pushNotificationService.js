@@ -4,14 +4,16 @@ const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 
 function resolveRoute(notification, role) {
   const explicitRoute = String(notification.route || "");
-  if (role === "technician") return explicitRoute.startsWith("/technician/") ? explicitRoute : "/technician/tasks";
+  if (role === "technician") {
+    if (explicitRoute.startsWith("/technician/task/")) return explicitRoute;
+    if (notification.targetType === "task" && notification.targetId) {
+      return `/technician/task/${encodeURIComponent(notification.targetId)}/information`;
+    }
+    return explicitRoute.startsWith("/technician/") ? explicitRoute : "/technician/tasks";
+  }
   if (notification.targetType === "service_request") return "/customer/services";
   if (notification.targetType === "unit" || ["maintenance_due", "amp_due_soon", "amp_overdue"].includes(notification.category)) {
     return notification.targetId ? `/customer/units/${encodeURIComponent(notification.targetId)}` : "/customer/units";
-  }
-  if (role === "technician") {
-    if (explicitRoute.startsWith("/technician/")) return explicitRoute;
-    if (explicitRoute.startsWith("/tech/")) return "/technician/tasks";
   }
   if (role === "customer") {
     if (explicitRoute === "/customer/service-requests") return "/customer/services";

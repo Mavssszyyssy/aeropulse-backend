@@ -21,6 +21,10 @@ test("push alerts respect category preferences and valid mobile routes", () => {
   assert.equal(canReceivePush({ notifications: { push: true, serviceUpdates: false } }, "technician"), false);
   assert.equal(canReceivePush({ notifications: { push: true, serviceUpdates: true } }, "technician"), true);
   assert.equal(resolveRoute({ route: "/tech/tasks/TSK-1" }, "technician"), "/technician/tasks");
+  assert.equal(
+    resolveRoute({ route: "/technician/tasks", targetType: "task", targetId: "TSK-1" }, "technician"),
+    "/technician/task/TSK-1/information",
+  );
   assert.equal(resolveRoute({ route: "/customer/service-requests" }, "customer"), "/customer/services");
   assert.equal(resolveRoute({ title: "Parts update" }, "technician"), "/technician/tasks");
 });

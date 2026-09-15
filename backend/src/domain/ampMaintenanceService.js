@@ -184,7 +184,7 @@ const cleaningMethodForDates = ({ lastCleaningDate, installationDate, asOfDate =
 };
 
 const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
-  const unit = await Unit.findById(unitId);
+  const unit = options.unit || await Unit.findById(unitId);
   if (!unit) {
     const error = new Error("Unit not found");
     error.status = 404;
@@ -193,7 +193,9 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
   const calculationDate = asDate(options.asOfDate || new Date());
   if (!calculationDate) { const error = new Error("Enter a valid calculation date."); error.status = 400; throw error; }
   const asOfDate = startOfUtcDay(calculationDate);
-  const allHistory = await ServiceHistory.find({ unit: unit._id }).sort({ serviceDate: -1 }).lean();
+  const allHistory = options.allHistory !== undefined
+    ? options.allHistory
+    : await ServiceHistory.find({ unit: unit._id }).sort({ serviceDate: -1 }).lean();
   const ownHistory = allHistory.filter((history) => assessServiceEvidence(history, { asOfDate: calculationDate, installedAt: unit.installation?.installedAt }).eligible);
   const serviceRequests = options.serviceRequests !== undefined
     ? options.serviceRequests
@@ -211,8 +213,13 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
     cohort = selectHistoricalCohort([]);
   } else {
     const cohortKey = `${normalize(unit.brand)}:${normalize(unit.modelName)}:${unit.capacityHp}:${unit.category}`;
-    cohort = options.cohortCache?.get(cohortKey);
-    if (!cohort) { cohort = await collectHistoricalCohort(unit, calculationDate); options.cohortCache?.set(cohortKey, cohort); }
+    cohort = await options.cohortCache?.get(cohortKey);
+    if (!cohort) {
+      const pendingCohort = collectHistoricalCohort(unit, calculationDate);
+      options.cohortCache?.set(cohortKey, pendingCohort);
+      cohort = await pendingCohort;
+      options.cohortCache?.set(cohortKey, cohort);
+    }
   }
   const patternAnalysis = patternAnalysisFor(cohort);
   const newestFirst = ownHistory.slice().sort((left, right) => asDate(right.serviceDate) - asDate(left.serviceDate));

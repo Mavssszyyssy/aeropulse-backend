@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Unit = require("../models/Unit");
 const Product = require("../models/Product");
 const ServiceHistory = require("../models/ServiceHistory");
+const ServiceRequest = require("../models/ServiceRequest");
 const Task = require("../models/Task");
 const Order = require("../models/Order");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
@@ -248,11 +249,32 @@ const listMyUnits = async (req, res) => {
         if ((matchesItems || matchesAssignment) && !orderBySerial.has(serial)) orderBySerial.set(serial, order);
       });
     });
-    const histories = units.length ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } }).sort({ serviceDate: -1 }) : [];
+    const histories = units.length ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } }).sort({ serviceDate: -1 }).lean() : [];
     const historyByUnit = new Map();
     histories.forEach((item) => historyByUnit.set(String(item.unit), [...(historyByUnit.get(String(item.unit)) || []), item]));
-    const recommendations = await Promise.all(units.map((unit) => calculateMaintenanceRecommendation(unit._id)));
-    await Promise.all(units.filter((unit) => unit.status !== "on_hold").map((unit) => notifyDueMaintenance(unit, recommendations[units.indexOf(unit)]).catch(() => null)));
+    const unitIds = units.map((unit) => String(unit._id));
+    const serviceRequests = unitIds.length
+      ? await ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
+        .select("unitId issue issueType payload status createdAt")
+        .sort({ createdAt: -1 })
+        .lean()
+      : [];
+    const requestsByUnit = new Map();
+    serviceRequests.forEach((request) => requestsByUnit.set(
+      String(request.unitId),
+      [...(requestsByUnit.get(String(request.unitId)) || []), request],
+    ));
+    const cohortCache = new Map();
+    // Listing customer units must be read-only. Daily monitoring owns status
+    // persistence and due notifications; running those writes on every mobile
+    // refresh made the dashboard slower and produced avoidable database load.
+    const recommendations = await Promise.all(units.map((unit) => calculateMaintenanceRecommendation(unit._id, {
+      unit,
+      allHistory: historyByUnit.get(String(unit._id)) || [],
+      serviceRequests: requestsByUnit.get(String(unit._id)) || [],
+      cohortCache,
+      persist: false,
+    })));
     return res.json({
       units: units.map((unit, index) => serializeCustomerUnit(
         unit,
