@@ -44,6 +44,58 @@ const reportBranch = (req, { allowAll = true } = {}) => {
   return requested;
 };
 
+const getReportFilterOptions = async (req, res) => {
+  try {
+    const { from, to } = resolveReportRange(req.query);
+    const activeBranch = reportBranch(req);
+    const orderConditions = [{ $or: [
+      { createdAt: { $gte: from, $lte: to } },
+      { updatedAt: { $gte: from, $lte: to } },
+      { "paymongo.paidAt": { $gte: from, $lte: to } },
+      { "codCollection.collectedAt": { $gte: from, $lte: to } },
+    ] }];
+    if (activeBranch) {
+      orderConditions.push({ $or: [
+        { stockSourceBranch: activeBranch },
+        { stockSourceBranch: "", customerBranch: activeBranch },
+      ] });
+    }
+
+    const [customerNames, technicians, catalog] = await Promise.all([
+      Order.distinct("customerName", { $and: orderConditions }),
+      User.find(activeTechnicianQuery(activeBranch))
+        .select("name name_first name_last email activeBranch assignedBranch")
+        .sort({ name: 1, name_first: 1, name_last: 1 })
+        .lean(),
+      Product.find({ isActive: { $ne: false } }).select("name sku brand isActive").lean(),
+    ]);
+    const products = catalog.filter((product) => !isNonRetailCatalogProduct(product));
+    const uniqueSorted = (values) => [...new Set(values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+
+    return res.json({
+      branch: activeBranch || "all",
+      from: from.toISOString(),
+      to: to.toISOString(),
+      customers: uniqueSorted(customerNames),
+      technicians: technicians.map((technician) => ({
+        value: String(technician._id),
+        label: technician.name
+          || `${technician.name_first || ""} ${technician.name_last || ""}`.trim()
+          || technician.email
+          || "Technician",
+        branch: technician.activeBranch || technician.assignedBranch || "",
+      })),
+      skus: uniqueSorted(products.map((product) => product.sku)),
+      brands: uniqueSorted(products.map((product) => product.brand)),
+    });
+  } catch (error) {
+    console.error("Failed to load report filter options:", error);
+    return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : "Unable to load report filters right now." });
+  }
+};
+
 const getSalesReport = async (req, res) => {
   try {
     const interval = normalizeInterval(req.query.interval);
@@ -174,7 +226,13 @@ const getTechnicianReport = async (req, res) => {
     const { from, to } = resolveReportRange(req.query);
     const activeBranch = reportBranch(req);
     const search = reportTextFilter(req.query.search, { label: "Technician search" });
-    const technicians = await User.find(activeTechnicianQuery(activeBranch))
+    const technician = reportTextFilter(req.query.technician, { label: "Technician filter", maxLength: 50 });
+    if (technician && !/^[a-f\d]{24}$/i.test(technician)) {
+      return res.status(400).json({ message: "Select a valid technician for this report." });
+    }
+    const technicianQuery = activeTechnicianQuery(activeBranch);
+    if (technician) technicianQuery._id = technician;
+    const technicians = await User.find(technicianQuery)
       .select("name name_first name_last email activeBranch assignedBranch")
       .sort({ name: 1, name_first: 1, name_last: 1 })
       .lean();
@@ -194,6 +252,7 @@ const getTechnicianReport = async (req, res) => {
       from: from.toISOString(),
       to: to.toISOString(),
       search,
+      technician,
       updatedAt: new Date().toISOString(),
       basis: "Completed work orders within the selected reporting period for active technician accounts only.",
       summary: report.summary,
@@ -301,4 +360,4 @@ const getAuditLogs = async (req, res) => {
   }
 };
 
-module.exports = { getSalesReport, getInventoryReport, getTechnicianReport, getBusinessIntelligence, getAuditLogs, reportTextFilter };
+module.exports = { getReportFilterOptions, getSalesReport, getInventoryReport, getTechnicianReport, getBusinessIntelligence, getAuditLogs, reportTextFilter };
