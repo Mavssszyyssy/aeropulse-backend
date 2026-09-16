@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { boundedNumber, branchFilterMatch } = require("../src/domain/ampDashboardService");
+const { boundedNumber, branchFilterMatch, buildPipelineActionSummary } = require("../src/domain/ampDashboardService");
 const { resolveManagerPipelineScope } = require("../src/controllers/ampController");
 
 test("AMP dashboard query ranges reject abusive or misleading values", () => {
@@ -77,4 +77,41 @@ test("AMP dashboards remain read-only instead of recalculating every installed u
     "utf8",
   );
   assert.doesNotMatch(source, /refreshMaintenanceRecommendations/);
+});
+
+test("AMP pipeline action summary uses saved service recommendations and earliest due unit", () => {
+  const summary = buildPipelineActionSummary({
+    serviceDemand: [
+      { _id: "repair", count: 2, overdue: 1 },
+      { _id: "regular_cleaning", count: 3, overdue: 0 },
+    ],
+    priorityUnits: [{
+      _id: "unit-1",
+      brand: "Samsung",
+      modelName: "Windfree 1.5",
+      serialNumber: "CAACT-001",
+      customerName: "Edrian Mab",
+      amp: {
+        bestServicedBy: new Date("2026-09-28T00:00:00.000Z"),
+        recommendedService: "repair",
+        aiAssessment: "The technician recorded signs of control-board failure.",
+        visitFollowUp: {
+          severity: "urgent",
+          affectedComponent: "control board",
+          recommendedActions: ["Arrange a technician assessment."],
+        },
+      },
+    }],
+  });
+
+  assert.deepEqual(summary.serviceDemand, [
+    { serviceType: "repair", count: 2, overdue: 1 },
+    { serviceType: "regular_cleaning", count: 3, overdue: 0 },
+  ]);
+  assert.equal(summary.earliestDueUnit.modelName, "Samsung Windfree 1.5");
+  assert.equal(summary.earliestDueUnit.recommendedService, "repair");
+  assert.equal(summary.earliestDueUnit.customerName, "Edrian Mab");
+  assert.equal(summary.priorityUnits[0].affectedComponent, "control board");
+  assert.equal(summary.priorityUnits[0].severity, "urgent");
+  assert.deepEqual(summary.priorityUnits[0].recommendedActions, ["Arrange a technician assessment."]);
 });

@@ -27,6 +27,35 @@ const addMonths = (date, months) => new Date(Date.UTC(date.getUTCFullYear(), dat
 const monthKey = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 const monthLabel = (date) => date.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 const daysBetween = (from, to) => Math.ceil((to.getTime() - from.getTime()) / MS_PER_DAY);
+const PIPELINE_SERVICE_TYPES = new Set(["regular_cleaning", "deep_cleaning", "inspection", "repair"]);
+const summarizePriorityUnit = (unit) => unit ? {
+  unitId: String(unit._id),
+  modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "AC Unit",
+  serialNumber: unit.serialNumber || "",
+  customerName: unit.customerName || "Customer",
+  bestServicedBy: unit.amp?.bestServicedBy || null,
+  recommendedService: PIPELINE_SERVICE_TYPES.has(unit.amp?.recommendedService)
+    ? unit.amp.recommendedService
+    : "inspection",
+  assessment: unit.amp?.aiAssessment || unit.amp?.visitFollowUp?.aiAssessment || "",
+  reason: unit.amp?.whyThisDate || unit.amp?.recommendationBasis || unit.amp?.visitFollowUp?.whyThisDate || "",
+  severity: unit.amp?.visitFollowUp?.severity || "",
+  affectedComponent: unit.amp?.visitFollowUp?.affectedComponent || "",
+  recommendedActions: Array.isArray(unit.amp?.visitFollowUp?.recommendedActions)
+    ? unit.amp.visitFollowUp.recommendedActions.filter(Boolean).slice(0, 3)
+    : [],
+} : null;
+const buildPipelineActionSummary = ({ serviceDemand = [], priorityUnits = [], earliestDue = [] } = {}) => ({
+  serviceDemand: serviceDemand
+    .map((item) => ({
+      serviceType: PIPELINE_SERVICE_TYPES.has(item?._id) ? item._id : "inspection",
+      count: Number(item?.count || 0),
+      overdue: Number(item?.overdue || 0),
+    }))
+    .filter((item) => item.count > 0),
+  priorityUnits: (priorityUnits.length ? priorityUnits : earliestDue).map(summarizePriorityUnit).filter(Boolean),
+  earliestDueUnit: summarizePriorityUnit((priorityUnits.length ? priorityUnits : earliestDue)[0]),
+});
 const branchFilterMatch = (branch = "") => {
   if (!branch) return {};
   if (branch === UNASSIGNED_BRANCH) {
@@ -112,6 +141,22 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     { $facet: {
       rows: [{ $skip: (currentPage - 1) * currentPageSize }, { $limit: currentPageSize }],
       count: [{ $count: "total" }],
+      serviceDemand: [
+        { $group: {
+          _id: { $ifNull: ["$amp.recommendedService", "inspection"] },
+          count: { $sum: 1 },
+          overdue: { $sum: { $cond: [{ $lt: ["$amp.bestServicedBy", now] }, 1, 0] } },
+        } },
+        { $sort: { overdue: -1, count: -1, _id: 1 } },
+      ],
+      earliestDue: [
+        { $limit: 1 },
+        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1 } },
+      ],
+      priorityUnits: [
+        { $limit: 5 },
+        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1 } },
+      ],
     } },
   ]), buildRecordedMaintenanceTrends({ branch }), Unit.aggregate([
     { $match: summaryMatch },
@@ -130,6 +175,11 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
   ])]);
   const units = pipelineResult[0]?.rows || [];
   const totalUnits = Number(pipelineResult[0]?.count?.[0]?.total || 0);
+  const actionSummary = buildPipelineActionSummary({
+    serviceDemand: pipelineResult[0]?.serviceDemand || [],
+    priorityUnits: pipelineResult[0]?.priorityUnits || [],
+    earliestDue: pipelineResult[0]?.earliestDue || [],
+  });
   const summaryByBranch = new Map(recordedBranchSummary.map((item) => [item._id, item]));
   const visibleBranches = includeAllBranches
     ? [...BRANCHES, UNASSIGNED_BRANCH]
@@ -144,7 +194,7 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     };
   });
   return {
-    generatedAt: new Date().toISOString(), windowDays, aggregate, branchSummary,
+    generatedAt: new Date().toISOString(), windowDays, aggregate, branchSummary, actionSummary,
     pagination: {
       page: currentPage,
       pageSize: currentPageSize,
@@ -225,4 +275,4 @@ const getOwnerServiceForecast = async ({ months = 12, averageRevenue } = {}) => 
   };
 };
 
-module.exports = { boundedNumber, branchFilterMatch, getManagerServicePipeline, getOwnerServiceForecast, UNASSIGNED_BRANCH };
+module.exports = { boundedNumber, branchFilterMatch, buildPipelineActionSummary, getManagerServicePipeline, getOwnerServiceForecast, UNASSIGNED_BRANCH };
