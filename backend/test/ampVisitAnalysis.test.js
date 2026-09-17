@@ -248,3 +248,22 @@ test("temporary AI failure records a bounded automatic retry schedule", async (t
   assert.ok(result.interpretation.nextAnalysisAttemptAt instanceof Date);
   assert.ok(result.interpretation.nextAnalysisAttemptAt > result.interpretation.lastAnalysisAttemptAt);
 });
+
+test("completion can save the synchronized visit before the external AI review runs", async (t) => {
+  const saved = { ...service, _id: "visit-deferred", aiInterpretation: {}, async save() {} };
+  const chain = { sort() { return this; }, limit() { return this; }, lean: async () => [] };
+  let providerCalled = false;
+  t.mock.method(ServiceHistory, "find", () => chain);
+  const result = await analyzeCompletedVisit({
+    unit: { _id: "unit-1", brand: "LG", modelName: "Dual Inverter", category: "split", capacityHp: 1.5 },
+    serviceHistory: saved,
+    recommendation,
+    technicianId: "technician-1",
+    deferProvider: true,
+    providerCall: async () => { providerCalled = true; return { provider: "openai", insight: insight() }; },
+  });
+  assert.equal(providerCalled, false);
+  assert.equal(result.interpretation.status, "unavailable");
+  assert.match(result.interpretation.warning, /queued/i);
+  assert.ok(result.interpretation.nextAnalysisAttemptAt instanceof Date);
+});

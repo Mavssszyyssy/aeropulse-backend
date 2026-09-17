@@ -77,6 +77,7 @@ const analyzeCompletedVisit = async ({
   technicianId,
   providerCall = callStructuredAmpAnalysis,
   recalculate = calculateMaintenanceRecommendation,
+  deferProvider = false,
 }) => {
   if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 4) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
@@ -85,15 +86,23 @@ const analyzeCompletedVisit = async ({
     .sort({ serviceDate: -1 }).limit(8).lean();
   const evidence = buildVisitEvidence({ unit, serviceHistory, priorHistory, recommendation });
   let providerResult;
-  try {
-    providerResult = await providerCall({
-      safetyIdentifier: String(technicianId || "technician-visit"),
-      recommendation,
-      visitAnalysis: true,
-      visitEvidence: evidence,
-    });
-  } catch (error) {
-    providerResult = { provider: "system-fallback", insight: null, error: "AI analysis could not be completed. The technician's original report remains available." };
+  if (deferProvider) {
+    // The completed task, service history, payment, proof, and customer
+    // request are authoritative operational records. Save them first and let
+    // the bounded retry worker enrich the follow-up with AI afterward instead
+    // of holding the technician's completion button for an external provider.
+    providerResult = { provider: "system-fallback", insight: null, error: "Advanced follow-up analysis is queued. The recorded service schedule is available now." };
+  } else {
+    try {
+      providerResult = await providerCall({
+        safetyIdentifier: String(technicianId || "technician-visit"),
+        recommendation,
+        visitAnalysis: true,
+        visitEvidence: evidence,
+      });
+    } catch (error) {
+      providerResult = { provider: "system-fallback", insight: null, error: "AI analysis could not be completed. The technician's original report remains available." };
+    }
   }
   const interpretation = finalizeVisitAnalysis({ providerResult, evidence, recommendation, serviceHistory });
   const analysisAttempts = Number(serviceHistory.aiInterpretation?.analysisAttempts || 0) + 1;
@@ -257,7 +266,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     await unit.save();
   }
 
-  const analysis = await analyzeCompletedVisit({ unit, serviceHistory, recommendation, technicianId });
+  const analysis = await analyzeCompletedVisit({ unit, serviceHistory, recommendation, technicianId, deferProvider: true });
   recommendation = analysis.recommendation;
   serviceHistory.ampSnapshot = {
     bestServicedBy: recommendation.bestServicedBy,
