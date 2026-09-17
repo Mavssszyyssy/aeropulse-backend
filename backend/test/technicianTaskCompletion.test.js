@@ -60,6 +60,11 @@ test("order and service technician events route staff to the correct admin scree
   assert.match(taskController, /const technicianReportPayload = \(payload = \{\}\)/);
   assert.match(taskController, /const technicianPayload = req\.authUser\.role === "technician"/);
   assert.match(taskController, /const persistedPayload = req\.authUser\.role === "technician"/);
+  assert.match(taskController, /Do not persist the terminal task state until its linked request\/order/);
+  assert.match(taskController, /await reconcileCompletedTask\(task\);[\s\S]*task\.status = nextStatus;[\s\S]*await task\.save\(\);/);
+  assert.match(taskController, /completionSyncState: "completed"/);
+  assert.match(taskController, /completionSynchronized/);
+  assert.match(taskController, /runNonBlockingWorkflowStep\([\s\S]*?"service completion customer notification"/);
   assert.match(orderController, /title: "New customer order"[\s\S]*route: "\/admin\/services\/orders"/);
   assert.match(orderController, /type: "technician"[\s\S]*category: "task_assignment"/);
   assert.match(orderController, /dedupeKey: `task-assignment:/);

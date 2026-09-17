@@ -40,6 +40,17 @@ const branchScopeQuery = (req) => {
   return { $or: [{ branch }, { branch: "" }, { branch: { $exists: false } }] };
 };
 
+const runNonBlockingWorkflowStep = async (label, operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    // Auxiliary follow-ups must not invalidate a field visit whose core
+    // task, request/order, evidence, and service history are synchronized.
+    console.error(`Non-blocking task workflow step failed (${label}):`, error);
+    return null;
+  }
+};
+
 const buildCustomerTaskScopeQuery = (user = {}) => {
   const customerId = String(user._id || user.id || "").trim();
   const customerEmail = String(user.email || "").trim();
@@ -500,7 +511,7 @@ const syncOrderWorkflowForTask = async (task, status) => {
     if (!["pending", "accepted"].includes(normalizedStatus)) {
       const checkInAt = String(task.payload?.checkIn?.checkedInAt || "");
       const checkedIn = normalizedStatus === "in-progress" && Boolean(checkInAt);
-      await notifyOperationalStaff({
+      await runNonBlockingWorkflowStep("technician status notification", () => notifyOperationalStaff({
         branch: task.branch || order.stockSourceBranch || order.customerBranch || "",
         title: checkedIn ? "Technician checked in" : "Technician status update",
         message: checkedIn
@@ -512,7 +523,7 @@ const syncOrderWorkflowForTask = async (task, status) => {
         targetType: "task",
         route: "/admin/services/technicians",
         dedupeKey: `task-status:${task._id || task.taskCode}:${normalizedStatus}:${checkedIn ? checkInAt : "status"}`,
-      });
+      }));
     }
     return;
   }
@@ -534,7 +545,7 @@ const syncOrderWorkflowForTask = async (task, status) => {
     order.assignedTechnician = task.assignedTechnicianName;
   }
   await order.save();
-  await notifyOperationalStaff({
+  await runNonBlockingWorkflowStep("installation completion staff notification", () => notifyOperationalStaff({
     branch: task.branch || order.stockSourceBranch || order.customerBranch || "",
     title: "Installation completed",
     message: `${task.assignedTechnicianName || "A technician"} completed installation for ${order.orderCode || "an order"}.`,
@@ -544,17 +555,17 @@ const syncOrderWorkflowForTask = async (task, status) => {
     targetType: "order",
     route: "/admin/services/technicians",
     dedupeKey: `installation-complete:${order._id || order.orderCode}`,
-  });
+  }));
   const customerId = String(order.customer || task.customerId || task.payload?.customerId || "").trim();
   if (customerId && mongoose.Types.ObjectId.isValid(customerId)) {
-    await Notification.create({
+    await runNonBlockingWorkflowStep("installation completion customer notification", () => Notification.create({
       user: customerId,
       type: "order",
       title: "Installation completed",
       message: `Your AC installation for order ${order.orderCode || ""} is complete. Your warranty and active unit record are now available.`,
       route: "/customer/orders",
       targetId: String(order._id || ""),
-    });
+    }));
   }
 };
 
@@ -714,7 +725,6 @@ const recordCompletedServiceHistory = async (task, request) => {
     payload: { ...task.payload, serviceDate: task.completedAt || new Date(), warrantyClaimId: request.payload?.warrantyClaimId || task.payload?.warrantyClaimId },
   });
   task.payload = { ...(task.payload || {}), serviceHistoryId: String(history._id), updatedAt: new Date().toISOString() };
-  await task.save();
   return history;
 };
 
@@ -819,7 +829,7 @@ const syncServiceRequestForTask = async (task, status) => {
   await request.save();
   await cancelWarrantyForRequest(request, task.payload?.cancellationReason);
   if (!["pending", "accepted"].includes(normalizedStatus) && (statusChanged || (checkedIn && !checkInAlreadyLogged))) {
-    await notifyOperationalStaff({
+    await runNonBlockingWorkflowStep("service status staff notification", () => notifyOperationalStaff({
       branch: task.branch || request.branch || "",
       title: checkedIn ? "Technician checked in" : "Technician service update",
       message: checkedIn
@@ -832,20 +842,30 @@ const syncServiceRequestForTask = async (task, status) => {
       route: "/admin/services/technicians",
       dedupeKey: `service-task-status:${task._id || task.taskCode}:${normalizedStatus}:${checkedIn ? checkInAt : "status"}`,
       roles: ["admin", "superadmin", "manager", "owner"],
-    });
+    }));
   }
   if (nextStatus === "Completed") {
-    await completeWarrantyClaimForServiceTask(task, request);
-    await notifyCustomerOfCompletedService(task, request, completedHistory);
+    await runNonBlockingWorkflowStep(
+      "service warranty completion",
+      () => completeWarrantyClaimForServiceTask(task, request),
+    );
+    await runNonBlockingWorkflowStep(
+      "service completion customer notification",
+      () => notifyCustomerOfCompletedService(task, request, completedHistory),
+    );
   }
 };
 
 const reconcileCompletedTask = async (task) => {
+  await syncServicePaymentForTask(task);
   await syncOrderWorkflowForTask(task, "completed");
   await syncServiceRequestForTask(task, "completed");
   if (!String(task.payload?.requestId || task.requestId || "").trim()) {
     const completedHistory = await recordCompletedServiceHistory(task, {});
-    await notifyCustomerOfCompletedService(task, {}, completedHistory);
+    await runNonBlockingWorkflowStep(
+      "standalone completion customer notification",
+      () => notifyCustomerOfCompletedService(task, {}, completedHistory),
+    );
   }
 };
 
@@ -1181,6 +1201,12 @@ const updateTask = async (req, res) => {
     if (costMutationError) return res.status(409).json({ message: costMutationError });
     if (normalizeStatus(task.status) === "completed" && requestedStatus === "completed") {
       await reconcileCompletedTask(task);
+      task.payload = {
+        ...(task.payload || {}),
+        completionSyncState: "completed",
+        completionSyncedAt: new Date().toISOString(),
+      };
+      await task.save();
       return res.json({ task: hydrateTaskResponse(task), replayed: true });
     }
 
@@ -1294,7 +1320,6 @@ const updateTask = async (req, res) => {
         excludeTaskId: task._id,
       });
     }
-    task.status = nextStatus;
     if (nextStatus === "completed") {
       const servicePaymentError = await getServiceCompletionPaymentBlocker(task);
       if (servicePaymentError) return res.status(409).json({ message: servicePaymentError });
@@ -1322,15 +1347,32 @@ const updateTask = async (req, res) => {
     task.proof = proof;
     task.payload = updatedPayload;
 
-    await task.save();
-    await syncServicePaymentForTask(task);
-    if (reassigned) await notifyTaskAssignment(task);
-    if (normalizedSchedule || payload.scheduledDate || payload.timeSlot) await notifyTaskScheduleUpdate(task);
-    await syncOrderWorkflowForTask(task, nextStatus);
-    await syncServiceRequestForTask(task, nextStatus);
-    if (nextStatus === "completed" && !String(task.payload?.requestId || task.requestId || "").trim()) {
-      const completedHistory = await recordCompletedServiceHistory(task, {});
-      await notifyCustomerOfCompletedService(task, {}, completedHistory);
+    if (nextStatus === "completed") {
+      // Do not persist the terminal task state until its linked request/order,
+      // service history, payment, and proof have synchronized successfully.
+      // This prevents mobile from seeing "already complete" while Admin still
+      // sees the same visit as In Progress.
+      await reconcileCompletedTask(task);
+      task.status = nextStatus;
+      task.payload = {
+        ...(task.payload || {}),
+        status: nextStatus,
+        completionSyncState: "completed",
+        completionSyncedAt: new Date().toISOString(),
+      };
+      await task.save();
+    } else {
+      task.status = nextStatus;
+      await task.save();
+      await syncServicePaymentForTask(task);
+      await syncOrderWorkflowForTask(task, nextStatus);
+      await syncServiceRequestForTask(task, nextStatus);
+    }
+    if (reassigned) {
+      await runNonBlockingWorkflowStep("task assignment notification", () => notifyTaskAssignment(task));
+    }
+    if (normalizedSchedule || payload.scheduledDate || payload.timeSlot) {
+      await runNonBlockingWorkflowStep("task schedule notification", () => notifyTaskScheduleUpdate(task));
     }
     return res.json({ task: hydrateTaskResponse(task) });
   } catch (error) {
@@ -1350,12 +1392,17 @@ const getTaskById = async (req, res) => {
     const codPayment = order && isCodOrder(order) ? { amount: order.totalAmount, collectedAt: order.codCollection?.collectedAt || null } : null;
     const orderPayment = order ? buildOrderPaymentSnapshot(order) : null;
     const serviceRequest = task.payload?.requestId ? await ServiceRequest.findById(task.payload.requestId) : null;
+    const completionSynchronized = normalizeStatus(task.status) !== "completed" || (
+      (!order || ["complete", "completed"].includes(String(order.workflowStatus || "").trim().toLowerCase()))
+      && (!serviceRequest || String(serviceRequest.status || "").trim().toLowerCase() === "completed")
+    );
     return res.json({ task: {
       ...hydrateTaskResponse(task),
       unit,
       codPayment,
       orderPayment,
       servicePayment: servicePaymentSummary(serviceRequest),
+      completionSynchronized,
       scheduleDetails: buildTaskScheduleDetails(task, { order, serviceRequest }),
       technicianAccessRole: req.authUser.role === "technician"
         && String(task.assignedTechnicianId || "") !== String(req.authUser._id || "")
@@ -1865,6 +1912,12 @@ const updateTaskStatus = async (req, res) => {
 
     if (normalizeStatus(task.status) === "completed" && status === "completed") {
       await reconcileCompletedTask(task);
+      task.payload = {
+        ...(task.payload || {}),
+        completionSyncState: "completed",
+        completionSyncedAt: new Date().toISOString(),
+      };
+      await task.save();
       return res.json({ task: hydrateTaskResponse(task), replayed: true });
     }
 
@@ -1916,7 +1969,6 @@ const updateTaskStatus = async (req, res) => {
       const arrivalBlocker = installationArrivalBlocker(task);
       if (arrivalBlocker) return res.status(409).json({ message: arrivalBlocker });
     }
-    task.status = status;
     if (status === "completed") {
       const servicePaymentError = await getServiceCompletionPaymentBlocker(task);
       if (servicePaymentError) return res.status(409).json({ message: servicePaymentError });
@@ -1957,15 +2009,22 @@ const updateTaskStatus = async (req, res) => {
     if (status === "installing" && hasVerifiedTaskCheckIn(task) && !task.payload.installationStartedAt) {
       task.payload.installationStartedAt = new Date().toISOString();
     }
-    await task.save();
-    await syncServicePaymentForTask(task);
-    await syncOrderWorkflowForTask(task, status);
-    await syncServiceRequestForTask(task, status);
-    // Installation work orders are not linked to a service-request record,
-    // but they still form the first entry in the AC unit's history.
-    if (status === "completed" && !String(task.payload?.requestId || "").trim()) {
-      const completedHistory = await recordCompletedServiceHistory(task, {});
-      await notifyCustomerOfCompletedService(task, {}, completedHistory);
+    if (status === "completed") {
+      await reconcileCompletedTask(task);
+      task.status = status;
+      task.payload = {
+        ...(task.payload || {}),
+        status,
+        completionSyncState: "completed",
+        completionSyncedAt: new Date().toISOString(),
+      };
+      await task.save();
+    } else {
+      task.status = status;
+      await task.save();
+      await syncServicePaymentForTask(task);
+      await syncOrderWorkflowForTask(task, status);
+      await syncServiceRequestForTask(task, status);
     }
 
     return res.json({ task: hydrateTaskResponse(task) });

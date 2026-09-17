@@ -29,6 +29,23 @@ const visitTypeFor = (serviceType) => {
   return "scheduled_service";
 };
 
+const buildServiceHistoryUpsert = (historyData = {}) => {
+  const recordedResourceFields = Object.fromEntries(
+    ["hoursSpent", "laborCost", "partsCost", "additionalCost", "totalServiceCost"]
+      .filter((field) => historyData[field] !== null && historyData[field] !== undefined)
+      .map((field) => [field, historyData[field]]),
+  );
+  const historyInsertData = { ...historyData };
+  // MongoDB rejects an upsert when the same path appears in both $setOnInsert
+  // and $set. customerInputs is refreshed on every retry, so keep it only in
+  // $set alongside the editable resource fields.
+  [...Object.keys(recordedResourceFields), "customerInputs"].forEach((field) => delete historyInsertData[field]);
+  return {
+    $setOnInsert: historyInsertData,
+    $set: { ...recordedResourceFields, customerInputs: historyData.customerInputs },
+  };
+};
+
 const validateStrictServicePayload = (payload = {}) => {
   const errors = {};
   const serviceType = resolveExplicitServiceType(payload);
@@ -200,13 +217,10 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     },
     serviceActions: actions,
   };
-  const recordedResourceFields = Object.fromEntries(Object.entries({ hoursSpent, ...costs }).filter(([, value]) => value !== null));
-  const historyInsertData = { ...historyData };
-  Object.keys(recordedResourceFields).forEach((field) => delete historyInsertData[field]);
   const serviceHistory = sourceTaskId
     ? await ServiceHistory.findOneAndUpdate(
       { unit: unit._id, sourceTaskId: String(sourceTaskId) },
-      { $setOnInsert: historyInsertData, $set: { ...recordedResourceFields, customerInputs: historyData.customerInputs } },
+      buildServiceHistoryUpsert(historyData),
       { upsert: true, returnDocument: "after", runValidators: true },
     )
     : await ServiceHistory.create(historyData);
@@ -261,6 +275,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
 module.exports = {
   AI_ANALYSIS_MAX_ATTEMPTS,
   analyzeCompletedVisit,
+  buildServiceHistoryUpsert,
   completeServiceForUnit,
   validateStrictServicePayload,
 };

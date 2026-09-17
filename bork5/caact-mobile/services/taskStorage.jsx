@@ -123,6 +123,7 @@ export function normalizeTask(item = {}) {
     codPayment: value("codPayment", null),
     orderPayment: value("orderPayment", null),
     servicePayment: value("servicePayment", null),
+    completionSynchronized: value("completionSynchronized", null),
     items: orderItems,
     serialNumbers,
     registrationProgress: value("registrationProgress", null),

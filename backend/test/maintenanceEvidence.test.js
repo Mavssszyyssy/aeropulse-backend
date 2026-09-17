@@ -4,7 +4,7 @@ const Unit = require("../src/models/Unit");
 const History = require("../src/models/ServiceHistory");
 const { serviceTypeFor, assessServiceEvidence } = require("../src/domain/serviceEvidence");
 const { intervalSamplesForUnits, calculateMaintenanceRecommendation, cleaningMethodForDates } = require("../src/domain/ampMaintenanceService");
-const { validateStrictServicePayload } = require("../src/domain/serviceCompletionService");
+const { buildServiceHistoryUpsert, validateStrictServicePayload } = require("../src/domain/serviceCompletionService");
 const { effectiveWarrantyStatus, buildActivatedWarranty } = require("../src/domain/warrantyService");
 const { parseInstallationDateTime, businessDay } = require("../src/utils/dateTime");
 const { maintenanceAlertForRecommendation } = require("../src/services/ampDailyMonitorService");
@@ -178,6 +178,22 @@ test("technician report validation rejects placeholder and repeated-character te
     serviceActions: ["Nilinis ang filter at sinubukan ang paglamig."],
     serviceDate: "2026-09-05",
   }).ok, true);
+});
+
+test("service history upsert never writes the same field through two MongoDB operators", () => {
+  const update = buildServiceHistoryUpsert({
+    unit: "unit-1",
+    sourceTaskId: "task-1",
+    customerInputs: { reportedIssue: "Weak airflow" },
+    hoursSpent: 2,
+    laborCost: 30,
+    partsCost: 300,
+    additionalCost: null,
+    totalServiceCost: 330,
+  });
+  const insertFields = new Set(Object.keys(update.$setOnInsert));
+  for (const field of Object.keys(update.$set)) assert.equal(insertFields.has(field), false, `${field} must use only one update operator`);
+  assert.deepEqual(update.$set.customerInputs, { reportedIssue: "Weak airflow" });
 });
 
 test("permanent customer service history includes recorded work resources and costs", () => {
