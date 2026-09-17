@@ -46,6 +46,7 @@ function fixture({ delivery = false } = {}) {
     },
     '../models/ServiceRequest': { findById: async () => request },
     '../models/Order': { findOne: async () => delivery ? order : null },
+    '../domain/taskScheduleConflict': { assertNoTaskScheduleConflict: async () => {} },
     '../services/operationalNotificationService': { notifyOperationalStaff: async event => events.push(event), createDedupedNotification: async event => events.push(event) },
   };
   const path = require.resolve('../src/controllers/visitAttemptController');

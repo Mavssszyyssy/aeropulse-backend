@@ -23,6 +23,7 @@ const { completeServiceForUnit } = require("../domain/serviceCompletionService")
 const { assessServiceEvidence, serviceTypeFor } = require("../domain/serviceEvidence");
 const { formatDateKeyInTimeZone, parseInstallationDateTime } = require("../utils/dateTime");
 const { buildTaskScheduleDetails, normalizeTaskSchedule } = require("../domain/taskSchedule");
+const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
 const {
   getTaskMutationBlocker,
   hasVerifiedTaskCheckIn,
@@ -918,6 +919,10 @@ const hydrateTaskResponse = (task, { includeProofMedia = true } = {}) => {
     return {
       ...base,
       ...serviceCosts(base),
+      schedule: {
+        ...(base.schedule || {}),
+        driverName: base.schedule?.driverName || base.assignedTechnicianName || "",
+      },
       proof,
       registrationProgress: progress,
     };
@@ -949,6 +954,10 @@ const hydrateTaskResponse = (task, { includeProofMedia = true } = {}) => {
     priority: task.priority,
     assignedTechnicianId: task.assignedTechnicianId,
     assignedTechnicianName: task.assignedTechnicianName,
+    schedule: {
+      ...(task.schedule?.toObject ? task.schedule.toObject() : task.schedule || {}),
+      driverName: task.schedule?.driverName || task.assignedTechnicianName || "",
+    },
     proof,
     registrationProgress: progress,
     status: task.status,
@@ -1112,7 +1121,7 @@ const createTask = async (req, res) => {
     const technician = await resolveTaskTechnician(String(payload.assignedTechnicianId || ""), taskBranch);
     const team = await resolveTaskTeam(payload.schedule?.teamMemberIds, taskBranch, payload.assignedTechnicianId);
 
-    const task = await Task.create({
+    const task = new Task({
       taskCode,
       title,
       customer: customerName || "Customer",
@@ -1133,10 +1142,20 @@ const createTask = async (req, res) => {
       timeSlot: String(payload.timeSlot || payload.preferredSchedule || "TBD"),
       assignedRole: String(payload.assignedRole || "technician"),
       branch: taskBranch || technician?.activeBranch || technician?.assignedBranch || "",
-      schedule: normalizeTaskSchedule(payload.schedule, team),
+      schedule: normalizeTaskSchedule({
+        ...(payload.schedule || {}),
+        driverName: technician ? getTechnicianDisplayName(technician) : "",
+      }, team),
       completedAt: normalizeStatus(payload.status) === "completed" ? new Date() : null,
       payload: { ...payload, createdAt: payload.createdAt || nowIso, updatedAt: payload.updatedAt || nowIso },
     });
+
+    await assertNoTaskScheduleConflict({
+      scheduledDate: task.scheduledDate,
+      timeSlot: task.timeSlot,
+      participantIds: [task.assignedTechnicianId, ...(task.schedule?.teamMemberIds || [])],
+    });
+    await task.save();
 
     await notifyTaskAssignment(task);
     if (team.length) await notifyTaskScheduleUpdate(task);
@@ -1171,6 +1190,9 @@ const updateTask = async (req, res) => {
     }
 
     const reassigned = req.authUser.role !== "technician" && payload.assignedTechnicianId && String(payload.assignedTechnicianId) !== String(task.assignedTechnicianId);
+    if (reassigned && String(task.payload?.requestId || task.requestId || "").trim()) {
+      return res.status(409).json({ message: "This service request already has a permanently assigned technician. Update the team or schedule without replacing the primary technician." });
+    }
     if (reassigned) {
       const technician = await resolveTaskTechnician(String(payload.assignedTechnicianId), task.branch);
       payload.assignedTechnicianName = getTechnicianDisplayName(technician);
@@ -1183,7 +1205,11 @@ const updateTask = async (req, res) => {
     if (req.authUser.role !== "technician" && payload.schedule && typeof payload.schedule === "object") {
       const primaryTechnicianId = String(payload.assignedTechnicianId || task.assignedTechnicianId || "");
       const team = await resolveTaskTeam(payload.schedule.teamMemberIds, task.branch, primaryTechnicianId);
-      normalizedSchedule = normalizeTaskSchedule(payload.schedule, team);
+      const primaryTechnician = await resolveTaskTechnician(primaryTechnicianId, task.branch);
+      normalizedSchedule = normalizeTaskSchedule({
+        ...payload.schedule,
+        driverName: primaryTechnician ? getTechnicianDisplayName(primaryTechnician) : task.assignedTechnicianName,
+      }, team);
     }
 
     if (req.authUser.role === "technician") {
@@ -1259,6 +1285,14 @@ const updateTask = async (req, res) => {
       task.scheduledDate = String(payload.scheduledDate || payload.preferredDate || task.scheduledDate || "TBD");
       task.timeSlot = String(payload.timeSlot || payload.preferredSchedule || task.timeSlot || "TBD");
       if (normalizedSchedule) task.schedule = normalizedSchedule;
+    }
+    if (req.authUser.role !== "technician" && (reassigned || normalizedSchedule || payload.scheduledDate || payload.timeSlot)) {
+      await assertNoTaskScheduleConflict({
+        scheduledDate: task.scheduledDate,
+        timeSlot: task.timeSlot,
+        participantIds: [task.assignedTechnicianId, ...(task.schedule?.teamMemberIds || [])],
+        excludeTaskId: task._id,
+      });
     }
     task.status = nextStatus;
     if (nextStatus === "completed") {

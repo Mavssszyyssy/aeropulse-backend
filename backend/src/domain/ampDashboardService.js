@@ -216,6 +216,10 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         capacityAssessment: unit.amp.capacityAssessment || null,
         patternAnalysis: unit.amp.patternAnalysis || null,
         maintenanceSignals: unit.amp.maintenanceSignals || null,
+        condition: unit.amp.visitFollowUp?.condition || "",
+        affectedComponent: unit.amp.visitFollowUp?.affectedComponent || "",
+        severity: unit.amp.visitFollowUp?.severity || "",
+        recommendedActions: unit.amp.visitFollowUp?.recommendedActions || [],
       };
     }),
   };

@@ -6,6 +6,7 @@ const Order = require('../models/Order');
 const { notifyOperationalStaff, createDedupedNotification } = require('../services/operationalNotificationService');
 const { awaitingVisitFollowUp, visitAttemptError, nextVisitError } = require('../domain/visitAttempt');
 const { buildOrderPaymentSnapshot } = require('../domain/orderPayment');
+const { assertNoTaskScheduleConflict } = require('../domain/taskScheduleConflict');
 
 async function scopedTask(req) {
   const id = String(req.params.taskId || '');
@@ -147,6 +148,12 @@ async function scheduleNextVisit(req, res) {
     const attempt = await VisitAttempt.findOne({ _id: req.body.attemptId, taskId: task._id });
     if (!attempt || String(task.payload?.visitAttempt?.id) !== String(attempt._id)) return res.status(409).json({ message: 'Refresh the work order before scheduling this visit.' });
     const resolution = { scheduledDate: req.body.scheduledDate, timeSlot: req.body.timeSlot, confirmedAt: new Date().toISOString(), confirmedBy: String(req.authUser._id) };
+    await assertNoTaskScheduleConflict({
+      scheduledDate: resolution.scheduledDate,
+      timeSlot: resolution.timeSlot,
+      participantIds: [task.assignedTechnicianId, ...(task.schedule?.teamMemberIds || [])],
+      excludeTaskId: task._id,
+    });
     if (!awaitingVisitFollowUp(task)) {
       if (task.scheduledDate !== resolution.scheduledDate || task.timeSlot !== resolution.timeSlot) return res.status(409).json({ message: 'This visit has already been scheduled. Refresh the work order.' });
     } else {
@@ -162,7 +169,7 @@ async function scheduleNextVisit(req, res) {
     await attempt.save();
     await syncAttempt(task, attempt, true);
     return res.json({ success: true });
-  } catch { return res.status(500).json({ message: 'Unable to finish confirming the next visit. Please retry.' }); }
+  } catch (error) { return res.status(error.status || error.statusCode || 500).json({ message: error.status || error.statusCode ? error.message : 'Unable to finish confirming the next visit. Please retry.' }); }
 }
 
 module.exports = { getVisitAttempt, submitVisitAttempt, scheduleNextVisit };

@@ -13,6 +13,7 @@ const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { resolveOrderPaymentStatus } = require("../domain/orderPayment");
+const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const {
@@ -2025,6 +2026,12 @@ const createTaskForOrder = async (order, options = {}) => {
         dispatchedAt: order.dispatchedAt || null,
         updatedAt: new Date().toISOString(),
       };
+      await assertNoTaskScheduleConflict({
+        scheduledDate: existingTask.scheduledDate,
+        timeSlot: existingTask.timeSlot,
+        participantIds: [existingTask.assignedTechnicianId, ...(existingTask.schedule?.teamMemberIds || [])],
+        excludeTaskId: existingTask._id,
+      });
       await existingTask.save();
       if (assignment.assignedTechnicianId) {
         await notifyAssignedTechnician(
@@ -2041,7 +2048,7 @@ const createTaskForOrder = async (order, options = {}) => {
   const addressText = buildOrderTaskAddress(order);
   const itemNames = taskItems.map((item) => item.name).filter(Boolean).join(", ");
 
-  const task = await Task.create({
+  const task = new Task({
     taskCode: `TSK-${Date.now()}`,
     title: `Fulfill ${order.orderCode}`,
     customer: order.customerName,
@@ -2092,6 +2099,13 @@ const createTaskForOrder = async (order, options = {}) => {
       updatedAt: new Date().toISOString(),
     },
   });
+
+  await assertNoTaskScheduleConflict({
+    scheduledDate: task.scheduledDate,
+    timeSlot: task.timeSlot,
+    participantIds: [task.assignedTechnicianId],
+  });
+  await task.save();
 
   if (assignment.assignedTechnicianId) {
     await notifyAssignedTechnician(assignment.assignedTechnicianId, order.orderCode, task.taskCode);
@@ -2757,8 +2771,17 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
       assignment.assignedTechnicianName ||
       String(options.assignedTechnician || "").trim();
   }
-  if (options.estimatedArrival) order.estimatedArrival = options.estimatedArrival;
-  if (options.installationDate) order.installationDate = options.installationDate;
+  const synchronizedInstallationDate = String(options.installationDate || options.estimatedArrival || "").trim();
+  if (synchronizedInstallationDate && ["approve", "dispatch"].includes(action)) {
+    order.installationDate = synchronizedInstallationDate;
+    order.estimatedArrival = synchronizedInstallationDate;
+    order.estimatedDelivery = synchronizedInstallationDate;
+    options.installationDate = synchronizedInstallationDate;
+    options.estimatedArrival = synchronizedInstallationDate;
+  } else {
+    if (options.estimatedArrival) order.estimatedArrival = options.estimatedArrival;
+    if (options.installationDate) order.installationDate = options.installationDate;
+  }
   if (options.timeSlot) order.installationTimeSlot = options.timeSlot;
   if (action === "cancel") {
     order.cancelledAt = new Date();
@@ -2906,6 +2929,7 @@ const listMyOrders = async (req, res) => {
   const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
     includeTaskDetails: false,
   });
+
   return res.json({ orders: hydratedOrders });
 };
 
@@ -3091,11 +3115,12 @@ const recoverOrder = async (req, res) => {
       assignedTechnicianId: form.assignedTechnicianId || "",
       assignedTechnicianName: form.assignedTechnicianName || order.assignedTechnician || "",
     });
+    const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
     const task = await createTaskForOrder(order, {
       assignedTechnicianId: technician.assignedTechnicianId,
       assignedTechnicianName: technician.assignedTechnicianName,
-      estimatedArrival: form.estimatedArrival || order.estimatedArrival || "",
-      installationDate: form.installationDate || order.installationDate || "",
+      estimatedArrival: synchronizedDate,
+      installationDate: synchronizedDate,
       timeSlot: form.timeSlot || "",
       forceRefreshTask: true,
     });
@@ -3121,16 +3146,20 @@ const recoverOrder = async (req, res) => {
     }
 
     order.assignedTechnician = technician.assignedTechnicianName;
-    if (form.estimatedArrival) order.estimatedArrival = form.estimatedArrival;
-    if (form.installationDate) order.installationDate = form.installationDate;
+    const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
+    if (synchronizedDate) {
+      order.estimatedArrival = synchronizedDate;
+      order.estimatedDelivery = synchronizedDate;
+      order.installationDate = synchronizedDate;
+    }
     if (form.timeSlot) order.installationTimeSlot = form.timeSlot;
     await order.save();
 
     const task = await createTaskForOrder(order, {
       assignedTechnicianId: technician.assignedTechnicianId,
       assignedTechnicianName: technician.assignedTechnicianName,
-      estimatedArrival: form.estimatedArrival || order.estimatedArrival || "",
-      installationDate: form.installationDate || order.installationDate || "",
+      estimatedArrival: synchronizedDate,
+      installationDate: synchronizedDate,
       timeSlot: form.timeSlot || order.installationTimeSlot || "",
       forceRefreshTask: true,
     });

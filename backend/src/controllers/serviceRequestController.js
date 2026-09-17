@@ -21,6 +21,7 @@ const { getScheduledDateError } = require("../utils/scheduling");
 const { formatServiceAddress } = require("../domain/serviceAddress");
 const { cancelWarrantyForRequest, reconcileCancelledWarranty } = require("../domain/warrantyCancellation");
 const { validateWarrantyAssignmentQuota } = require("../domain/technicianServiceQuota");
+const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
 
 const normalizeStatus = (value = "", fallback = "Pending") =>
   normalizeServiceRequestStatus(value, fallback);
@@ -241,6 +242,12 @@ const upsertServiceTaskForRequest = async (request, payload = {}) => {
     activatedAt: task.payload?.activatedAt || nowIso,
   };
 
+  await assertNoTaskScheduleConflict({
+    scheduledDate: task.scheduledDate,
+    timeSlot: task.timeSlot,
+    participantIds: [technicianId],
+    excludeTaskId: task._id,
+  });
   await task.save();
   return task;
 };
@@ -596,6 +603,12 @@ const updateServiceRequestStatus = async (req, res) => {
 
     const previousRequestStatus = String(request.status || "");
     const previousTechnicianId = String(request.assignedTechnicianId || "");
+    const requestedTechnicianId = String(req.body?.assignedTechnicianId || "").trim();
+    if (previousTechnicianId && requestedTechnicianId && requestedTechnicianId !== previousTechnicianId) {
+      return res.status(409).json({
+        message: "This service request already has a permanently assigned technician. The normal assignment flow cannot replace that technician.",
+      });
+    }
     request.status = nextStatus || request.status;
     request.assignedTechnicianId = String(req.body?.assignedTechnicianId || request.assignedTechnicianId || "");
     request.assignedTechnicianName = String(req.body?.assignedTechnicianName || request.assignedTechnicianName || "");
