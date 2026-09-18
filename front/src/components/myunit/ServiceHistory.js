@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import ServiceHistoryFilters from './ServiceHistoryFilters';
+import ServiceFollowUp from './ServiceFollowUp';
 import { serviceLabel, serviceDateLabel, serviceDetails, servicePriceLabel } from '../../domain/myunit/serviceHistoryDisplay';
 
 function ServiceHistory({ unit, onClose }) {
@@ -49,10 +50,7 @@ function ServiceHistory({ unit, onClose }) {
                   <div className="history-date">{serviceDateLabel(service.date)}</div>
                   <div className="history-service">{serviceLabel(service.serviceType)}</div>
                   <div className="history-details">{serviceDetails(service)}</div>
-                  {service.aiInterpretation?.customerSummary ? <div className="history-ai-follow-up">
-                    <strong>{service.aiInterpretation.provider === 'openai' ? 'AI follow-up recommendation' : 'Follow-up schedule'}</strong>
-                    <span>{service.aiInterpretation.customerSummary}</span>
-                  </div> : null}
+                  <ServiceFollowUp interpretation={service.aiInterpretation} />
                   {servicePriceLabel(service) ? <div className="history-price">{servicePriceLabel(service)}</div> : null}
                   {service.evidence?.eligible === false ? <div className="history-details">{service.evidence.reason}</div> : null}
                   {service.technician && (

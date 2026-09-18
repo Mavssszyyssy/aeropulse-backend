@@ -28,6 +28,7 @@ const monthKey = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth()
 const monthLabel = (date) => date.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 const daysBetween = (from, to) => Math.ceil((to.getTime() - from.getTime()) / MS_PER_DAY);
 const PIPELINE_SERVICE_TYPES = new Set(["regular_cleaning", "deep_cleaning", "inspection", "repair"]);
+const concise = (value) => String(value || "").trim();
 const summarizePriorityUnit = (unit) => unit ? {
   unitId: String(unit._id),
   modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "AC Unit",
@@ -44,6 +45,16 @@ const summarizePriorityUnit = (unit) => unit ? {
   recommendedActions: Array.isArray(unit.amp?.visitFollowUp?.recommendedActions)
     ? unit.amp.visitFollowUp.recommendedActions.filter(Boolean).slice(0, 3)
     : [],
+  latestServiceDate: unit.lastVisit?.serviceDate || null,
+  technicianRecorded: concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
+  workCompleted: concise(unit.lastVisit?.actionTaken) || (Array.isArray(unit.lastVisit?.serviceActions)
+    ? unit.lastVisit.serviceActions.filter(Boolean).join("; ")
+    : ""),
+  customerObservation: [
+    concise(unit.lastVisit?.customerInputs?.reportedIssue),
+    concise(unit.lastVisit?.customerInputs?.notes),
+    concise(unit.lastVisit?.customerInputs?.other),
+  ].filter(Boolean).join(" "),
 } : null;
 const buildPipelineActionSummary = ({ serviceDemand = [], priorityUnits = [], earliestDue = [] } = {}) => ({
   serviceDemand: serviceDemand
@@ -134,7 +145,7 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     { $match: unitMatch },
     { $lookup: { from: "servicehistories", let: { unitId: "$_id" }, pipeline: [
       { $match: { $expr: { $eq: ["$unit", "$$unitId"] } } }, { $sort: { serviceDate: -1 } }, { $limit: 1 },
-      { $project: { serviceDate: 1, serviceType: 1, visitType: 1, findings: 1, actionTaken: 1, partsUsed: 1 } },
+      { $project: { serviceDate: 1, serviceType: 1, visitType: 1, findings: 1, actionTaken: 1, partsUsed: 1, serviceActions: 1, technicianInputs: 1, customerInputs: 1 } },
     ], as: "lastVisit" } },
     { $addFields: { lastVisit: { $first: "$lastVisit" } } },
     { $sort: { "amp.bestServicedBy": 1, _id: 1 } },
@@ -151,11 +162,11 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
       ],
       earliestDue: [
         { $limit: 1 },
-        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1 } },
+        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1, lastVisit: 1 } },
       ],
       priorityUnits: [
         { $limit: 5 },
-        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1 } },
+        { $project: { brand: 1, modelName: 1, serialNumber: 1, customerName: 1, amp: 1, lastVisit: 1 } },
       ],
     } },
   ]), buildRecordedMaintenanceTrends({ branch }), Unit.aggregate([

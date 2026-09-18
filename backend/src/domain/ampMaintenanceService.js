@@ -38,7 +38,7 @@ const componentName = (value) => ({
   fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor",
   air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil",
   drain_system: "drain system", refrigerant_system: "refrigerant system",
-  control_board: "control board", electrical_system: "electrical system",
+  button_panel: "button panel or affected button", control_board: "control board", electrical_system: "electrical system",
   thermostat_or_sensor: "thermostat or sensor", casing_or_mount: "casing or mounting",
 })[String(value || "")] || "recorded symptom";
 const ensureVisitActions = (visit = null) => {
@@ -275,15 +275,16 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
   };
   const visitFollowUp = ensureVisitActions(unit.amp?.visitFollowUp?.toObject?.() || unit.amp?.visitFollowUp || null);
   const latestCompletedVisit = newestFirst.find((history) => normalizeServiceType(history) !== "installation") || null;
-  const visitFollowUpIsCurrent = Boolean(visitFollowUp?.provider === "openai"
+  const visitFollowUpIsCurrent = Boolean(["openai", "system-fallback"].includes(String(visitFollowUp?.provider || ""))
     && visitFollowUp.sourceServiceHistoryId
     && String(visitFollowUp.sourceServiceHistoryId) === String(latestCompletedVisit?._id || "")
+    && visitFollowUp.recommendationMode === "condition_based"
     && asDate(visitFollowUp.recommendedDate));
   if (visitFollowUpIsCurrent) {
     bestServicedBy = startOfUtcDay(visitFollowUp.recommendedDate);
     recommendedService = visitFollowUp.recommendedService || recommendedService;
     basis = visitFollowUp.customerSummary || "Follow-up timing is based on the technician's completed report and the AC unit's recorded history.";
-    predictionSource = "openai";
+    predictionSource = visitFollowUp.provider === "openai" ? "openai" : "system";
   }
   const excludedRecordCount = allHistory.length - ownHistory.length;
   const dataQuality = { excludedRecordCount, message: excludedRecordCount ? `${excludedRecordCount} service record(s) have missing details or invalid dates and are excluded from maintenance timing. Ask the service team to review them.` : "", anchorType: lastCleaningDate ? "last_cleaning" : installedAt ? "installation" : "missing" };

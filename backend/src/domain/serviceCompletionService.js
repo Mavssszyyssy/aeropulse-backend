@@ -1,4 +1,5 @@
 const Unit = require("../models/Unit");
+const Product = require("../models/Product");
 const ServiceHistory = require("../models/ServiceHistory");
 const { calculateMaintenanceRecommendation } = require("./ampMaintenanceService");
 const { appendWarrantyEvent, effectiveWarrantyStatus } = require("./warrantyService");
@@ -15,6 +16,44 @@ const clean = (value, max = 1000) => String(value || "").trim().slice(0, max);
 const list = (value) => (Array.isArray(value) ? value : String(value || "").split(","))
   .map((item) => clean(item, 160))
   .filter(Boolean);
+const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Stock is only shown when a technician recorded an exact part name or SKU
+// that matches an active catalog item. A component inferred from a symptom is
+// never treated as proof that a replacement item is in inventory.
+const recordedPartsInventory = async ({ unit, partsUsed = [] } = {}) => {
+  const parts = list(partsUsed).slice(0, 12);
+  if (!parts.length) return {
+    matches: [],
+    message: "No exact replacement part number was recorded. Verify the compatible part during inspection before checking stock or approving replacement.",
+  };
+  const exact = parts.map((part) => new RegExp(`^${escapeRegex(part)}$`, "i"));
+  const products = await Product.find({
+    isActive: true,
+    $or: [{ sku: { $in: exact } }, { name: { $in: exact } }],
+  }).select("name sku stock branchStock").limit(12).lean();
+  const branch = clean(unit?.serviceBranch, 120);
+  const matches = products.map((product) => {
+    const branchStock = branch && product.branchStock && Object.prototype.hasOwnProperty.call(product.branchStock, branch)
+      ? Number(product.branchStock[branch]) : null;
+    return {
+      name: clean(product.name, 160),
+      sku: clean(product.sku, 100),
+      companyStock: Number.isFinite(Number(product.stock)) ? Number(product.stock) : null,
+      branchStock: Number.isFinite(branchStock) ? branchStock : null,
+    };
+  });
+  if (!matches.length) return {
+    matches,
+    message: "No active inventory record exactly matches the technician-recorded part. Verify the part number and AC compatibility before ordering or approving replacement.",
+  };
+  const stockSummary = matches.map((item) => {
+    const branchText = item.branchStock === null ? "branch quantity not recorded" : `branch quantity ${item.branchStock}`;
+    const companyText = item.companyStock === null ? "company quantity not recorded" : `company quantity ${item.companyStock}`;
+    return `${item.name || item.sku} (${item.sku || "SKU not recorded"}: ${branchText}; ${companyText})`;
+  }).join("; ");
+  return { matches, message: `Matching recorded inventory item(s): ${stockSummary}. Verify exact compatibility before approval.` };
+};
 
 const resolveExplicitServiceType = (payload = {}) => {
   const value = clean(payload.service_type || payload.serviceType || payload.cleaning_type || payload.visit_type).toLowerCase().replace(/[\s-]+/g, "_");
@@ -75,11 +114,12 @@ const analyzeCompletedVisit = async ({
   serviceHistory,
   recommendation,
   technicianId,
+  partInventory = null,
   providerCall = callStructuredAmpAnalysis,
   recalculate = calculateMaintenanceRecommendation,
   deferProvider = false,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 4) {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 5) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
@@ -104,7 +144,16 @@ const analyzeCompletedVisit = async ({
       providerResult = { provider: "system-fallback", insight: null, error: "AI analysis could not be completed. The technician's original report remains available." };
     }
   }
-  const interpretation = finalizeVisitAnalysis({ providerResult, evidence, recommendation, serviceHistory });
+  const savedPartInventory = !partInventory && serviceHistory.aiInterpretation?.inventoryMessage
+    ? {
+      message: serviceHistory.aiInterpretation.inventoryMessage,
+      matches: Array.isArray(serviceHistory.aiInterpretation.inventoryMatches) ? serviceHistory.aiInterpretation.inventoryMatches : [],
+    }
+    : null;
+  const interpretation = finalizeVisitAnalysis({
+    providerResult, evidence, recommendation, serviceHistory,
+    partInventory: partInventory || savedPartInventory,
+  });
   const analysisAttempts = Number(serviceHistory.aiInterpretation?.analysisAttempts || 0) + 1;
   const lastAnalysisAttemptAt = new Date();
   interpretation.analysisAttempts = analysisAttempts;
@@ -115,18 +164,28 @@ const analyzeCompletedVisit = async ({
   serviceHistory.aiInterpretation = interpretation;
   await serviceHistory.save();
 
-  if (interpretation.provider === "openai" && interpretation.recommendedFollowUpDate) {
+  // Keep an evidence-based condition follow-up visible immediately. The
+  // delayed OpenAI review can enrich the same record later, but it must not
+  // hide a documented component concern from managers or customers.
+  if (interpretation.recommendationMode === "condition_based" && interpretation.recommendedFollowUpDate) {
     await Unit.updateOne({ _id: unit._id }, { $set: {
       "amp.visitFollowUp": {
         analysisVersion: interpretation.analysisVersion,
         sourceServiceHistoryId: String(serviceHistory._id),
-        provider: "openai",
+        provider: interpretation.provider,
         severity: interpretation.severity,
         riskType: interpretation.riskType,
         predictedRisk: interpretation.predictedRisk,
         affectedComponent: interpretation.affectedComponent,
+        overallCondition: interpretation.overallCondition,
+        componentConcern: interpretation.componentConcern,
         evidenceConfidence: interpretation.evidenceConfidence,
         recommendationMode: interpretation.recommendationMode,
+        repairOrReplacement: interpretation.repairOrReplacement,
+        recommendedPart: interpretation.recommendedPart,
+        partRecommendationStatus: interpretation.partRecommendationStatus,
+        inventoryMessage: interpretation.inventoryMessage,
+        inventoryMatches: interpretation.inventoryMatches,
         recommendedService: interpretation.recommendedService,
         recommendedFollowUpDays: interpretation.recommendedFollowUpDays,
         recommendedDate: interpretation.recommendedFollowUpDate,
@@ -266,7 +325,8 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     await unit.save();
   }
 
-  const analysis = await analyzeCompletedVisit({ unit, serviceHistory, recommendation, technicianId, deferProvider: true });
+  const partInventory = await recordedPartsInventory({ unit, partsUsed });
+  const analysis = await analyzeCompletedVisit({ unit, serviceHistory, recommendation, technicianId, partInventory, deferProvider: true });
   recommendation = analysis.recommendation;
   serviceHistory.ampSnapshot = {
     bestServicedBy: recommendation.bestServicedBy,
@@ -286,5 +346,6 @@ module.exports = {
   analyzeCompletedVisit,
   buildServiceHistoryUpsert,
   completeServiceForUnit,
+  recordedPartsInventory,
   validateStrictServicePayload,
 };

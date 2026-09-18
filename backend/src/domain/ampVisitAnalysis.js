@@ -30,13 +30,13 @@ const concernText = (text) => String(text || "")
   .replace(/\bno\s+(?:signs?\s+of\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating|repair|replacement))*\b/gi, "")
   .replace(/\b(?:is|was|were|does|did)?\s*not\s+(?:showing\s+)?(?:making\s+)?(?:leaking|damaged|worn|noisy|failing|malfunctioning|sparking|smoking|burning|overheating)\b/gi, "")
   .replace(/\bwithout\s+(?:any\s+)?(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating)\b/gi, "");
-const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|vibrat|leak|weak cooling|not cooling|fault|fail|malfunction|intermittent|not respond|error code|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
+const repairSignal = (text) => /repair|fix|damag|broken|break|worn|wear|noise|vibrat|leak|weak cooling|not cooling|fault|fail|malfunction|intermittent|not respond|not working|error code|crack|rust|corrod|loose|burn|overheat|sparking|replace/i.test(concernText(text));
 const replacementSignal = (text) => /replace|replacement/i.test(concernText(text));
 const criticalSignal = (text) => /danger|unsafe|smoke|burning|sparking|electrical fire|fire risk|stop using/i.test(concernText(text));
 const urgentSignal = (text) => /urgent|overheat|not working|fail(?:ed|ing|ure)?|completely broken|severe|major leak/i.test(concernText(text)) || criticalSignal(text);
 const riskSupported = (riskType, text) => ({
   no_problem_indicated: !repairSignal(text),
-  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|vibrat|fault|fail|malfunction|intermittent|not respond|error code|replace/i.test(concernText(text)),
+  component_deterioration: /damag|broken|break|worn|wear|crack|rust|corrod|loose|noise|vibrat|fault|fail|malfunction|intermittent|not respond|not working|error code|replace/i.test(concernText(text)),
   performance_decline: /weak cooling|not cooling|poor cooling|slow cooling|reduced cooling|performance/i.test(concernText(text)),
   leak_or_drainage: /leak|drain|drainage|water/i.test(concernText(text)),
   electrical_or_safety: /electrical|wiring|wire|capacitor|breaker|sparking|smoke|burning|unsafe|fire risk|stop using/i.test(concernText(text)),
@@ -51,6 +51,7 @@ const COMPONENT_PATTERNS = [
   ["evaporator_or_condenser_coil", /evaporator|condenser|\bcoil\b/i],
   ["drain_system", /drain|drainage/i],
   ["refrigerant_system", /refrigerant|freon/i],
+  ["button_panel", /\b(?:button|control)\s*(?:panel|switch|key)\b|\b(?:button|switch|key)\b.{0,30}\b(?:not working|not work|broken|damaged|unresponsive|stuck|malfunction)/i],
   ["control_board", /control board|circuit board|main board|motherboard|controller board|inverter board|electronic board|\bpcb\b|pcb module/i],
   ["electrical_system", /electrical|wiring|wire|capacitor|breaker|sparking/i],
   ["thermostat_or_sensor", /thermostat|sensor/i],
@@ -196,42 +197,100 @@ const guidanceFor = (value) => ({
   not_assessed: "Please review the technician's original report for the recorded condition and work performed.",
 }[value] || "Please review the technician's original report for the recorded condition and work performed.");
 
-const serviceActionsFor = ({ ai, componentLabel, followUp }) => {
-  if (!ai) return [guidanceFor("not_assessed"), followUp];
-  if (ai.risk_type === "no_problem_indicated") {
+const COMPONENT_LABELS = {
+  fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor",
+  air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil",
+  drain_system: "drain system", refrigerant_system: "refrigerant system",
+  button_panel: "button panel or affected button", control_board: "control board",
+  electrical_system: "electrical system", thermostat_or_sensor: "thermostat or sensor",
+  casing_or_mount: "casing or mounting", not_specified: "component not specified",
+};
+
+const PART_BY_COMPONENT = {
+  fan_motor: "Fan motor", fan_or_blower: "Fan or blower assembly", compressor: "Compressor",
+  air_filter: "Air filter", evaporator_or_condenser_coil: "Evaporator or condenser coil",
+  drain_system: "Drain system component", refrigerant_system: "Refrigerant-system component",
+  button_panel: "Button panel / affected button", control_board: "Control board",
+  electrical_system: "Electrical component", thermostat_or_sensor: "Thermostat or sensor",
+  casing_or_mount: "Casing or mounting component",
+};
+
+const normalPerformanceSignal = (text) => /(?:cooling|airflow|operation|performance).{0,32}\b(?:normal|good|properly|well|stable|working)|\b(?:operating|cooling)\s+(?:normally|properly|well)|\btested\s+(?:cooling|operation).{0,24}\b(?:normal|good|properly|well)/i.test(String(text || ""));
+const componentFor = (text) => componentCandidates(String(text || "")).find((component) => component !== "not_specified") || "not_specified";
+
+// A completed visit is saved before an external AI call so the technician is
+// never blocked by provider latency. This bounded, evidence-only assessment
+// keeps a recorded component concern actionable until that later AI review
+// completes; it does not diagnose a failed part or promise a replacement.
+const recordedFollowUpAnalysis = (evidence = {}) => {
+  const observation = evidence.visit?.observation_text || evidence.visit?.findings || "";
+  const component = componentFor(`${observation} ${(evidence.visit?.parts_used || []).join(" ")}`);
+  const hasConcern = repairSignal(observation) || component !== "not_specified" || /condition:\s*(?:fair|poor)/i.test(observation);
+  if (!hasConcern) return null;
+  const critical = criticalSignal(observation);
+  const urgent = !critical && urgentSignal(observation) && /overheat|major leak|completely broken|urgent|fail(?:ed|ing|ure)?/i.test(concernText(observation));
+  const severity = critical ? "critical" : urgent ? "urgent" : component !== "not_specified" ? "soon" : "monitor";
+  const followUpDays = critical ? 2 : urgent ? 5 : severity === "soon" ? 14 : 45;
+  const explicitReplacement = replacementSignal(observation);
+  const explicitRepair = /\brepair\b/i.test(concernText(observation));
+  const riskType = /electrical|wiring|wire|capacitor|breaker|sparking|smoke|burning|unsafe|fire risk|stop using/i.test(concernText(observation))
+    ? "electrical_or_safety"
+    : /leak|drain|drainage|water/i.test(concernText(observation))
+      ? "leak_or_drainage"
+      : /weak cooling|not cooling|poor cooling|slow cooling|reduced cooling|performance/i.test(concernText(observation))
+        ? "performance_decline"
+        : component !== "not_specified" ? "component_deterioration" : "other_recorded_risk";
+  return {
+    severity,
+    risk_type: riskType,
+    affected_component: component,
+    evidence_confidence: component !== "not_specified" ? "high" : "medium",
+    follow_up_action: explicitReplacement || explicitRepair ? "repair_assessment" : "inspection",
+    follow_up_days: followUpDays,
+    repair_or_replacement: explicitReplacement ? "replacement_may_be_needed" : explicitRepair ? "repair_may_be_needed" : "inspection_needed",
+    evidence_fact_ids: ["latest_observations"],
+  };
+};
+
+const serviceActionsFor = ({ analysis, componentLabel, followUp, inventoryMessage }) => {
+  if (!analysis) return [guidanceFor("not_assessed"), followUp];
+  if (analysis.risk_type === "no_problem_indicated") {
     return [
       "Continue routine operation and monitor the AC for any new noise, leak, weak cooling, or other change.",
       followUp,
     ];
   }
-  const subject = ai.affected_component === "not_specified"
+  const subject = analysis.affected_component === "not_specified"
     ? "the symptom recorded in the technician's report"
     : `the recorded ${componentLabel} concern`;
   const actions = [
     `Arrange a qualified technician assessment of ${subject}; confirm the cause before approving repair or replacement work.`,
   ];
-  if (ai.repair_or_replacement === "replacement_may_be_needed") {
-    actions.push(`Confirm the exact ${ai.affected_component === "not_specified" ? "component" : componentLabel} specification and stock availability before replacement is approved.`);
-  } else if (ai.repair_or_replacement === "repair_may_be_needed") {
+  if (analysis.repair_or_replacement === "replacement_may_be_needed") {
+    actions.push(`Confirm the exact ${analysis.affected_component === "not_specified" ? "component" : componentLabel} specification and stock availability before replacement is approved.`);
+  } else if (analysis.repair_or_replacement === "repair_may_be_needed") {
     actions.push(`Request a written repair scope and parts requirement for ${subject} after inspection.`);
   } else {
     actions.push(`Keep the original technician log available so ${subject} can be verified during the follow-up.`);
   }
-  if (ai.risk_type === "electrical_or_safety" && ["critical", "urgent"].includes(ai.severity)) {
+  if (inventoryMessage) actions.push(inventoryMessage);
+  if (analysis.risk_type === "electrical_or_safety" && ["critical", "urgent"].includes(analysis.severity)) {
     actions.push("If the recorded electrical or safety symptom returns, stop using the unit and contact the service team promptly.");
   }
   actions.push(followUp);
   return actions;
 };
 
-function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendation = {}, serviceHistory = {} } = {}) {
+function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendation = {}, serviceHistory = {}, partInventory = null } = {}) {
   const ai = providerResult.provider === "openai" && validVisitAnalysis(providerResult.insight, evidence)
     ? providerResult.insight : null;
+  const recordedAnalysis = ai ? null : recordedFollowUpAnalysis(evidence);
+  const analysis = ai || recordedAnalysis;
   const serviceDate = dateValue(serviceHistory.serviceDate) || new Date();
   const fallbackDate = dateValue(recommendation.bestServicedBy);
-  const followUpDate = ai ? addDays(serviceDate, ai.follow_up_days) : fallbackDate;
-  const recommendedService = ai?.follow_up_action === "repair_assessment" ? "repair"
-    : ai?.follow_up_action === "inspection" ? "inspection"
+  const followUpDate = analysis ? addDays(serviceDate, analysis.follow_up_days) : fallbackDate;
+  const recommendedService = analysis?.follow_up_action === "repair_assessment" ? "repair"
+    : analysis?.follow_up_action === "inspection" ? "inspection"
       : recommendation.recommendedService || "regular_cleaning";
   const finding = clean(serviceHistory.findings || serviceHistory.technicianInputs?.notes, 700);
   const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 700);
@@ -248,53 +307,71 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const recordedContext = customerContext.length
     ? `${recorded} Customer observations considered: ${customerContext.map(sentence).join(" ")}`
     : recorded;
-  const componentLabels = { fan_motor: "fan motor", fan_or_blower: "fan or blower", compressor: "compressor", air_filter: "air filter", evaporator_or_condenser_coil: "evaporator or condenser coil", drain_system: "drain system", refrigerant_system: "refrigerant system", control_board: "control board", electrical_system: "electrical system", thermostat_or_sensor: "thermostat or sensor", casing_or_mount: "casing or mounting", not_specified: "component not specified" };
   const riskLabels = { no_problem_indicated: "No developing problem is indicated in the submitted report", component_deterioration: "The report indicates a possible developing component-wear risk", performance_decline: "The report indicates a possible decline in AC performance", leak_or_drainage: "The report indicates a possible leak or drainage risk", electrical_or_safety: "The report indicates a possible electrical or safety risk", other_recorded_risk: "The report indicates another concern that should be monitored" };
-  const affectedComponent = ai?.affected_component || "not_specified";
-  const predictedRisk = ai ? `${riskLabels[ai.risk_type] || riskLabels.other_recorded_risk}${affectedComponent !== "not_specified" ? ` involving the ${componentLabels[affectedComponent]}` : ""}.` : "No AI risk interpretation is available.";
+  const affectedComponent = analysis?.affected_component || "not_specified";
+  const componentLabel = COMPONENT_LABELS[affectedComponent] || "component";
+  const predictedRisk = analysis ? `${riskLabels[analysis.risk_type] || riskLabels.other_recorded_risk}${affectedComponent !== "not_specified" ? ` involving the ${componentLabel}` : ""}.` : "No condition-based concern was identified from the completed report.";
   const followUp = followUpDate
-    ? `${actionLabel(ai?.follow_up_action, recommendation.recommendedService)} is recommended by ${dateKey(followUpDate)}.`
+    ? `${actionLabel(analysis?.follow_up_action, recommendation.recommendedService)} is recommended by ${dateKey(followUpDate)}.`
     : "A follow-up date could not be calculated from the available records.";
-  const aiAssessment = ai
-    ? `${recordedContext} ${predictedRisk} ${guidanceFor(ai.repair_or_replacement)}`
-    : `${recordedContext} The automatic review is temporarily unavailable, so no new issue has been added by the system.`;
+  const overallCondition = normalPerformanceSignal(`${finding} ${distinctNotes} ${work}`)
+    ? "The technician recorded normal cooling or operation after the completed service."
+    : "The completed report does not record a separate overall cooling-performance result.";
+  const componentConcern = analysis
+    ? `${affectedComponent === "not_specified" ? "A recorded symptom" : `A recorded ${componentLabel} concern`} requires verification; this is not a confirmed mechanical diagnosis.`
+    : "No separate component concern was identified from the completed report.";
+  const recommendedPart = analysis && affectedComponent !== "not_specified" ? PART_BY_COMPONENT[affectedComponent] || "Component to be confirmed during inspection" : "No part recommendation is supported by the recorded report.";
+  const partRecommendationStatus = analysis && affectedComponent !== "not_specified" ? "inspection_required" : "not_indicated";
+  const inventoryMessage = analysis && affectedComponent !== "not_specified"
+    ? partInventory?.message || "No exact replacement part number was recorded. Verify the compatible part during inspection before checking stock or approving replacement."
+    : "No exact replacement part is identified in the completed report.";
+  const aiAssessment = analysis
+    ? `${overallCondition} ${recordedContext} ${predictedRisk} ${guidanceFor(analysis.repair_or_replacement)}`
+    : `${overallCondition} ${recordedContext}`;
   const whyThisDate = followUpDate
-    ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[ai?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
+    ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[analysis?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
     : "A date could not be selected from the available records.";
   const recommendedActions = serviceActionsFor({
-    ai,
-    componentLabel: componentLabels[affectedComponent] || "component",
+    analysis,
+    componentLabel,
     followUp,
+    inventoryMessage: analysis ? inventoryMessage : "",
   });
-  const customerSummary = ai
-    ? `${aiAssessment} Recommended next step: ${recommendedActions[0]} ${followUp}`
-    : `${recordedContext} The automatic follow-up review is temporarily unavailable. ${followUp}`;
+  const customerSummary = analysis
+    ? `${componentConcern} Recorded detail: ${sentence(finding)} Work performed: ${sentence(work)} ${followUp}`
+    : `${overallCondition} ${followUp}`;
   return {
-    analysisVersion: 4,
+    analysisVersion: 5,
     provider: ai ? "openai" : "system-fallback",
     status: ai ? "completed" : "unavailable",
     whatHappened: `${visitLabel}: ${work}`,
     problemsFound: [finding, distinctNotes].filter(Boolean).join(" "),
-    severity: ai?.severity || "not_assessed",
-    riskType: ai?.risk_type || "not_assessed",
+    overallCondition,
+    componentConcern,
+    severity: analysis?.severity || "not_assessed",
+    riskType: analysis?.risk_type || "not_assessed",
     predictedRisk,
     affectedComponent,
-    evidenceConfidence: ai?.evidence_confidence || "not_assessed",
-    recommendationMode: ai ? (ai.risk_type === "no_problem_indicated" ? "routine" : "condition_based") : "fallback",
-    repairOrReplacement: ai?.repair_or_replacement || "not_assessed",
-    recommendedAction: ai?.follow_up_action || "existing_schedule",
+    evidenceConfidence: analysis?.evidence_confidence || "not_assessed",
+    recommendationMode: analysis ? (analysis.risk_type === "no_problem_indicated" ? "routine" : "condition_based") : "fallback",
+    repairOrReplacement: analysis?.repair_or_replacement || "not_assessed",
+    recommendedPart,
+    partRecommendationStatus,
+    inventoryMessage,
+    inventoryMatches: Array.isArray(partInventory?.matches) ? partInventory.matches : [],
+    recommendedAction: analysis?.follow_up_action || "existing_schedule",
     recommendedActions,
     recommendedService,
-    recommendedFollowUpDays: ai?.follow_up_days || null,
+    recommendedFollowUpDays: analysis?.follow_up_days || null,
     recommendedFollowUpDate: followUpDate,
-    evidenceFactIds: ai?.evidence_fact_ids || ["latest_observations", "latest_work_performed"].filter((id) => evidence.fact_catalog?.[id]),
+    evidenceFactIds: analysis?.evidence_fact_ids || ["latest_observations", "latest_work_performed"].filter((id) => evidence.fact_catalog?.[id]),
     aiAssessment: clean(aiAssessment, 1800),
     whyThisDate: clean(whyThisDate, 1000),
     customerSummary: clean(customerSummary, 1800),
     model: ai ? providerResult.model || "" : "",
     requestId: ai ? providerResult.requestId || "" : "",
     generatedAt: new Date(),
-    warning: ai ? "" : clean(providerResult.error || "AI analysis was unavailable; the existing recorded schedule is shown.", 300),
+    warning: ai ? "" : clean(providerResult.error || "Advanced AI review is pending; the evidence-based follow-up below uses the completed technician record.", 300),
   };
 }
 
@@ -302,5 +379,6 @@ module.exports = {
   FOLLOW_UP_RANGE,
   buildVisitEvidence,
   finalizeVisitAnalysis,
+  recordedFollowUpAnalysis,
   validVisitAnalysis,
 };

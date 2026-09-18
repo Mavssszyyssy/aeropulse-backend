@@ -2,10 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const env = require("../src/config/env");
 const Unit = require("../src/models/Unit");
+const Product = require("../src/models/Product");
 const ServiceHistory = require("../src/models/ServiceHistory");
 const { callStructuredAmpAnalysis } = require("../src/services/openAiAmpService");
 const { buildVisitEvidence, finalizeVisitAnalysis, validVisitAnalysis } = require("../src/domain/ampVisitAnalysis");
-const { analyzeCompletedVisit } = require("../src/domain/serviceCompletionService");
+const { analyzeCompletedVisit, recordedPartsInventory } = require("../src/domain/serviceCompletionService");
 
 const service = {
   _id: "visit-1",
@@ -88,7 +89,7 @@ test("free-text technician notes identify an unlisted control-board concern and 
     evidence,
     providerResult: { provider: "openai", insight: contextual },
   });
-  assert.equal(result.analysisVersion, 4);
+  assert.equal(result.analysisVersion, 5);
   assert.match(result.recommendedActions.join(" "), /control board concern/i);
   assert.match(result.recommendedActions.join(" "), /confirm the cause before approving repair or replacement/i);
   assert.match(result.aiAssessment, /inverter main board/i);
@@ -155,7 +156,7 @@ test("customer visit summary uses the original log and stores contextual follow-
     providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_observations", "latest_work_performed"] }) },
   });
   assert.equal(result.provider, "openai");
-  assert.equal(result.analysisVersion, 4);
+  assert.equal(result.analysisVersion, 5);
   assert.equal(result.recommendedService, "repair");
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-10-03");
   assert.equal(result.recommendationMode, "condition_based");
@@ -164,21 +165,64 @@ test("customer visit summary uses the original log and stores contextual follow-
   assert.match(result.predictedRisk, /fan motor/);
   assert.match(result.customerSummary, /fan motor made an unusual noise/);
   assert.match(result.customerSummary, /Cleaned the filter and tested cooling/);
-  assert.equal(result.recommendedActions.length, 3);
+  assert.equal(result.recommendedActions.length, 4);
   assert.match(result.recommendedActions.at(-1), /2026-10-03/);
 });
 
-test("fallback preserves the existing schedule without inventing a diagnosis", () => {
+test("fallback turns a recorded concern into an evidence-based follow-up while AI is pending", () => {
   const evidence = buildVisitEvidence({ serviceHistory: service, recommendation });
   const result = finalizeVisitAnalysis({
     serviceHistory: service, recommendation, evidence,
     providerResult: { provider: "system-fallback", error: "Provider unavailable" },
   });
   assert.equal(result.provider, "system-fallback");
-  assert.equal(result.recommendedService, "regular_cleaning");
-  assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2027-03-12");
-  assert.match(result.customerSummary, /automatic follow-up review is temporarily unavailable/);
-  assert.doesNotMatch(result.customerSummary, /follow-up inspection is recommended/i);
+  assert.equal(result.recommendedService, "inspection");
+  assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-26");
+  assert.equal(result.recommendationMode, "condition_based");
+  assert.match(result.customerSummary, /requires verification/i);
+  assert.match(result.warning, /Provider unavailable/);
+});
+
+test("a normal cooling result does not suppress a recorded non-working button concern", () => {
+  const buttonConcern = {
+    ...service,
+    findings: "Cooling is working properly after cleaning, but the control button is not working properly.",
+    technicianInputs: { notes: "Button must be fixed during the next visit." },
+    actionTaken: "Cleaned the air filter and tested cooling.",
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: buttonConcern, recommendation });
+  assert.ok(evidence.allowed_affected_components.includes("button_panel"));
+  const result = finalizeVisitAnalysis({
+    serviceHistory: buttonConcern,
+    recommendation,
+    evidence,
+    providerResult: { provider: "system-fallback", error: "Advanced review queued" },
+  });
+  assert.equal(result.provider, "system-fallback");
+  assert.equal(result.recommendationMode, "condition_based");
+  assert.equal(result.affectedComponent, "button_panel");
+  assert.equal(result.recommendedPart, "Button panel / affected button");
+  assert.equal(result.recommendedService, "inspection");
+  assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-26");
+  assert.match(result.overallCondition, /normal cooling or operation/i);
+  assert.match(result.componentConcern, /requires verification/i);
+  assert.match(result.inventoryMessage, /No exact replacement part number was recorded/i);
+  assert.ok(result.recommendedActions.some((action) => /button panel/i.test(action)));
+});
+
+test("inventory status uses only exact technician-recorded part matches", async (t) => {
+  const chain = {
+    select() { return this; }, limit() { return this; },
+    lean: async () => [{ name: "Control Button", sku: "BTN-001", stock: 4, branchStock: { Bulacan: 2 } }],
+  };
+  t.mock.method(Product, "find", () => chain);
+  const result = await recordedPartsInventory({
+    unit: { serviceBranch: "Bulacan" },
+    partsUsed: ["BTN-001"],
+  });
+  assert.deepEqual(result.matches, [{ name: "Control Button", sku: "BTN-001", companyStock: 4, branchStock: 2 }]);
+  assert.match(result.message, /branch quantity 2/i);
+  assert.match(result.message, /Verify exact compatibility/i);
 });
 
 test("existing AI service sends structured technician visit analysis", async () => {
@@ -235,15 +279,21 @@ test("completed visit analysis is stored separately and updates the shared unit 
 test("temporary AI failure records a bounded automatic retry schedule", async (t) => {
   const saved = { ...service, _id: "visit-retry", aiInterpretation: {}, async save() {} };
   const chain = { sort() { return this; }, limit() { return this; }, lean: async () => [] };
+  let visitFollowUp;
   t.mock.method(ServiceHistory, "find", () => chain);
+  t.mock.method(Unit, "updateOne", async (_query, update) => { visitFollowUp = update.$set["amp.visitFollowUp"]; });
   const result = await analyzeCompletedVisit({
     unit: { _id: "unit-1", brand: "LG", modelName: "Dual Inverter", category: "split", capacityHp: 1.5 },
     serviceHistory: saved,
     recommendation,
     technicianId: "technician-1",
     providerCall: async () => ({ provider: "system-fallback", insight: null, error: "Temporary provider failure" }),
+    recalculate: async () => recommendation,
   });
   assert.equal(result.interpretation.status, "unavailable");
+  assert.equal(visitFollowUp.provider, "system-fallback");
+  assert.equal(visitFollowUp.recommendationMode, "condition_based");
+  assert.equal(visitFollowUp.recommendedService, "inspection");
   assert.equal(result.interpretation.analysisAttempts, 1);
   assert.ok(result.interpretation.nextAnalysisAttemptAt instanceof Date);
   assert.ok(result.interpretation.nextAnalysisAttemptAt > result.interpretation.lastAnalysisAttemptAt);
@@ -254,12 +304,14 @@ test("completion can save the synchronized visit before the external AI review r
   const chain = { sort() { return this; }, limit() { return this; }, lean: async () => [] };
   let providerCalled = false;
   t.mock.method(ServiceHistory, "find", () => chain);
+  t.mock.method(Unit, "updateOne", async () => {});
   const result = await analyzeCompletedVisit({
     unit: { _id: "unit-1", brand: "LG", modelName: "Dual Inverter", category: "split", capacityHp: 1.5 },
     serviceHistory: saved,
     recommendation,
     technicianId: "technician-1",
     deferProvider: true,
+    recalculate: async () => recommendation,
     providerCall: async () => { providerCalled = true; return { provider: "openai", insight: insight() }; },
   });
   assert.equal(providerCalled, false);

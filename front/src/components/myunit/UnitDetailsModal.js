@@ -1,4 +1,5 @@
 import DynamicServiceSticker from "./DynamicServiceSticker";
+import ServiceFollowUp from "./ServiceFollowUp";
 import UnitProductVisual from "./UnitProductVisual";
 import { formatUnitHorsepower } from "../../domain/myunit/unitDisplay";
 import { serviceLabel, serviceDateLabel, serviceDetails, servicePriceLabel } from '../../domain/myunit/serviceHistoryDisplay';
@@ -35,10 +36,6 @@ function UnitDetailsModal({ unit, onClose, onEdit, onDelete }) {
             <p>{unit.productSku || unit.model || "Model not recorded"}</p>
           </div>
 
-          <div className="info-row">
-            <span className="info-label">Model</span>
-            <span className="info-value">{unit.productSku || unit.model || "Not recorded"}</span>
-          </div>
           <div className="info-row">
             <span className="info-label">Horsepower</span>
             <span className="info-value">{formatUnitHorsepower(unit)}</span>
@@ -86,10 +83,7 @@ function UnitDetailsModal({ unit, onClose, onEdit, onDelete }) {
                     <div className="history-date">{serviceDateLabel(service.date)}</div>
                     <div className="history-service">{serviceLabel(service.serviceType)}</div>
                     <div className="history-details">{serviceDetails(service)}</div>
-                    {service.aiInterpretation?.customerSummary ? <div className="history-ai-follow-up">
-                      <strong>{service.aiInterpretation.provider === 'openai' ? 'AI follow-up recommendation' : 'Follow-up schedule'}</strong>
-                      <span>{service.aiInterpretation.customerSummary}</span>
-                    </div> : null}
+                    <ServiceFollowUp interpretation={service.aiInterpretation} />
                     {servicePriceLabel(service) ? <div className="history-price">{servicePriceLabel(service)}</div> : null}
                     {service.evidence?.eligible === false ? <div className="history-details">{service.evidence.reason}</div> : null}
                   </div>
