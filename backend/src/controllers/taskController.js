@@ -867,6 +867,10 @@ const reconcileCompletedTask = async (task) => {
       () => notifyCustomerOfCompletedService(task, {}, completedHistory),
     );
   }
+  await runNonBlockingWorkflowStep(
+    "technician completion notification",
+    () => notifyTechnicianTaskCompletion(task),
+  );
 };
 
 const buildRegistrationRecord = ({ req, task, serialNumber, payload, status }) => {
@@ -1113,6 +1117,27 @@ const notifyTaskScheduleUpdate = async (task) => {
   const recipients = Array.from(new Set([String(task.assignedTechnicianId || "").trim(), ...(task.schedule?.teamMemberIds || []).map((value) => String(value || "").trim())].filter(Boolean)));
   const scheduleKey = crypto.createHash("sha256").update(JSON.stringify({ scheduledDate: task.scheduledDate, timeSlot: task.timeSlot, assignedTechnicianId: task.assignedTechnicianId, schedule: task.schedule || {} })).digest("hex").slice(0, 16);
   await Promise.all(recipients.map((userId) => createDedupedNotification({ user: userId, type: "technician", category: "task", title: "Work schedule updated", message: `${task.taskCode} is scheduled for ${task.scheduledDate} · ${task.timeSlot}. Open My Work for current details.`, targetId: String(task._id), targetType: "task", route: "/technician/tasks", dedupeKey: `work-schedule:${task._id}:${userId}:${scheduleKey}` })));
+};
+
+const notifyTechnicianTaskCompletion = async (task) => {
+  const recipients = Array.from(new Set([
+    String(task.assignedTechnicianId || "").trim(),
+    ...(task.schedule?.teamMemberIds || []).map((value) => String(value || "").trim()),
+  ].filter(Boolean)));
+  if (!recipients.length) return [];
+  const installation = isOrderInstallationTask(task);
+  const taskId = String(task._id || task.id || "");
+  return Promise.all(recipients.map((user) => createDedupedNotification({
+    user,
+    type: "technician",
+    category: installation ? "installation" : "service",
+    title: installation ? "Installation completed" : "Service visit completed",
+    message: `${task.taskCode || "This work order"} is complete. Open My Work Orders to review the saved proof and report.`,
+    targetId: taskId,
+    targetType: "task",
+    route: taskId ? `/technician/task/${encodeURIComponent(taskId)}/information` : "/technician/tasks",
+    dedupeKey: `task-completed:${taskId}:${user}`,
+  }, { dedupeMinutes: 0 })));
 };
 
 const hydrateOperationalTaskList = async (tasks = []) => {
