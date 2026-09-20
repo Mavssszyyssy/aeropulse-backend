@@ -17,6 +17,11 @@ const list = (value) => (Array.isArray(value) ? value : String(value || "").spli
   .map((item) => clean(item, 160))
   .filter(Boolean);
 const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const TECHNICIAN_STATUSES = new Set(["for_repair", "for_further_inspection", "completed"]);
+const normalizeTechnicianStatus = (value) => {
+  const normalized = clean(value, 80).toLowerCase().replace(/[\s-]+/g, "_");
+  return TECHNICIAN_STATUSES.has(normalized) ? normalized : "";
+};
 
 // Stock is only shown when a technician recorded an exact part name or SKU
 // that matches an active catalog item. A component inferred from a symptom is
@@ -119,11 +124,11 @@ const analyzeCompletedVisit = async ({
   recalculate = calculateMaintenanceRecommendation,
   deferProvider = false,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 5) {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 6) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
-    .sort({ serviceDate: -1 }).limit(8).lean();
+    .sort({ serviceDate: -1 }).lean();
   const evidence = buildVisitEvidence({ unit, serviceHistory, priorHistory, recommendation });
   let providerResult;
   if (deferProvider) {
@@ -167,12 +172,16 @@ const analyzeCompletedVisit = async ({
   // Keep an evidence-based condition follow-up visible immediately. The
   // delayed OpenAI review can enrich the same record later, but it must not
   // hide a documented component concern from managers or customers.
-  if (interpretation.recommendationMode === "condition_based" && interpretation.recommendedFollowUpDate) {
-    await Unit.updateOne({ _id: unit._id }, { $set: {
+  await Unit.updateOne({ _id: unit._id }, { $set: {
       "amp.visitFollowUp": {
         analysisVersion: interpretation.analysisVersion,
         sourceServiceHistoryId: String(serviceHistory._id),
         provider: interpretation.provider,
+        currentStatus: interpretation.currentStatus,
+        technicianRecorded: interpretation.technicianRecorded,
+        previousVisitHistory: interpretation.previousVisitHistory,
+        currentIssues: interpretation.currentIssues,
+        completedWork: interpretation.completedWork,
         severity: interpretation.severity,
         riskType: interpretation.riskType,
         predictedRisk: interpretation.predictedRisk,
@@ -196,6 +205,7 @@ const analyzeCompletedVisit = async ({
         generatedAt: interpretation.generatedAt,
       },
     } });
+  if (interpretation.recommendationMode === "condition_based" && interpretation.recommendedFollowUpDate) {
     recommendation = await recalculate(unit._id);
   }
   return { interpretation, recommendation };
@@ -241,6 +251,9 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
   const latestLog = Array.isArray(normalizedCosts.serviceLogs)
     ? normalizedCosts.serviceLogs.filter((entry) => entry && typeof entry === "object")[0] || {}
     : {};
+  const technicianStatus = normalizeTechnicianStatus(
+    payload.technicianStatus ?? payload.technician_status ?? latestLog.technicianStatus,
+  );
   const rawHoursSpent = payload.hoursSpent ?? payload.hours_spent ?? latestLog.hoursSpent;
   const hoursSpent = rawHoursSpent === "" || rawHoursSpent === null || rawHoursSpent === undefined
     ? null
@@ -269,6 +282,7 @@ const completeServiceForUnit = async ({ unitId, technicianId, sourceTaskId, payl
     serviceDate,
     visitType: visitTypeFor(serviceType),
     serviceType,
+    technicianStatus,
     conditionRating,
     findings,
     actionTaken: actions.join(", "),

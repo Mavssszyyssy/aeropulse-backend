@@ -659,15 +659,6 @@ const updateServiceRequestStatus = async (req, res) => {
         assignedTechnicianName: task.assignedTechnicianName,
       };
 
-      if (statusChanged || technicianChanged || scheduleChanged) await notifyUser({
-        userId: task.assignedTechnicianId,
-        title: scheduleChanged && !technicianChanged ? "Service appointment updated" : "New service task assigned",
-        message: `${request.customer}'s ${request.unitName || "AC unit"} service appointment: ${task.scheduledDate} · ${task.timeSlot}.`,
-        targetId: String(task._id || task.id || ""),
-        targetType: "task",
-        route: "/technician/tasks",
-        dedupeKey: scheduleChanged ? `service-task-schedule:${task._id}:${task.assignedTechnicianId}:${task.scheduledDate}:${task.timeSlot}:${nextTimeline.length}` : `service-task-assigned:${task._id || task.id}:${task.assignedTechnicianId}`,
-      });
     }
 
     if (request.status === "Completed") {
@@ -679,6 +670,19 @@ const updateServiceRequestStatus = async (req, res) => {
 
     await request.save();
     await cancelWarrantyForRequest(request, String(req.body?.description || 'The associated service visit was cancelled.'));
+    // The technician must not receive a task/schedule push until the service
+    // request and its linked-task reference have both been persisted.
+    if (task && (statusChanged || technicianChanged || scheduleChanged)) {
+      await notifyUser({
+        userId: task.assignedTechnicianId,
+        title: scheduleChanged && !technicianChanged ? "Service appointment updated" : "New service task assigned",
+        message: `${request.customer}'s ${request.unitName || "AC unit"} service appointment: ${task.scheduledDate} · ${task.timeSlot}.`,
+        targetId: String(task._id || task.id || ""),
+        targetType: "task",
+        route: "/technician/tasks",
+        dedupeKey: scheduleChanged ? `service-task-schedule:${task._id}:${task.assignedTechnicianId}:${task.scheduledDate}:${task.timeSlot}:${nextTimeline.length}` : `service-task-assigned:${task._id || task.id}:${task.assignedTechnicianId}`,
+      });
+    }
     if ((statusChanged || technicianChanged || scheduleChanged) && ["Assigned", "In Progress", "Completed", "Cancelled"].includes(request.status)) {
       await notifyUser({
         userId: request.customerId,

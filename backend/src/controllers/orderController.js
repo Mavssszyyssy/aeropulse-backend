@@ -2579,14 +2579,18 @@ const createOrder = async (req, res) => {
             returnTarget: checkoutReturnTarget,
           });
         }
-        await createOrderNotification({
-          customerId: user._id,
-          title: "Order received",
-          message: usesOnlinePayment
-            ? `Your order ${order.orderCode} has been received. Complete your PayMongo payment to continue processing.`
-            : `Your order ${order.orderCode} has been received and is awaiting dispatch. Payment will be collected on delivery. You can track its status in My Orders.`,
-        });
-        await notifyBranchAdminsForOrder(order);
+        // Starting an external checkout is not a completed payment action.
+        // Online-order customer and staff notifications are created only by
+        // applyPaymongoEventToOrder after PayMongo has verified payment. COD
+        // submission is already a completed action, so it can notify here.
+        if (!usesOnlinePayment) {
+          await createOrderNotification({
+            customerId: user._id,
+            title: "Order received",
+            message: `Your order ${order.orderCode} has been received and is awaiting dispatch. Payment will be collected on delivery. You can track its status in My Orders.`,
+          });
+          await notifyBranchAdminsForOrder(order);
+        }
 
         // Online confirmation is sent only after a verified PayMongo success.
         // COD keeps its existing order-received email at order creation.

@@ -89,7 +89,7 @@ test("free-text technician notes identify an unlisted control-board concern and 
     evidence,
     providerResult: { provider: "openai", insight: contextual },
   });
-  assert.equal(result.analysisVersion, 5);
+  assert.equal(result.analysisVersion, 6);
   assert.match(result.recommendedActions.join(" "), /control board concern/i);
   assert.match(result.recommendedActions.join(" "), /confirm the cause before approving repair or replacement/i);
   assert.match(result.aiAssessment, /inverter main board/i);
@@ -156,7 +156,7 @@ test("customer visit summary uses the original log and stores contextual follow-
     providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_observations", "latest_work_performed"] }) },
   });
   assert.equal(result.provider, "openai");
-  assert.equal(result.analysisVersion, 5);
+  assert.equal(result.analysisVersion, 6);
   assert.equal(result.recommendedService, "repair");
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-10-03");
   assert.equal(result.recommendationMode, "condition_based");
@@ -208,6 +208,80 @@ test("a normal cooling result does not suppress a recorded non-working button co
   assert.match(result.componentConcern, /requires verification/i);
   assert.match(result.inventoryMessage, /No exact replacement part number was recorded/i);
   assert.ok(result.recommendedActions.some((action) => /button panel/i.test(action)));
+});
+
+test("For Further Inspection keeps a component issue open even when cooling is normal", () => {
+  const visit = {
+    ...service,
+    technicianStatus: "for_further_inspection",
+    findings: "The AC is cooling normally, but the button panel is not responding.",
+    technicianInputs: { notes: "Further inspection is needed to determine whether the panel or control board needs replacement." },
+    actionTaken: "Cleaned the air filter and tested cooling.",
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: visit, recommendation });
+  const result = finalizeVisitAnalysis({ serviceHistory: visit, recommendation, evidence, providerResult: { provider: "system-fallback" } });
+  assert.equal(result.currentStatus, "For Further Inspection");
+  assert.match(result.technicianRecorded, /button panel is not responding/i);
+  assert.ok(result.currentIssues.some((item) => /button panel/i.test(item)));
+  assert.equal(result.recommendedService, "inspection");
+  assert.equal(result.recommendedFollowUpDays, 14);
+  assert.match(result.overallCondition, /normal cooling or operation/i);
+});
+
+test("inspection to repair to completed history resolves only the documented component issue", () => {
+  const priorHistory = [
+    {
+      serviceDate: "2026-08-15T00:00:00.000Z",
+      serviceType: "inspection",
+      technicianStatus: "for_repair",
+      findings: "Button panel issue confirmed. Replacement part is needed.",
+      actionTaken: "Confirmed the affected button panel.",
+    },
+    {
+      serviceDate: "2026-07-15T00:00:00.000Z",
+      serviceType: "inspection",
+      technicianStatus: "for_further_inspection",
+      findings: "Button panel has a non-working button.",
+      actionTaken: "Inspected the controls.",
+    },
+  ];
+  const completed = {
+    ...service,
+    technicianStatus: "completed",
+    findings: "Button panel replaced and tested.",
+    actionTaken: "Replaced the button panel and tested it working normally.",
+    serviceActions: ["Replaced the button panel", "Tested the controls working normally"],
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: completed, priorHistory, recommendation });
+  const result = finalizeVisitAnalysis({ serviceHistory: completed, recommendation, evidence, providerResult: { provider: "system-fallback" } });
+  assert.equal(result.currentStatus, "Completed");
+  assert.equal(result.previousVisitHistory.length, 2);
+  assert.deepEqual(result.currentIssues, []);
+  assert.deepEqual(result.completedWork, ["Replaced the button panel", "Tested the controls working normally"]);
+  assert.equal(result.recommendationMode, "fallback");
+  assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2027-03-12");
+});
+
+test("Completed cleaning does not erase a different unresolved issue from prior history", () => {
+  const priorHistory = [{
+    serviceDate: "2026-08-15T00:00:00.000Z",
+    serviceType: "inspection",
+    technicianStatus: "for_repair",
+    findings: "Button panel issue confirmed and needs repair.",
+    actionTaken: "Inspected the button panel.",
+  }];
+  const cleaning = {
+    ...service,
+    technicianStatus: "completed",
+    findings: "The air filter was dirty before cleaning.",
+    actionTaken: "Cleaned the air filter and tested cooling normally.",
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: cleaning, priorHistory, recommendation });
+  const result = finalizeVisitAnalysis({ serviceHistory: cleaning, recommendation, evidence, providerResult: { provider: "system-fallback" } });
+  assert.equal(result.currentStatus, "Completed");
+  assert.ok(result.currentIssues.some((item) => /button panel/i.test(item)));
+  assert.equal(result.recommendationMode, "condition_based");
+  assert.equal(result.recommendedService, "repair");
 });
 
 test("inventory status uses only exact technician-recorded part matches", async (t) => {

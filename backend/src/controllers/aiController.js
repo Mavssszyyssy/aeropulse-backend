@@ -33,6 +33,7 @@ async function resolveResponsibleBranch(req, unit, requestedBranch = "") {
 
 const formatHistory = (item = {}) => ({
   date: item.serviceDate || "", type: serviceTypeFor(item), serviceLabel: serviceLabel(serviceTypeFor(item)),
+  technicianStatus: cleanText(item.technicianStatus || "", 80),
   findings: cleanText(item.findings || item.technicianInputs?.notes || "", 500),
   actionTaken: cleanText(item.actionTaken || (item.serviceActions || []).join(", "), 500),
   partsUsed: Array.isArray(item.partsUsed) ? item.partsUsed.slice(0, 20) : [],
@@ -70,6 +71,7 @@ const buildPredictiveAssessment = ({ unit, recommendation, history = [], request
     addDistinct(observations, latest.customerInputs?.notes, "Customer comment");
     addDistinct(observations, latest.customerInputs?.other, "Customer custom / Other input");
     if (latest.conditionRating) factors.push({ label: "Latest technician condition rating", value: latest.conditionRating });
+    if (latest.technicianStatus) factors.push({ label: "Latest technician status", value: String(latest.technicianStatus).replace(/_/g, " ") });
     if (latest.serviceType) factors.push({ label: "Latest service type", value: serviceLabel(latest.serviceType) });
     if (latest.partsUsed?.length) factors.push({ label: "Parts recorded in latest visit", value: latest.partsUsed.join(", ") });
   }
@@ -89,6 +91,12 @@ const buildPredictiveAssessment = ({ unit, recommendation, history = [], request
   const priority = ({ critical: "Immediate attention", urgent: "Urgent", soon: "Schedule soon", monitor: "Monitor", routine: "Routine" })[severity]
     || (recommendation.overdue ? "Schedule soon" : "Routine");
   return {
+    currentStatus: visit.currentStatus || (latest?.technicianStatus ? String(latest.technicianStatus).replace(/_/g, " ") : "Not recorded"),
+    technicianRecorded: visit.technicianRecorded || cleanText(latest?.findings || latest?.technicianInputs?.notes || "", 700),
+    previousVisitHistory: Array.isArray(visit.previousVisitHistory) ? visit.previousVisitHistory : [],
+    currentIssues: Array.isArray(visit.currentIssues) ? visit.currentIssues : [],
+    completedWork: Array.isArray(visit.completedWork) ? visit.completedWork : [],
+    recommendedPart: visit.recommendedPart || "No part recommendation is supported by the recorded history.",
     recommendedServicingDate: recommendation.bestServicedBy || null,
     recommendedService: recommendation.recommendedService || "",
     assessmentSummary: recommendation.aiAssessment || visit.aiAssessment || recommendation.recommendationBasis || "Insufficient historical service data is available to establish a strong maintenance pattern.",

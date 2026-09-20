@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   normalizeServiceRequestStatus,
   canTransitionServiceRequest,
@@ -48,4 +50,21 @@ test("customers can cancel only before work is active", () => {
   assert.equal(canCustomerCancelServiceRequest("Assigned"), true);
   assert.equal(canCustomerCancelServiceRequest("In Progress"), false);
   assert.equal(canCustomerCancelServiceRequest("Completed"), false);
+});
+
+test("service assignment notification follows successful request persistence", () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, "../src/controllers/serviceRequestController.js"),
+    "utf8",
+  );
+  const updateStart = source.indexOf("const updateServiceRequestStatus = async");
+  const updateEnd = source.indexOf("module.exports", updateStart);
+  const updateSource = source.slice(updateStart, updateEnd);
+  const requestSave = updateSource.indexOf("await request.save();");
+  const technicianNotification = updateSource.indexOf(
+    'title: scheduleChanged && !technicianChanged ? "Service appointment updated" : "New service task assigned"',
+  );
+
+  assert.ok(requestSave >= 0);
+  assert.ok(technicianNotification > requestSave);
 });

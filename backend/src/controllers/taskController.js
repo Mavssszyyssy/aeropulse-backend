@@ -587,6 +587,7 @@ const technicianReportPayload = (payload = {}) => Object.fromEntries(Object.entr
   beforeCondition: payload.beforeCondition,
   afterCondition: payload.afterCondition,
   conditionRating: payload.conditionRating,
+  technicianStatus: payload.technicianStatus,
   findings: payload.findings,
   resolution: payload.resolution,
   serviceActions: payload.serviceActions,

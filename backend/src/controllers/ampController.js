@@ -50,6 +50,7 @@ const serviceHistoryItem = (service) => ({
   id: String(service._id || service.id || ""),
   date: service.serviceDate,
   serviceType: serviceTypeFor(service),
+  technicianStatus: service.technicianStatus || "",
   findings: service.findings || service.technicianInputs?.notes || "",
   actionTaken: service.actionTaken || (service.serviceActions || []).join(", "),
   partsUsed: Array.isArray(service.partsUsed) ? service.partsUsed : [],

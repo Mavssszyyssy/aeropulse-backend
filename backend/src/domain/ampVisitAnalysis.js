@@ -62,6 +62,62 @@ const componentCandidates = (findings) => [...new Set([
   "not_specified",
 ])];
 
+const TECHNICIAN_STATUS_LABELS = {
+  for_repair: "For Repair",
+  for_further_inspection: "For Further Inspection",
+  completed: "Completed",
+};
+const normalizeTechnicianStatus = (value) => {
+  const normalized = clean(value, 80).toLowerCase().replace(/[\s-]+/g, "_");
+  return Object.hasOwn(TECHNICIAN_STATUS_LABELS, normalized) ? normalized : "";
+};
+const technicianStatusLabel = (value) => TECHNICIAN_STATUS_LABELS[normalizeTechnicianStatus(value)] || "Not recorded";
+const completedWorkSignal = (text) => /\b(?:repaired|fixed|replaced|resolved|corrected|restored|completed)\b|\btested\b.{0,30}\b(?:working|normal|passed|operational)\b/i.test(String(text || ""));
+const continuingIssueSignal = (text) => /\b(?:still|remains?|continues?|unresolved|pending|requires?|needs?|must)\b.{0,50}\b(?:repair|inspection|replacement|fix|not working|malfunction|issue|problem)|\b(?:not working|not responding|unresponsive|broken|failing|malfunctioning)\b/i.test(concernText(text));
+
+const buildVisitProgression = ({ serviceHistory = {}, priorHistory = [] } = {}) => {
+  const unresolved = new Map();
+  [...priorHistory].reverse().concat(serviceHistory).forEach((history) => {
+    const status = normalizeTechnicianStatus(history.technicianStatus);
+    const finding = clean(history.findings || history.technicianInputs?.notes, 700);
+    const notes = clean(history.technicianInputs?.notes, 500);
+    const work = clean(history.actionTaken || list(history.serviceActions).join(", "), 700);
+    const parts = list(history.partsUsed);
+    const observation = [finding, notes].filter(Boolean).join(" ");
+    const mentioned = componentCandidates(`${observation} ${work} ${parts.join(" ")}`).filter((component) => component !== "not_specified");
+    const issueComponents = componentCandidates(observation).filter((component) => component !== "not_specified");
+    const completedRecordedWork = status === "completed" && completedWorkSignal(`${observation} ${work}`);
+    if (completedRecordedWork) mentioned.forEach((component) => unresolved.delete(component));
+    const reportsOpenIssue = status === "for_repair" || status === "for_further_inspection"
+      || (!completedRecordedWork && continuingIssueSignal(observation))
+      || (status !== "completed" && repairSignal(observation));
+    if (reportsOpenIssue) {
+      (issueComponents.length ? issueComponents : ["not_specified"]).forEach((component) => unresolved.set(component, {
+        component,
+        status: status || "for_further_inspection",
+        detail: finding || notes || "The technician recorded an issue requiring follow-up.",
+      }));
+    }
+  });
+  const currentFinding = clean(serviceHistory.findings, 700);
+  const currentNotes = clean(serviceHistory.technicianInputs?.notes, 700);
+  return {
+    currentStatus: normalizeTechnicianStatus(serviceHistory.technicianStatus),
+    currentStatusLabel: technicianStatusLabel(serviceHistory.technicianStatus),
+    technicianRecorded: [currentFinding, currentNotes && currentNotes.toLowerCase() !== currentFinding.toLowerCase() ? currentNotes : ""].filter(Boolean).join(" "),
+    previousVisitHistory: priorHistory.map((history) => {
+      const detail = clean(history.findings || history.technicianInputs?.notes || history.actionTaken, 320);
+      return `${dateKey(history.serviceDate) || "Earlier visit"} · ${technicianStatusLabel(history.technicianStatus)}${detail ? ` · ${detail}` : ""}`;
+    }),
+    currentIssues: [...unresolved.values()].map((issue) => {
+      const component = COMPONENT_LABELS[issue.component] || "recorded issue";
+      return `${component.replace(/^./, (letter) => letter.toUpperCase())} · ${technicianStatusLabel(issue.status)} · ${issue.detail}`;
+    }),
+    completedWork: list(serviceHistory.serviceActions?.length ? serviceHistory.serviceActions : serviceHistory.actionTaken).slice(0, 12),
+    unresolvedComponents: [...unresolved.keys()],
+  };
+};
+
 function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [], recommendation = {} } = {}) {
   const findings = clean(serviceHistory.findings, 1000);
   const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 1000);
@@ -71,6 +127,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
   const customerIssue = clean(serviceHistory.customerInputs?.reportedIssue, 1000);
   const customerNotes = clean(serviceHistory.customerInputs?.notes, 1000);
   const customerOther = clean(serviceHistory.customerInputs?.other, 1000);
+  const progression = buildVisitProgression({ serviceHistory, priorHistory });
   const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== findings.toLowerCase()
     ? technicianNotes : "";
   const currentObservations = clean([
@@ -80,6 +137,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
     customerNotes ? `Customer notes: ${customerNotes}` : "",
     customerOther ? `Customer custom observation: ${customerOther}` : "",
     condition ? `Condition: ${condition}` : "",
+    progression.currentStatus ? `Technician status: ${progression.currentStatusLabel}` : "",
     parts.length ? `Parts recorded: ${parts.join(", ")}` : "",
   ].filter(Boolean).join(" "), 2400);
   const concernEvidence = clean([
@@ -89,6 +147,8 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
     customerNotes ? `Customer notes: ${customerNotes}` : "",
     customerOther ? `Customer custom observation: ${customerOther}` : "",
     condition ? `Condition: ${condition}` : "",
+    progression.currentStatus ? `Technician status: ${progression.currentStatusLabel}` : "",
+    progression.currentIssues.length ? `Unresolved history: ${progression.currentIssues.join(" ")}` : "",
   ].filter(Boolean).join(" "), 2200);
   const facts = {
     latest_observations: currentObservations,
@@ -96,18 +156,21 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
     latest_technician_notes: distinctNotes,
     latest_work_performed: actions,
     latest_condition: condition ? `Technician condition rating: ${condition}.` : "",
+    latest_technician_status: progression.currentStatus ? `Technician status: ${progression.currentStatusLabel}.` : "",
     latest_parts: parts.length ? `Parts recorded by the technician: ${parts.join(", ")}.` : "",
     customer_reported_issue: customerIssue ? `Customer-reported concern: ${customerIssue}` : "",
     customer_notes: customerNotes ? `Customer notes: ${customerNotes}` : "",
     customer_other_observation: customerOther ? `Customer custom observation: ${customerOther}` : "",
     unit_profile: clean([unit.brand, unit.modelName || unit.model, unit.category, unit.capacityHp ? `${unit.capacityHp} HP` : ""].filter(Boolean).join(" · "), 300),
   };
-  priorHistory.slice(0, 5).forEach((history, index) => {
+  priorHistory.forEach((history, index) => {
     const previousFinding = clean(history.findings, 500);
     const previousNotes = clean(history.technicianInputs?.notes, 400);
     const previousWork = clean(history.actionTaken || list(history.serviceActions).join(", "), 400);
     const previousParts = list(history.partsUsed).slice(0, 8);
+    const previousStatus = normalizeTechnicianStatus(history.technicianStatus);
     const previousDetail = [
+      previousStatus ? `Status: ${technicianStatusLabel(previousStatus)}.` : "",
       previousFinding,
       previousNotes && previousNotes.toLowerCase() !== previousFinding.toLowerCase() ? `Notes: ${previousNotes}` : "",
       previousParts.length ? `Parts: ${previousParts.join(", ")}` : "",
@@ -122,6 +185,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       service_date: dateKey(serviceHistory.serviceDate),
       service_type: serviceTypeFor(serviceHistory),
       condition,
+      technician_status: progression.currentStatus,
       findings,
       technician_notes: distinctNotes,
       observation_text: concernEvidence,
@@ -131,6 +195,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       customer_notes: customerNotes,
       customer_other_observation: customerOther,
     },
+    progression,
     unit: {
       brand: clean(unit.brand, 80),
       model: clean(unit.modelName || unit.model, 120),
@@ -148,7 +213,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       severity_ranges_days: FOLLOW_UP_RANGE,
       instruction: "Choose an exact evidence-based day count within the selected severity range. Use the routine baseline only when no condition-based concern is indicated.",
     },
-    allowed_affected_components: componentCandidates(`${concernEvidence} ${parts.join(" ")}`),
+    allowed_affected_components: [...new Set([...componentCandidates(`${concernEvidence} ${parts.join(" ")}`), ...progression.unresolvedComponents])],
     fact_catalog: facts,
   };
 }
@@ -166,20 +231,26 @@ function validVisitAnalysis(raw, evidence = {}) {
   const factIds = Object.keys(evidence.fact_catalog || {});
   if (new Set(raw.evidence_fact_ids).size !== raw.evidence_fact_ids.length || !raw.evidence_fact_ids.every((id) => factIds.includes(id))) return false;
   if (!raw.evidence_fact_ids.includes("latest_observations")) return false;
-  const recordedFindings = evidence.visit?.observation_text || evidence.visit?.findings || "";
+  const recordedFindings = [evidence.visit?.observation_text || evidence.visit?.findings || "", ...(evidence.progression?.currentIssues || [])].join(" ");
+  const technicianStatus = evidence.visit?.technician_status || "";
+  const activeFindings = technicianStatus === "completed" && !(evidence.progression?.currentIssues || []).length ? "" : recordedFindings;
   // Completed work (for example, "replaced the filter") is not evidence that
   // another replacement or repair is still required. Future-risk decisions
   // must be supported by the technician's findings themselves.
-  if (raw.repair_or_replacement === "replacement_may_be_needed" && !replacementSignal(recordedFindings)) return false;
-  if (raw.repair_or_replacement === "repair_may_be_needed" && !repairSignal(recordedFindings)) return false;
-  if (raw.severity === "urgent" && !urgentSignal(recordedFindings)) return false;
-  if (raw.severity === "critical" && !criticalSignal(recordedFindings)) return false;
-  if (raw.follow_up_action === "repair_assessment" && !repairSignal(recordedFindings)) return false;
-  if (raw.risk_type === "no_problem_indicated" && (repairSignal(recordedFindings) || /condition:\s*(?:fair|poor)/i.test(recordedFindings) || raw.severity !== "routine" || raw.follow_up_action !== "routine_cleaning" || raw.repair_or_replacement !== "not_indicated" || raw.affected_component !== "not_specified")) return false;
+  if (raw.repair_or_replacement === "replacement_may_be_needed" && !replacementSignal(activeFindings)) return false;
+  if (raw.repair_or_replacement === "repair_may_be_needed" && !repairSignal(activeFindings)) return false;
+  if (raw.severity === "urgent" && !urgentSignal(activeFindings)) return false;
+  if (raw.severity === "critical" && !criticalSignal(activeFindings)) return false;
+  if (raw.follow_up_action === "repair_assessment" && !repairSignal(activeFindings)) return false;
+  if (raw.risk_type === "no_problem_indicated" && (repairSignal(activeFindings) || /condition:\s*(?:fair|poor)/i.test(activeFindings) || raw.severity !== "routine" || raw.follow_up_action !== "routine_cleaning" || raw.repair_or_replacement !== "not_indicated" || raw.affected_component !== "not_specified")) return false;
   if (raw.risk_type === "no_problem_indicated" && raw.follow_up_days !== evidence.existing_schedule?.baseline_interval_days) return false;
   if (raw.risk_type !== "no_problem_indicated" && raw.severity === "routine") return false;
-  if (!riskSupported(raw.risk_type, recordedFindings)) return false;
+  if (!riskSupported(raw.risk_type, activeFindings)) return false;
   if (raw.evidence_confidence === "high" && raw.affected_component === "not_specified" && raw.risk_type !== "no_problem_indicated") return false;
+  if (["for_repair", "for_further_inspection"].includes(technicianStatus) && raw.risk_type === "no_problem_indicated") return false;
+  if (technicianStatus === "for_repair" && raw.follow_up_action !== "repair_assessment") return false;
+  if (technicianStatus === "for_further_inspection" && raw.follow_up_action !== "inspection") return false;
+  if (technicianStatus === "completed" && !(evidence.progression?.currentIssues || []).length && raw.risk_type !== "no_problem_indicated") return false;
   return true;
 }
 
@@ -223,14 +294,17 @@ const componentFor = (text) => componentCandidates(String(text || "")).find((com
 // keeps a recorded component concern actionable until that later AI review
 // completes; it does not diagnose a failed part or promise a replacement.
 const recordedFollowUpAnalysis = (evidence = {}) => {
-  const observation = evidence.visit?.observation_text || evidence.visit?.findings || "";
+  const status = evidence.visit?.technician_status || "";
+  const unresolved = evidence.progression?.currentIssues || [];
+  const observation = [evidence.visit?.observation_text || evidence.visit?.findings || "", ...unresolved].join(" ");
   const component = componentFor(`${observation} ${(evidence.visit?.parts_used || []).join(" ")}`);
-  const hasConcern = repairSignal(observation) || component !== "not_specified" || /condition:\s*(?:fair|poor)/i.test(observation);
+  const latestCompletedWithoutOpenIssue = status === "completed" && unresolved.length === 0;
+  const hasConcern = !latestCompletedWithoutOpenIssue && (unresolved.length > 0 || status === "for_repair" || status === "for_further_inspection" || repairSignal(observation) || component !== "not_specified" || /condition:\s*(?:fair|poor)/i.test(observation));
   if (!hasConcern) return null;
   const critical = criticalSignal(observation);
   const urgent = !critical && urgentSignal(observation) && /overheat|major leak|completely broken|urgent|fail(?:ed|ing|ure)?/i.test(concernText(observation));
   const severity = critical ? "critical" : urgent ? "urgent" : component !== "not_specified" ? "soon" : "monitor";
-  const followUpDays = critical ? 2 : urgent ? 5 : severity === "soon" ? 14 : 45;
+  const followUpDays = critical ? 2 : urgent ? 5 : status === "for_repair" ? 10 : status === "for_further_inspection" ? 14 : severity === "soon" ? 14 : 45;
   const explicitReplacement = replacementSignal(observation);
   const explicitRepair = /\brepair\b/i.test(concernText(observation));
   const riskType = /electrical|wiring|wire|capacitor|breaker|sparking|smoke|burning|unsafe|fire risk|stop using/i.test(concernText(observation))
@@ -245,9 +319,9 @@ const recordedFollowUpAnalysis = (evidence = {}) => {
     risk_type: riskType,
     affected_component: component,
     evidence_confidence: component !== "not_specified" ? "high" : "medium",
-    follow_up_action: explicitReplacement || explicitRepair ? "repair_assessment" : "inspection",
+    follow_up_action: status === "for_further_inspection" ? "inspection" : status === "for_repair" || explicitReplacement || explicitRepair ? "repair_assessment" : "inspection",
     follow_up_days: followUpDays,
-    repair_or_replacement: explicitReplacement ? "replacement_may_be_needed" : explicitRepair ? "repair_may_be_needed" : "inspection_needed",
+    repair_or_replacement: explicitReplacement ? "replacement_may_be_needed" : status === "for_repair" || explicitRepair ? "repair_may_be_needed" : "inspection_needed",
     evidence_fact_ids: ["latest_observations"],
   };
 };
@@ -301,8 +375,9 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const customerIssue = clean(serviceHistory.customerInputs?.reportedIssue, 700);
   const customerNotes = clean(serviceHistory.customerInputs?.notes, 700);
   const customerOther = clean(serviceHistory.customerInputs?.other, 700);
+  const progression = evidence.progression || buildVisitProgression({ serviceHistory });
   const visitLabel = serviceLabel(serviceTypeFor(serviceHistory));
-  const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded: ${sentence(finding)}${distinctNotes ? ` Additional notes: ${sentence(distinctNotes)}` : ""}${parts.length ? ` Parts recorded: ${sentence(parts.join(", "))}` : ""} Work completed: ${sentence(work)}`;
+  const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded${progression.currentStatus ? ` a status of ${progression.currentStatusLabel}` : ""}: ${sentence(finding)}${distinctNotes ? ` Additional notes: ${sentence(distinctNotes)}` : ""}${parts.length ? ` Parts recorded: ${sentence(parts.join(", "))}` : ""} Work completed: ${sentence(work)}`;
   const customerContext = [customerIssue, customerNotes, customerOther].filter(Boolean);
   const recordedContext = customerContext.length
     ? `${recorded} Customer observations considered: ${customerContext.map(sentence).join(" ")}`
@@ -318,7 +393,7 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     ? "The technician recorded normal cooling or operation after the completed service."
     : "The completed report does not record a separate overall cooling-performance result.";
   const componentConcern = analysis
-    ? `${affectedComponent === "not_specified" ? "A recorded symptom" : `A recorded ${componentLabel} concern`} requires verification; this is not a confirmed mechanical diagnosis.`
+    ? `${affectedComponent === "not_specified" ? "A recorded symptom" : `A recorded ${componentLabel} concern`} remains open and requires verification; this is not a confirmed mechanical diagnosis.`
     : "No separate component concern was identified from the completed report.";
   const recommendedPart = analysis && affectedComponent !== "not_specified" ? PART_BY_COMPONENT[affectedComponent] || "Component to be confirmed during inspection" : "No part recommendation is supported by the recorded report.";
   const partRecommendationStatus = analysis && affectedComponent !== "not_specified" ? "inspection_required" : "not_indicated";
@@ -341,11 +416,16 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     ? `${componentConcern} Recorded detail: ${sentence(finding)} Work performed: ${sentence(work)} ${followUp}`
     : `${overallCondition} ${followUp}`;
   return {
-    analysisVersion: 5,
+    analysisVersion: 6,
     provider: ai ? "openai" : "system-fallback",
     status: ai ? "completed" : "unavailable",
     whatHappened: `${visitLabel}: ${work}`,
     problemsFound: [finding, distinctNotes].filter(Boolean).join(" "),
+    currentStatus: progression.currentStatusLabel,
+    technicianRecorded: progression.technicianRecorded,
+    previousVisitHistory: progression.previousVisitHistory,
+    currentIssues: progression.currentIssues,
+    completedWork: progression.completedWork,
     overallCondition,
     componentConcern,
     severity: analysis?.severity || "not_assessed",

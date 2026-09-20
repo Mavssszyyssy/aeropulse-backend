@@ -42,11 +42,19 @@ const summarizePriorityUnit = (unit) => unit ? {
   reason: unit.amp?.whyThisDate || unit.amp?.recommendationBasis || unit.amp?.visitFollowUp?.whyThisDate || "",
   severity: unit.amp?.visitFollowUp?.severity || "",
   affectedComponent: unit.amp?.visitFollowUp?.affectedComponent || "",
+  currentStatus: unit.amp?.visitFollowUp?.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
+  previousVisitHistory: Array.isArray(unit.amp?.visitFollowUp?.previousVisitHistory) ? unit.amp.visitFollowUp.previousVisitHistory : [],
+  currentIssues: Array.isArray(unit.amp?.visitFollowUp?.currentIssues) ? unit.amp.visitFollowUp.currentIssues : [],
+  completedWork: Array.isArray(unit.amp?.visitFollowUp?.completedWork) ? unit.amp.visitFollowUp.completedWork : [],
+  recommendedPart: unit.amp?.visitFollowUp?.recommendedPart || "",
+  nextPossibleVisit: unit.amp?.visitFollowUp?.recommendedDate || unit.amp?.bestServicedBy || null,
   recommendedActions: Array.isArray(unit.amp?.visitFollowUp?.recommendedActions)
     ? unit.amp.visitFollowUp.recommendedActions.filter(Boolean).slice(0, 3)
     : [],
+  // Keep the original visit facts separate from the generated assessment. The
+  // manager dashboard renders these as labeled decision-support fields.
   latestServiceDate: unit.lastVisit?.serviceDate || null,
-  technicianRecorded: concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
+  technicianRecorded: unit.amp?.visitFollowUp?.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
   workCompleted: concise(unit.lastVisit?.actionTaken) || (Array.isArray(unit.lastVisit?.serviceActions)
     ? unit.lastVisit.serviceActions.filter(Boolean).join("; ")
     : ""),
@@ -145,7 +153,7 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     { $match: unitMatch },
     { $lookup: { from: "servicehistories", let: { unitId: "$_id" }, pipeline: [
       { $match: { $expr: { $eq: ["$unit", "$$unitId"] } } }, { $sort: { serviceDate: -1 } }, { $limit: 1 },
-      { $project: { serviceDate: 1, serviceType: 1, visitType: 1, findings: 1, actionTaken: 1, partsUsed: 1, serviceActions: 1, technicianInputs: 1, customerInputs: 1 } },
+      { $project: { serviceDate: 1, serviceType: 1, visitType: 1, technicianStatus: 1, findings: 1, actionTaken: 1, partsUsed: 1, serviceActions: 1, technicianInputs: 1, customerInputs: 1 } },
     ], as: "lastVisit" } },
     { $addFields: { lastVisit: { $first: "$lastVisit" } } },
     { $sort: { "amp.bestServicedBy": 1, _id: 1 } },
@@ -228,8 +236,15 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         patternAnalysis: unit.amp.patternAnalysis || null,
         maintenanceSignals: unit.amp.maintenanceSignals || null,
         condition: unit.amp.visitFollowUp?.condition || "",
+        currentStatus: unit.amp.visitFollowUp?.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
+        technicianRecorded: unit.amp.visitFollowUp?.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
+        previousVisitHistory: unit.amp.visitFollowUp?.previousVisitHistory || [],
+        currentIssues: unit.amp.visitFollowUp?.currentIssues || [],
+        completedWork: unit.amp.visitFollowUp?.completedWork || [],
         affectedComponent: unit.amp.visitFollowUp?.affectedComponent || "",
         severity: unit.amp.visitFollowUp?.severity || "",
+        recommendedPart: unit.amp.visitFollowUp?.recommendedPart || "",
+        nextPossibleVisit: unit.amp.visitFollowUp?.recommendedDate || unit.amp.bestServicedBy || null,
         recommendedActions: unit.amp.visitFollowUp?.recommendedActions || [],
       };
     }),
