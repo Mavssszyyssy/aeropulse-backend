@@ -21,7 +21,12 @@ const loadController = ({ items = null, anyStored = true } = {}) => {
     "../models/Notification": {
       find: (query) => {
         findQueries.push(query);
-        return { sort() { return this; }, limit: async () => visibleItems };
+        return {
+          select() { return this; },
+          sort() { return this; },
+          limit() { return this; },
+          lean: async () => visibleItems,
+        };
       },
       exists: async () => anyStored,
       insertMany: async (created) => created,
@@ -31,7 +36,7 @@ const loadController = ({ items = null, anyStored = true } = {}) => {
       },
     },
     "../models/User": {
-      findById: () => ({ select: async () => user }),
+      findById: () => ({ select() { return this; }, lean: async () => user }),
     },
   };
   const path = require.resolve("../src/controllers/notificationController");

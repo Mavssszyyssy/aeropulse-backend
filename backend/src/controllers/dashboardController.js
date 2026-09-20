@@ -96,7 +96,11 @@ const getTopProducts = (paidOrders, limit = 5) => {
 };
 
 const getCommerceAnalytics = async (branch = "") => {
-  const orders = await Order.find(getOrderQuery(branch)).lean();
+  // Analytics never renders addresses, receipts, QR serials, provider
+  // responses or fulfillment timelines. Select only fields used below.
+  const orders = await Order.find(getOrderQuery(branch))
+    .select("workflowStatus status paymentStatus totalAmount paymongo.paidAt createdAt paymentMethod customerBranch stockSourceBranch items.productId items.name items.quantity items.price")
+    .lean();
   const paidOrders = orders.filter(isPaid);
   const sellableOrders = orders.filter((order) => !isCancelled(order));
   const revenue = paidOrders.reduce((sum, order) => sum + safeAmount(order), 0);
@@ -159,7 +163,9 @@ const getCommerceAnalytics = async (branch = "") => {
 };
 
 const getCustomerAcquisitionBySource = async () => {
-  const customers = await User.find({ role: "customer" }).lean();
+  const customers = await User.find({ role: "customer" })
+    .select("sourceOfAcquisition")
+    .lean();
   const sourceData = new Map();
   customers.forEach((customer) => {
     const source = String(customer.sourceOfAcquisition || "other").replace(/_/g, " ").toUpperCase();
@@ -182,7 +188,9 @@ const activeTechnicianQuery = (activeBranch = "") => {
 
 const getTechnicianKPIs = async (activeBranch = "") => {
   const techQuery = activeTechnicianQuery(activeBranch);
-  const technicians = await User.find(techQuery).lean();
+  const technicians = await User.find(techQuery)
+    .select("name name_first name_last email activeBranch assignedBranch")
+    .lean();
   const today = startOfToday();
   const weekStart = new Date(Date.now() - 7 * DAY_MS);
   weekStart.setHours(0, 0, 0, 0);
@@ -190,21 +198,52 @@ const getTechnicianKPIs = async (activeBranch = "") => {
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
 
-  const results = await Promise.all(technicians.map(async (tech) => ({
-    id: String(tech._id),
-    name: tech.name || `${tech.name_first || ""} ${tech.name_last || ""}`.trim() || tech.email || "Technician",
-    branch: tech.activeBranch || tech.assignedBranch || "",
-    completedToday: await Task.countDocuments({ assignedTechnicianId: String(tech._id), status: "completed", completedAt: { $gte: today } }),
-    completedWeek: await Task.countDocuments({ assignedTechnicianId: String(tech._id), status: "completed", completedAt: { $gte: weekStart } }),
-    completedMonth: await Task.countDocuments({ assignedTechnicianId: String(tech._id), status: "completed", completedAt: { $gte: monthStart } }),
-  })));
+  // One grouped task read replaces three count queries per technician. This
+  // keeps dashboard latency stable as branches add more technicians.
+  const technicianIds = technicians.map((tech) => String(tech._id));
+  const completionRows = technicianIds.length
+    ? await Task.aggregate([
+      {
+        $match: {
+          assignedTechnicianId: { $in: technicianIds },
+          status: "completed",
+          completedAt: { $gte: monthStart },
+        },
+      },
+      {
+        $group: {
+          _id: "$assignedTechnicianId",
+          completedToday: { $sum: { $cond: [{ $gte: ["$completedAt", today] }, 1, 0] } },
+          completedWeek: { $sum: { $cond: [{ $gte: ["$completedAt", weekStart] }, 1, 0] } },
+          completedMonth: { $sum: 1 },
+        },
+      },
+    ])
+    : [];
+  const completionsByTechnician = new Map(
+    completionRows.map((row) => [String(row._id), row]),
+  );
+  const results = technicians.map((tech) => {
+    const completion = completionsByTechnician.get(String(tech._id)) || {};
+    return {
+      id: String(tech._id),
+      name: tech.name || `${tech.name_first || ""} ${tech.name_last || ""}`.trim() || tech.email || "Technician",
+      branch: tech.activeBranch || tech.assignedBranch || "",
+      completedToday: Number(completion.completedToday || 0),
+      completedWeek: Number(completion.completedWeek || 0),
+      completedMonth: Number(completion.completedMonth || 0),
+    };
+  });
   return results.sort((left, right) => right.completedMonth - left.completedMonth);
 };
 
 const getTechnicianDashboard = async (activeBranch = "") => {
   const taskQuery = { assignedRole: "technician" };
   if (activeBranch) taskQuery.$or = [{ branch: activeBranch }, { branch: "" }, { branch: { $exists: false } }];
-  const tasks = await Task.find(taskQuery).sort({ createdAt: -1 }).limit(20);
+  const tasks = await Task.find(taskQuery)
+    .select("-proof.beforePhotos -proof.afterPhotos -proof.customerSignature.signature -payload.proof -payload.beforePhotos -payload.afterPhotos -payload.beforePhotoUri -payload.afterPhotoUri -payload.customerSignature -payload.signature")
+    .sort({ createdAt: -1 })
+    .limit(20);
   const today = startOfToday();
   return {
     stats: {

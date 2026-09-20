@@ -2969,7 +2969,6 @@ const getOrderByIdForAdmin = async (req, res) => {
 };
 
 const getMyOrderSummary = async (req, res) => {
-  const orders = await Order.find({ customer: req.authUser._id });
   const summary = {
     toPay: 0,
     toDeliver: 0,
@@ -2980,14 +2979,24 @@ const getMyOrderSummary = async (req, res) => {
     cancelled: 0,
   };
 
-  orders.forEach((order) => {
-    if (order.workflowStatus === "to_pay") summary.toPay += 1;
-    if (order.workflowStatus === "to_deliver") summary.toDeliver += 1;
-    if (order.workflowStatus === "to_dispatch") summary.toDispatch += 1;
-    if (order.workflowStatus === "to_install") summary.toInstall += 1;
-    if (order.workflowStatus === "for_rescheduling") summary.forRescheduling += 1;
-    if (order.workflowStatus === "complete") summary.complete += 1;
-    if (order.workflowStatus === "cancelled") summary.cancelled += 1;
+  // The dashboard only needs seven counters. Group in MongoDB instead of
+  // transferring every historic order, item, receipt and payment payload.
+  const counts = await Order.aggregate([
+    { $match: { customer: req.authUser._id } },
+    { $group: { _id: "$workflowStatus", count: { $sum: 1 } } },
+  ]);
+  const summaryKeyByStatus = {
+    to_pay: "toPay",
+    to_deliver: "toDeliver",
+    to_dispatch: "toDispatch",
+    to_install: "toInstall",
+    for_rescheduling: "forRescheduling",
+    complete: "complete",
+    cancelled: "cancelled",
+  };
+  counts.forEach(({ _id: status, count }) => {
+    const key = summaryKeyByStatus[status];
+    if (key) summary[key] = Number(count || 0);
   });
 
   return res.json({ summary });
@@ -3025,11 +3034,45 @@ const listOrdersForAdmin = async (req, res) => {
     });
   }
 
+  const compactView = String(req.query?.view || "").toLowerCase() === "compact";
+  if (compactView) {
+    const requestedLimit = Number(req.query?.limit);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500)
+      : 200;
+    // Read-only sales and alert screens do not display QR assignments,
+    // addresses, receipts, provider responses or fulfillment timelines.
+    // Skip inventory hydration and return only the fields they render.
+    const orders = await Order.find(query)
+      .select([
+        "orderCode",
+        "customerName",
+        "items.name",
+        "items.quantity",
+        "paymentMethod",
+        "paymentStatus",
+        "workflowStatus",
+        "totalAmount",
+        "customerBranch",
+        "stockSourceBranch",
+        "createdAt",
+        "updatedAt",
+      ].join(" "))
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return res.json({
+      orders: orders.map(orderToResponse),
+      compact: true,
+      limit,
+    });
+  }
+
   // The provider's raw checkout payload is only needed on an order detail or
   // payment verification call. Excluding it from the list keeps a single
   // PayMongo test checkout from inflating every Admin synchronization read.
   const orders = await Order.find(query)
-    .select("-paymongo.raw")
+    .select("-paymongo.raw -proofOfPayment.imageUrl")
     .sort({ createdAt: -1 })
     .lean();
   // Admin Services obtains the richer task cards from /tasks.  Skipping that

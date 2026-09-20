@@ -57,7 +57,10 @@ const sanitizeLegacyNotifications = (notifications, role = "customer") => {
 
   const messages = roleMessages(normalizedRole);
   return notifications.map((item) => {
-    const json = item.toJSON();
+    const json = item.toJSON ? item.toJSON() : { ...item };
+    if (!json.id && json._id) json.id = String(json._id);
+    delete json._id;
+    delete json.__v;
     if (
       json.title === "Welcome to AeroPulse" &&
       String(json.message || "").includes("shop, book services, and track orders")
@@ -90,7 +93,9 @@ const applyNotificationPreferences = (notifications = [], preferences = {}) =>
 const listMyNotifications = async (req, res) => {
   res.set("Cache-Control", "no-store");
   const userId = req.authUser._id;
-  const user = await User.findById(userId).select("notifications lastLogin role");
+  const user = await User.findById(userId)
+    .select("notifications lastLogin role")
+    .lean();
   const userNotifications = user?.notifications?.toObject?.() || user?.notifications || {};
   if (userNotifications.inApp === false) {
     return res.json({ notifications: [], unreadCount: 0 });
@@ -103,7 +108,12 @@ const listMyNotifications = async (req, res) => {
   const archiveScope = archivedView
     ? { archivedAt: { $ne: null } }
     : { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] };
-  let notifications = await Notification.find({ user: userId, ...archiveScope }).sort({ createdAt: -1 }).limit(100);
+  const notificationFields = "type branch category severity title message route targetId targetType dedupeKey status unread archivedAt createdAt updatedAt";
+  let notifications = await Notification.find({ user: userId, ...archiveScope })
+    .select(notificationFields)
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
 
   const hasAnyStoredNotification = notifications.length > 0
     || Boolean(await Notification.exists({ user: userId }));
@@ -131,14 +141,18 @@ const listMyNotifications = async (req, res) => {
         message: statusMessage,
       },
     ]);
-    notifications = await Notification.find({ user: userId, ...archiveScope }).sort({ createdAt: -1 }).limit(100);
+    notifications = await Notification.find({ user: userId, ...archiveScope })
+      .select(notificationFields)
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
   }
 
   const activeNotifications = archivedView
     ? await Notification.find({
       user: userId,
       $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }],
-    }).sort({ createdAt: -1 }).limit(100)
+    }).select(notificationFields).sort({ createdAt: -1 }).limit(100).lean()
     : notifications;
   const unreadCount = applyNotificationPreferences(activeNotifications, userNotifications)
     .filter((item) => item.unread || item.status === "unread").length;

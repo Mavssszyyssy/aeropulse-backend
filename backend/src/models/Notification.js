@@ -66,6 +66,12 @@ notificationSchema.post("insertMany", async function sendPushForInsertedNotifica
   }));
 });
 
+// Notification drawers always read one user's newest active or archived
+// alerts. Compound indexes avoid scanning that user's complete history during
+// web and mobile polling.
+notificationSchema.index({ user: 1, archivedAt: 1, createdAt: -1 });
+notificationSchema.index({ user: 1, status: 1, archivedAt: 1 });
+
 notificationSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();

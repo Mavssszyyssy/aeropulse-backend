@@ -27,6 +27,27 @@ const normalizeStatus = (value = "", fallback = "Pending") =>
   normalizeServiceRequestStatus(value, fallback);
 
 const ACTIVE_REQUEST_STATUSES = ["Submitted", "Reviewed", "Assigned", "In Progress", "Pending"];
+const SERVICE_REQUEST_LIST_PROJECTION = [
+  "-payload.proof",
+  "-payload.beforePhotos",
+  "-payload.afterPhotos",
+  "-payload.beforePhotoUri",
+  "-payload.afterPhotoUri",
+  "-payload.customerSignature",
+  "-payload.signature",
+].join(" ");
+
+const requestPage = (query = {}) => {
+  const requestedLimit = Number(query.limit);
+  const requestedPage = Number(query.page);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
+    : 200;
+  const page = Number.isFinite(requestedPage)
+    ? Math.max(Math.floor(requestedPage), 1)
+    : 1;
+  return { limit, page, skip: (page - 1) * limit };
+};
 
 const hydrateRequestResponse = (request) => {
   const json = request.toJSON ? request.toJSON() : request;
@@ -277,8 +298,17 @@ const listServiceRequests = async (req, res) => {
     if (technicianId) query.assignedTechnicianId = technicianId;
     if (unitId) query.unitId = unitId;
 
-    const requests = await ServiceRequest.find(query).sort({ createdAt: -1 }).limit(200);
-    return res.json({ requests: requests.map(hydrateRequestResponse) });
+    const { limit, page, skip } = requestPage(req.query);
+    const requests = await ServiceRequest.find(query)
+      .select(SERVICE_REQUEST_LIST_PROJECTION)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    return res.json({
+      requests: requests.map(hydrateRequestResponse),
+      pagination: { page, limit, hasMore: requests.length === limit },
+    });
   } catch (error) {
     console.error("Failed to list service requests:", error);
     return res.status(500).json({ message: "Failed to list service requests" });
@@ -329,10 +359,17 @@ const createServiceRequest = async (req, res) => {
 
 const listMyServiceRequests = async (req, res) => {
   try {
+    const { limit, page, skip } = requestPage(req.query);
     const requests = await ServiceRequest.find({ $or: [{ createdBy: req.authUser._id }, { customerId: String(req.authUser._id) }] })
+      .select(SERVICE_REQUEST_LIST_PROJECTION)
       .sort({ createdAt: -1 })
-      .limit(200);
-    return res.json({ requests: requests.map(hydrateRequestResponse) });
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    return res.json({
+      requests: requests.map(hydrateRequestResponse),
+      pagination: { page, limit, hasMore: requests.length === limit },
+    });
   } catch (error) {
     console.error("Failed to list my service requests:", error);
     return res.status(500).json({ message: "Failed to list service requests" });
