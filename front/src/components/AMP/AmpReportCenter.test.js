@@ -45,7 +45,7 @@ it("shows the AI follow-up separately from the technician's original service rec
     aiInterpretation: { provider: "openai", customerSummary: "The fan should be inspected within 30 days." },
   }] }} onClose={vi.fn()} />);
   expect(screen.getByText(/Fan made an unusual noise/)).toBeVisible();
-  expect(screen.getByText("AI follow-up recommendation")).toBeVisible();
+  expect(screen.getByText("AI-reviewed follow-up plan")).toBeVisible();
   expect(screen.getByText("The fan should be inspected within 30 days.")).toBeVisible();
 });
 
