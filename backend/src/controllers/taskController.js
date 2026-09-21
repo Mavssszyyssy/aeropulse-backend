@@ -986,8 +986,11 @@ const hydrateTaskResponse = (task, { includeProofMedia = true } = {}) => {
     proof,
     registrationProgress: progress,
     status: task.status,
-    createdAt: payload.createdAt || task.createdAt,
-    updatedAt: payload.updatedAt || task.updatedAt,
+    // Canonical Task timestamps describe the current work-order record. Order
+    // payload timestamps can be older and must not make a recent task appear
+    // old in technician lists.
+    createdAt: task.createdAt || payload.createdAt,
+    updatedAt: task.updatedAt || payload.updatedAt,
   };
 };
 
