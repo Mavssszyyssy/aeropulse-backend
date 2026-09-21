@@ -598,6 +598,7 @@ const technicianReportPayload = (payload = {}) => Object.fromEntries(Object.entr
   additionalCost: payload.additionalCost,
   notes: payload.notes,
   customerAdvice: payload.customerAdvice,
+  clientMutationId: String(payload.clientMutationId || "").trim().slice(0, 160) || undefined,
   proofSubmittedAt: payload.proofSubmittedAt,
   proof: payload.proof,
   completionNotes: payload.completionNotes,
@@ -2071,6 +2072,7 @@ const updateTaskStatus = async (req, res) => {
 module.exports = {
   ensureInstalledCustomerUnitsForTask,
   buildCustomerTaskScopeQuery,
+  technicianReportPayload,
   listTasks,
   createTask,
   updateTask,

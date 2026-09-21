@@ -1,6 +1,7 @@
 const User = require("../models/User");
 
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
+const PUSH_SEND_TIMEOUT_MS = 4000;
 
 function resolveRoute(notification, role) {
   const explicitRoute = String(notification.route || "");
@@ -50,8 +51,11 @@ function canReceivePush(user, type = "system") {
   return true;
 }
 
-async function sendPushForNotification(notification) {
-  if (typeof fetch !== "function") return;
+async function sendPushForNotification(notification, {
+  fetchImpl = globalThis.fetch,
+  timeoutMs = PUSH_SEND_TIMEOUT_MS,
+} = {}) {
+  if (typeof fetchImpl !== "function") return;
 
   const user = await User.findById(notification.user).select("expoPushTokens notifications role");
   if (!user || !canReceivePush(user, notification.type)) return;
@@ -73,12 +77,26 @@ async function sendPushForNotification(notification) {
     },
   }));
 
-  const response = await fetch(EXPO_PUSH_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(messages),
-  });
-  if (!response.ok) throw new Error(`Expo push service returned ${response.status}`);
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), Math.max(100, Number(timeoutMs) || PUSH_SEND_TIMEOUT_MS))
+    : null;
+  try {
+    const response = await fetchImpl(EXPO_PUSH_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(messages),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response.ok) throw new Error(`Expo push service returned ${response.status}`);
+  } catch (error) {
+    if (controller?.signal.aborted) {
+      throw new Error("Expo push delivery timed out; the in-app notification remains saved.");
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
-module.exports = { canReceivePush, resolveRoute, sendPushForNotification };
+module.exports = { PUSH_SEND_TIMEOUT_MS, canReceivePush, resolveRoute, sendPushForNotification };

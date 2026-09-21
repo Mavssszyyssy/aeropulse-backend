@@ -52,7 +52,8 @@ const requestPage = (query = {}) => {
 const hydrateRequestResponse = (request) => {
   const json = request.toJSON ? request.toJSON() : request;
   const payload = request.payload && Object.keys(request.payload).length ? request.payload : null;
-  if (!payload) return { ...json, servicePayment: servicePaymentSummary(request) };
+  const id = String(json.id || json._id || request.id || request._id || "");
+  if (!payload) return { ...json, id, servicePayment: servicePaymentSummary(request) };
   return {
     ...payload,
     ...json,
@@ -71,6 +72,10 @@ const hydrateRequestResponse = (request) => {
     status: payload.status || json.status,
     createdAt: payload.createdAt || json.createdAt,
     updatedAt: payload.updatedAt || json.updatedAt,
+    // Lean list queries do not run the model's toJSON transform. Always expose
+    // the persisted request ID so customer and admin status actions target the
+    // same service request instead of a client-generated placeholder.
+    id,
   };
 };
 
@@ -758,6 +763,7 @@ const updateServiceRequestStatus = async (req, res) => {
 };
 
 module.exports = {
+  hydrateRequestResponse,
   listServiceRequests,
   createServiceRequest,
   listMyServiceRequests,
