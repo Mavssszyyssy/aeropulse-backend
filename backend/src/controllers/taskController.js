@@ -154,13 +154,13 @@ const assertCanCompleteTask = (task) => {
 
   return {
     status: 409,
-    message: "Register all assigned AC unit QR labels before completing this task.",
+    message: "Verify all assigned AC units before completing this task.",
     progress,
   };
 };
 
 const assertInstallationProof = (task, proof, payload = {}) => {
-  // An installation is complete once its assigned QR unit is registered and
+  // An installation is complete once its assigned inventory unit is registered and
   // the technician has supplied an installed-unit photo. Customer details are
   // authoritative order data, so technicians must never retype or sign them.
   const isService = Boolean(task.payload?.requestId || task.unitId);
@@ -392,8 +392,8 @@ const upsertInstalledCustomerUnit = async ({ task, product, serialUnit, registra
         serviceType: "installation",
         conditionRating: "good",
         findings: "Installation completed and assigned AC unit registration verified.",
-        actionTaken: "Installed AC unit and verified its assigned QR serial.",
-        serviceActions: ["Installed AC unit", "Verified assigned QR serial"],
+        actionTaken: "Installed AC unit and verified its assigned inventory serial.",
+        serviceActions: ["Installed AC unit", "Verified assigned inventory serial"],
         technicianInputs: {
           notes: String(registration.ampParameters?.notes || "Installation completed and unit registration verified."),
         },
@@ -885,9 +885,13 @@ const buildRegistrationRecord = ({ req, task, serialNumber, payload, status }) =
     conditionRating: String(payload.conditionRating || "good"),
     notes: String(payload.notes || ""),
   };
+  const registrationSource = payload.registrationSource === "manual_serial"
+    ? "manual_serial"
+    : "qr_scan";
 
   return {
     serialNumber,
+    registrationSource,
     status,
     taskId: String(task._id || task.id || ""),
     taskCode: task.taskCode,
@@ -1847,7 +1851,7 @@ const registerAmpUnit = async (req, res) => {
       return res.status(409).json({ message: "Confirm that the customer is present before registering the installed AC unit." });
     }
     if (!hasVerifiedTaskCheckIn(task)) {
-      return res.status(409).json({ message: "Record a verified GPS check-in at the customer location before scanning the assigned AC unit." });
+      return res.status(409).json({ message: "Record a verified GPS check-in at the customer location before verifying the assigned AC unit." });
     }
     const arrivalBlocker = installationArrivalBlocker(task);
     if (arrivalBlocker) return res.status(409).json({ message: arrivalBlocker });
@@ -1866,7 +1870,7 @@ const registerAmpUnit = async (req, res) => {
     const normalizedSerialNumber = assignedSerial || serialNumber;
     const { product, serialUnit } = await findProductSerialUnit(normalizedSerialNumber);
     if (!product || !serialUnit) {
-      return res.status(404).json({ message: "The assigned QR serial was not found in inventory. Ask an administrator to repair the order inventory before continuing." });
+      return res.status(404).json({ message: "The assigned AC serial was not found in inventory. Ask an administrator to repair the order inventory before continuing." });
     }
     const previousPlan =
       getAmpRegistrations(task)[normalizedSerialNumber]?.ampServicePlan ||
