@@ -26,5 +26,12 @@ test("push alerts respect category preferences and valid mobile routes", () => {
     "/technician/task/TSK-1/information",
   );
   assert.equal(resolveRoute({ route: "/customer/service-requests" }, "customer"), "/customer/services");
+  assert.equal(resolveRoute({
+    route: "/customer/orders",
+    type: "order",
+    targetType: "order",
+    targetId: "order-id",
+    message: "Your warranty and active unit record are now available.",
+  }, "customer"), "/customer/orders");
   assert.equal(resolveRoute({ title: "Parts update" }, "technician"), "/technician/tasks");
 });

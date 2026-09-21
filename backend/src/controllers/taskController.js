@@ -565,6 +565,7 @@ const syncOrderWorkflowForTask = async (task, status) => {
       message: `Your AC installation for order ${order.orderCode || ""} is complete. Your warranty and active unit record are now available.`,
       route: "/customer/orders",
       targetId: String(order._id || ""),
+      targetType: "order",
     }));
   }
 };
