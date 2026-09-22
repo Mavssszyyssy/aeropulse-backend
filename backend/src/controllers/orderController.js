@@ -3,7 +3,6 @@ const { isCodOrder, hasCodCollection } = require("../utils/codPayment");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const Task = require("../models/Task");
-const Notification = require("../models/Notification");
 const { createDedupedNotification, notifyOperationalStaff } = require("../services/operationalNotificationService");
 const User = require("../models/User");
 const AuditLog = require("../models/AuditLog");
@@ -1820,54 +1819,24 @@ const notifyBranchAdminsForOrder = async (order) => {
   }
 };
 
-const notifyBranchTechnicians = async (branch, orderCode) => {
-  if (!branch || !orderCode) return;
-  try {
-    const technicians = await User.find({
-      role: "technician",
-      $or: [
-        { assignedBranch: branch },
-        { activeBranch: branch },
-        { assignedBranch: "" },
-        { activeBranch: "" },
-      ],
-    }).select("_id notifications");
-
-    const validNotifications = technicians
-      .filter((tech) => canReceiveNotification(tech, "technician"))
-      .map((tech) => ({
-        user: tech._id,
-        type: "technician",
-        category: "task_assignment",
-        title: "Work order awaiting assignment",
-        message: `A new work order for ${orderCode} is waiting for an Admin to assign and activate it.`,
-        dedupeKey: `unassigned-order-task:${orderCode}:${tech._id}`,
-        unread: true,
-        status: "unread",
-      }));
-
-    if (validNotifications.length > 0) {
-      await Notification.insertMany(validNotifications);
-    }
-  } catch (error) {
-    console.error("Failed to notify technicians:", error);
-  }
-};
-
-const notifyAssignedTechnician = async (technicianId, orderCode, taskCode) => {
+const notifyAssignedTechnician = async (technicianId, orderCode, task = {}) => {
   if (!technicianId) return;
   try {
     const technician = await User.findById(technicianId).select("notifications");
     if (!technician || !canReceiveNotification(technician, "technician")) return;
+    const taskId = String(task?._id || task?.id || "").trim();
+    const taskCode = String(task?.taskCode || "").trim();
     await createDedupedNotification({
       user: technician._id,
       type: "technician",
       category: "task_assignment",
       title: "Work order assigned to you",
       message: `Order ${orderCode} is assigned to you${taskCode ? ` (${taskCode})` : ""}. Open My Work to review it.`,
-      targetId: String(taskCode || orderCode),
+      targetId: taskId || taskCode || orderCode,
       targetType: "task",
-      route: "/technician/tasks",
+      route: taskId
+        ? `/technician/task/${encodeURIComponent(taskId)}/information`
+        : "/technician/tasks?status=pending&schedule=all",
       dedupeKey: `task-assignment:${taskCode || orderCode}:${technician._id}`,
     }, { dedupeMinutes: 0 });
   } catch (error) {
@@ -2037,7 +2006,7 @@ const createTaskForOrder = async (order, options = {}) => {
         await notifyAssignedTechnician(
           assignment.assignedTechnicianId,
           order.orderCode,
-          existingTask.taskCode,
+          existingTask,
         );
       }
     }
@@ -2108,9 +2077,7 @@ const createTaskForOrder = async (order, options = {}) => {
   await task.save();
 
   if (assignment.assignedTechnicianId) {
-    await notifyAssignedTechnician(assignment.assignedTechnicianId, order.orderCode, task.taskCode);
-  } else {
-    await notifyBranchTechnicians(branch, order.orderCode);
+    await notifyAssignedTechnician(assignment.assignedTechnicianId, order.orderCode, task);
   }
   return task;
 };
@@ -3200,7 +3167,6 @@ const recoverOrder = async (req, res) => {
       order.installationDate = synchronizedDate;
     }
     if (form.timeSlot) order.installationTimeSlot = form.timeSlot;
-    await order.save();
 
     const task = await createTaskForOrder(order, {
       assignedTechnicianId: technician.assignedTechnicianId,
@@ -3210,6 +3176,9 @@ const recoverOrder = async (req, res) => {
       timeSlot: form.timeSlot || order.installationTimeSlot || "",
       forceRefreshTask: true,
     });
+    // Create or validate the linked work order before persisting the order
+    // assignment. A scheduling conflict must leave both records unchanged.
+    await order.save();
     const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
     return res.json({
       message: `${technician.assignedTechnicianName} is assigned to ${order.orderCode}. The work order is now in their My Work list.`,

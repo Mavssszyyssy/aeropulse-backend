@@ -68,6 +68,8 @@ test("order and service technician events route staff to the correct admin scree
   assert.match(orderController, /title: "New customer order"[\s\S]*route: "\/admin\/services\/orders"/);
   assert.match(orderController, /type: "technician"[\s\S]*category: "task_assignment"/);
   assert.match(orderController, /dedupeKey: `task-assignment:/);
+  assert.match(orderController, /route: taskId[\s\S]*\/technician\/task\/\$\{encodeURIComponent\(taskId\)\}\/information/);
+  assert.doesNotMatch(orderController, /title: "Work order awaiting assignment"/);
 });
 
 test("notification filtering and warranty decisions preserve workflow integrity", () => {

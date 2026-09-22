@@ -11,6 +11,7 @@ const mongoose = require("mongoose");
 const env = require("./config/env");
 const { getResendEmailConfiguration } = require("./utils/email");
 const { createMemoryRateLimit } = require("./middleware/requestRateLimit");
+const { httpErrorHandler } = require("./middleware/httpErrorHandler");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -188,10 +189,7 @@ if (fs.existsSync(indexHtml)) {
   });
 }
 
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ message: "Internal server error" });
-});
+app.use(httpErrorHandler);
 
 app.use("/api", (_req, res) => {
   res.status(404).json({ message: "API route not found." });

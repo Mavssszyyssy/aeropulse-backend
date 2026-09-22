@@ -88,3 +88,16 @@ test("archiving every notification does not recreate welcome notices", async () 
   await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, res);
   assert.deepEqual(res.data.notifications, []);
 });
+
+test("technicians do not receive obsolete unassigned-order alerts", () => {
+  const fixture = loadController();
+  const items = [
+    { title: "Work order awaiting assignment", dedupeKey: "unassigned-order-task:ORD-1:TECH-1" },
+    { title: "Work order assigned to you", dedupeKey: "task-assignment:TSK-1:TECH-1" },
+  ];
+  assert.deepEqual(
+    fixture.controller.applyRoleRelevance(items, "technician"),
+    [items[1]],
+  );
+  assert.deepEqual(fixture.controller.applyRoleRelevance(items, "admin"), items);
+});

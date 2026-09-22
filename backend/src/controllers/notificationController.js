@@ -90,6 +90,20 @@ const applyNotificationPreferences = (notifications = [], preferences = {}) =>
     return true;
   });
 
+const applyRoleRelevance = (notifications = [], role = "customer") => {
+  if (String(role || "").toLowerCase() !== "technician") return notifications;
+  return notifications.filter((item) => {
+    const title = String(item?.title || "").trim().toLowerCase();
+    const dedupeKey = String(item?.dedupeKey || "").trim().toLowerCase();
+    // Older releases broadcast unassigned orders to every branch technician,
+    // but those orders are intentionally absent from My Work until Admin
+    // chooses a technician. Keep those obsolete, non-actionable alerts out of
+    // both the technician inbox and unread badge.
+    return title !== "work order awaiting assignment"
+      && !dedupeKey.startsWith("unassigned-order-task:");
+  });
+};
+
 const listMyNotifications = async (req, res) => {
   res.set("Cache-Control", "no-store");
   const userId = req.authUser._id;
@@ -154,9 +168,15 @@ const listMyNotifications = async (req, res) => {
       $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }],
     }).select(notificationFields).sort({ createdAt: -1 }).limit(100).lean()
     : notifications;
-  const unreadCount = applyNotificationPreferences(activeNotifications, userNotifications)
+  const unreadCount = applyNotificationPreferences(
+    applyRoleRelevance(activeNotifications, user?.role),
+    userNotifications,
+  )
     .filter((item) => item.unread || item.status === "unread").length;
-  notifications = applyNotificationPreferences(notifications, userNotifications).slice(0, 30);
+  notifications = applyNotificationPreferences(
+    applyRoleRelevance(notifications, user?.role),
+    userNotifications,
+  ).slice(0, 30);
 
   return res.json({
     notifications: sanitizeLegacyNotifications(notifications, user?.role),
@@ -238,4 +258,5 @@ module.exports = {
   archiveNotification,
   restoreNotification,
   registerPushToken,
+  applyRoleRelevance,
 };

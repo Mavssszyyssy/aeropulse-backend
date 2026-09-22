@@ -31,6 +31,52 @@ test('completed order does not recreate or reassign technician work', async () =
   assert.equal(status, 409);
 });
 
+test('assignment conflict does not partially save the order', async () => {
+  let saveCount = 0;
+  const conflict = Object.assign(new Error('Technician schedule conflict'), {
+    status: 409,
+    statusCode: 409,
+  });
+  const order = {
+    id: 'order-fixture',
+    orderCode: 'ORD-FIXTURE',
+    workflowStatus: 'paid',
+    stockSourceBranch: 'Bulacan',
+    customerBranch: 'Bulacan',
+    assignedTechnician: '',
+    installationDate: '2099-10-01',
+    installationTimeSlot: '9:00 AM - 12:00 PM',
+    async save() { saveCount += 1; },
+  };
+  const recover = vm.runInNewContext(`${recoverSource}; recoverOrder`, {
+    getOrderForAdminAction: async () => order,
+    findLinkedTaskForOrder: async () => null,
+    resolveTechnicianAssignment: async () => ({
+      assignedTechnicianId: 'technician-fixture',
+      assignedTechnicianName: 'Available Technician',
+    }),
+    createTaskForOrder: async () => { throw conflict; },
+  });
+
+  await assert.rejects(
+    recover({
+      authUser: { role: 'admin' },
+      params: { orderId: order.id },
+      body: {
+        action: 'assign_technician',
+        assignedTechnicianId: 'technician-fixture',
+        installationDate: '2099-10-01',
+        timeSlot: '9:00 AM - 12:00 PM',
+      },
+    }, {
+      status() { return this; },
+      json() { return this; },
+    }),
+    (error) => error === conflict,
+  );
+  assert.equal(saveCount, 0);
+});
+
 test('cancel propagation only closes non-terminal linked work and leaves other fields intact', async () => {
   const blockStart = source.indexOf('await Task.updateMany(', source.indexOf('const applyOrderLifecycleAction'));
   const block = source.slice(blockStart, source.indexOf('\n    );', blockStart) + 7);
