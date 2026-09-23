@@ -357,7 +357,13 @@ const getReportUnits = async (req, res) => {
   }
 };
 const getOwnerForecast = async (req, res) => {
-  try { return res.json(await getOwnerServiceForecast({ months: req.query.months, averageRevenue: req.query.averageRevenue })); }
+  try {
+    return res.json(await getOwnerServiceForecast({
+      months: req.query.months,
+      averageRevenue: req.query.averageRevenue,
+      includeHistory: String(req.query.includeHistory || "true").toLowerCase() !== "false",
+    }));
+  }
   catch (error) { return res.status(error.status || 500).json({ message: error.message || "Unable to load the maintenance forecast." }); }
 };
 

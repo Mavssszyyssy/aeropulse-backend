@@ -251,16 +251,14 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
   };
 };
 
-const getOwnerServiceForecast = async ({ months = 12, averageRevenue } = {}) => {
+const getOwnerServiceForecast = async ({ months = 12, averageRevenue, includeHistory = true } = {}) => {
   const forecastMonths = boundedNumber(months, { fallback: 12, min: 1, max: 24, integer: true, label: "Forecast months" });
   const serviceRevenue = boundedNumber(averageRevenue, { fallback: DEFAULT_AVERAGE_SERVICE_REVENUE, min: 1, max: 1000000, label: "Assumed service value" });
   const now = businessDay(); const firstMonth = startOfMonth(now); const afterLastMonth = addMonths(firstMonth, forecastMonths);
   // Use the recommendations already stored by lifecycle events and the daily
   // monitor. A company forecast must not synchronously recalculate the entire
   // installed-unit collection before it can render.
-  const activeUnits = await Unit.find({ status: { $in: ["active", "service_due"] } }).select("_id installation.installedAt").lean();
-  const installedDates = new Map(activeUnits.map((unit) => [String(unit._id), unit.installation?.installedAt]));
-  const [buckets, serviceTypes, componentRows, branchRows, recordedTrends] = await Promise.all([
+  const [buckets, serviceTypes, branchRows, recordedTrends] = await Promise.all([
     Unit.aggregate([
       { $match: { status: { $in: ["active", "service_due"] }, "amp.bestServicedBy": { $gte: firstMonth, $lt: afterLastMonth } } },
       { $group: { _id: { year: { $year: "$amp.bestServicedBy" }, month: { $month: "$amp.bestServicedBy" } }, serviceVolume: { $sum: 1 } } },
@@ -270,7 +268,6 @@ const getOwnerServiceForecast = async ({ months = 12, averageRevenue } = {}) => 
       { $match: { status: { $in: ["active", "service_due"] }, "amp.recommendedService": { $in: ["regular_cleaning", "deep_cleaning"] } } },
       { $group: { _id: { $ifNull: ["$amp.recommendedService", "regular_cleaning"] }, count: { $sum: 1 } } },
     ]),
-    ServiceHistory.find({ unit: { $in: activeUnits.map((unit) => unit._id) }, partsUsed: { $exists: true, $ne: [] } }).select("unit partsUsed serviceDate serviceType visitType findings actionTaken serviceActions").sort({ serviceDate: -1 }).lean(),
     Unit.aggregate([
       { $match: { status: { $in: ["active", "service_due"] }, "amp.bestServicedBy": { $gte: firstMonth, $lt: afterLastMonth } } },
       { $group: {
@@ -284,21 +281,23 @@ const getOwnerServiceForecast = async ({ months = 12, averageRevenue } = {}) => 
       } },
       { $sort: { upcomingServices: -1 } },
     ]),
-    buildRecordedMaintenanceTrends(),
+    includeHistory
+      ? buildRecordedMaintenanceTrends()
+      : Promise.resolve({ modelTrends: [], brandTrends: [], componentReplacements: [] }),
   ]);
   const bucketMap = new Map(buckets.map((item) => [`${item._id.year}-${String(item._id.month).padStart(2, "0")}`, item.serviceVolume]));
   const forecast = Array.from({ length: forecastMonths }, (_unused, index) => {
     const date = addMonths(firstMonth, index); const volume = bucketMap.get(monthKey(date)) || 0;
     return { month: monthKey(date), label: monthLabel(date), serviceVolume: volume, projectedRevenue: volume * serviceRevenue };
   });
-  const parts = summarizeMajorComponentUse(componentRows.filter((row) => assessServiceEvidence(row, { installedAt: installedDates.get(String(row.unit)) }).eligible));
   return {
     generatedAt: new Date().toISOString(), months: forecastMonths, averageServiceRevenue: serviceRevenue,
     revenueBasis: "scenario_estimate", revenueDisclaimer: REVENUE_DISCLAIMER,
     totalForecastedServices: forecast.reduce((sum, item) => sum + item.serviceVolume, 0),
     totalProjectedRevenue: forecast.reduce((sum, item) => sum + item.projectedRevenue, 0), forecast,
     recommendedServiceDemand: serviceTypes.map((item) => ({ serviceType: item._id, count: item.count })),
-    recordedPartsTrend: parts,
+    historyIncluded: Boolean(includeHistory),
+    recordedPartsTrend: recordedTrends.componentReplacements,
     branchMaintenanceVolume: branchRows.map((item) => ({ branch: item._id, upcomingServices: item.upcomingServices })),
     modelTrends: recordedTrends.modelTrends,
     brandTrends: recordedTrends.brandTrends,

@@ -79,6 +79,23 @@ test("AMP dashboards remain read-only instead of recalculating every installed u
   assert.doesNotMatch(source, /refreshMaintenanceRecommendations/);
 });
 
+test("owner forecast can skip hidden history work and reuses one history scan when requested", () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, "../src/domain/ampDashboardService.js"),
+    "utf8",
+  );
+  const ownerForecast = source.slice(
+    source.indexOf("const getOwnerServiceForecast"),
+    source.indexOf("module.exports"),
+  );
+
+  assert.match(ownerForecast, /includeHistory\s*=\s*true/);
+  assert.match(ownerForecast, /includeHistory\s*\?\s*buildRecordedMaintenanceTrends\(\)/);
+  assert.match(ownerForecast, /recordedPartsTrend:\s*recordedTrends\.componentReplacements/);
+  assert.doesNotMatch(ownerForecast, /activeUnits/);
+  assert.doesNotMatch(ownerForecast, /componentRows/);
+});
+
 test("AMP pipeline action summary uses saved service recommendations and earliest due unit", () => {
   const summary = buildPipelineActionSummary({
     serviceDemand: [

@@ -192,6 +192,8 @@ const unitSchema = new mongoose.Schema(
 
 unitSchema.index({ "installation.zipCode": 1, status: 1 });
 unitSchema.index({ customer: 1, status: 1 });
+unitSchema.index({ status: 1, "amp.bestServicedBy": 1 });
+unitSchema.index({ status: 1, "amp.recommendedService": 1 });
 
 unitSchema.set("toJSON", {
   transform: (_doc, ret) => {
