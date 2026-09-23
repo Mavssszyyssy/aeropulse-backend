@@ -38,6 +38,9 @@ const loadController = ({ items = null, anyStored = true } = {}) => {
     "../models/User": {
       findById: () => ({ select() { return this; }, lean: async () => user }),
     },
+    "../services/requiredActionReminderService": {
+      reconcileRequiredActionsForUser: async () => [],
+    },
   };
   const path = require.resolve("../src/controllers/notificationController");
   delete require.cache[path];

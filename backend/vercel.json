@@ -22,6 +22,10 @@
     {
       "path": "/api/cron/amp-maintenance",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/required-actions",
+      "schedule": "15 0 * * *"
     }
   ]
 }

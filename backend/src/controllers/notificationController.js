@@ -1,5 +1,6 @@
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const { reconcileRequiredActionsForUser } = require("../services/requiredActionReminderService");
 
 const STAFF_ROLES = ["admin", "superadmin", "manager", "owner"];
 
@@ -108,7 +109,7 @@ const listMyNotifications = async (req, res) => {
   res.set("Cache-Control", "no-store");
   const userId = req.authUser._id;
   const user = await User.findById(userId)
-    .select("notifications lastLogin role")
+    .select("notifications lastLogin role activeBranch assignedBranch")
     .lean();
   const userNotifications = user?.notifications?.toObject?.() || user?.notifications || {};
   if (userNotifications.inApp === false) {
@@ -119,6 +120,14 @@ const listMyNotifications = async (req, res) => {
   // applying preferences. Otherwise, suppressed alerts in the newest 30 can
   // hide older unread alerts that the user is still meant to see.
   const archivedView = String(req.query?.view || "active").toLowerCase() === "archived";
+  if (!archivedView) {
+    try {
+      await reconcileRequiredActionsForUser(user);
+    } catch (error) {
+      // A reminder reconciliation must never make the notification inbox unavailable.
+      console.warn("Required-action reminder reconciliation failed:", error.message);
+    }
+  }
   const archiveScope = archivedView
     ? { archivedAt: { $ne: null } }
     : { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] };
