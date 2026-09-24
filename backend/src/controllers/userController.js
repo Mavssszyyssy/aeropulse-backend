@@ -10,22 +10,17 @@ const { notifyOperationalStaff } = require("../services/operationalNotificationS
 const { resolveConfiguredBranch } = require("../services/branchCoverageService");
 const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
-const { canSendEmail, sendEmail } = require("../utils/email");
 const {
   SHARED_DEMO_EMAIL,
   canUseSharedDemoEmail,
   isProtectedDemoStaff,
 } = require("../domain/demoStaffPolicy");
-const { generatePasswordResetToken } = require("../domain/passwordResetLink");
 const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
+const { containsProtectedAdminFields } = require("../domain/adminSettingsPolicy");
 const { invalidateAuthCache } = require("../middleware/auth");
 
 const PROFILE_VISIBILITY_VALUES = ["public", "private", "role_based"];
 const NOTIFICATION_TYPES = ["account", "order", "system"];
-const PASSWORD_RESET_MINUTES = Math.max(
-  15,
-  Math.min(30, Number(env.passwordResetTokenTtlMinutes || 20)),
-);
 
 const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
 const { withIdentityConflict } = require("../utils/optionalIdentity");
@@ -512,9 +507,6 @@ const applyProfileUpdate = async (
 
   const customerOnboardedAt = payload.customer_onboarded_at ?? payload.customerOnboardedAt;
   if (customerOnboardedAt !== undefined && user.role === "customer") {
-    if (!user.security?.totpEnabled) {
-      return { ok: false, status: 409, message: "Verify your authenticator before completing account setup." };
-    }
     if (!customerOnboardedAt || Number.isNaN(new Date(customerOnboardedAt).getTime())) {
       return { ok: false, status: 400, message: "Invalid customer onboarding completion date." };
     }
@@ -555,6 +547,11 @@ const getProfileById = async (req, res) => {
 };
 
 const updateProfile = async (req, res) => {
+  if (req.authUser.role === "admin" && containsProtectedAdminFields(req.body)) {
+    return res.status(403).json({
+      message: "Company, branch, role, and permission fields are managed by the SuperAdmin.",
+    });
+  }
   const result = await applyProfileUpdate(req.authUser, req.body || {}, {
     allowEmailChange: req.authUser.role === "superadmin",
   });
@@ -576,6 +573,12 @@ const updateProfileById = async (req, res) => {
 
   if (!canManageTargetProfile(req.authUser, target)) {
     return res.status(403).json({ message: "Forbidden" });
+  }
+
+  if (req.authUser.role === "admin" && containsProtectedAdminFields(req.body)) {
+    return res.status(403).json({
+      message: "Company, branch, role, and permission fields are managed by the SuperAdmin.",
+    });
   }
 
   if (req.body?.serviceQuota !== undefined) {
@@ -724,6 +727,11 @@ const setDefaultAddress = async (req, res) => {
 
 const updateSettings = async (req, res) => {
   const payload = req.body || {};
+  if (req.authUser.role === "admin" && containsProtectedAdminFields(payload)) {
+    return res.status(403).json({
+      message: "Company, branch, role, and permission fields are read-only for Admin accounts.",
+    });
+  }
   const preferencesPayload = payload.preferences || payload;
   const privacyPayload = payload.privacy || payload;
   const notificationsPayload = payload.notifications || payload;
@@ -866,50 +874,6 @@ const changePassword = async (req, res) => {
   req.authUser.passwordHash = await bcrypt.hash(String(newPassword), 10);
   await req.authUser.save();
   return res.json({ message: "Password changed successfully", user: req.authUser.toJSON() });
-};
-
-const requestPasswordChangeEmail = async (req, res) => {
-  if (!canSendEmail()) {
-    return res
-      .status(500)
-      .json({ message: "Email service is not configured." });
-  }
-
-  const { token, tokenHash } = generatePasswordResetToken();
-  const now = new Date();
-  const expiresAt = new Date(
-    now.getTime() + PASSWORD_RESET_MINUTES * 60 * 1000,
-  );
-
-  req.authUser.passwordReset = {
-    tokenHash,
-    expiresAt,
-    usedAt: null,
-    requestedAt: now,
-  };
-  await req.authUser.save();
-
-  const encodedToken = encodeURIComponent(token);
-  const resetUrl = `${env.frontendUrl}/reset-password/${encodedToken}`;
-
-  await sendEmail({
-    to: req.authUser.email,
-    subject: "Change your AeroPulse password",
-    text: [
-      "A request was made to change your AeroPulse password.",
-      `Use this secure link to continue (valid for ${PASSWORD_RESET_MINUTES} minutes):`,
-      resetUrl,
-      "If you did not request this, you can ignore this email.",
-    ].join("\n\n"),
-    html: `
-      <p>A request was made to change your AeroPulse password.</p>
-      <p>Use this secure link to continue (valid for ${PASSWORD_RESET_MINUTES} minutes):</p>
-      <p><a href="${resetUrl}">${resetUrl}</a></p>
-      <p>If you did not request this, you can ignore this email.</p>
-    `,
-  });
-
-  return res.json({ message: "Password change link sent to your email." });
 };
 
 const anonymizeRelatedData = async (userId) => {
@@ -1356,7 +1320,6 @@ module.exports = {
   updatePrivacy,
   updateNotifications,
   changePassword: withIdentityConflict(changePassword),
-  requestPasswordChangeEmail,
   deleteAccount,
   deleteUserById,
   unlockUser,

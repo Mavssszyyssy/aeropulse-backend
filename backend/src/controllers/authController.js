@@ -1,62 +1,45 @@
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
+const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const zxcvbn = require("zxcvbn");
 const User = require("../models/User");
-const OtpRequest = require("../models/OtpRequest"); // Symmetrical V3 Model
+const OtpRequest = require("../models/OtpRequest");
 const AuditLog = require("../models/AuditLog");
 const { signUserAccessToken } = require("../utils/token");
 const env = require("../config/env");
-const { requiresTotpEnrollment } = require("../domain/accountSecurityPolicy");
 const { BRANCHES } = require("../domain/branchRouting");
-const { canSendEmail, sendEmail } = require("../utils/email");
-const { buildOtpEmail } = require("../utils/otpEmailTemplate");
 const { resolveConfiguredBranch } = require("../services/branchCoverageService");
 const {
   duplicateIdentityMessage,
 } = require("../utils/optionalIdentity");
 const {
-  decryptSecret,
-  generateOtpCode,
-  verifyTotpCode,
-} = require("../domain/accountSecurity");
+  OTP_ACTION_CHANNELS,
+  OTP_RESEND_COOLDOWN_SECONDS,
+  OTP_TTL_MINUTES,
+  createEmailVerification,
+  isValidEmail,
+  normalizeEmail,
+  verifyEmailCode,
+} = require("../services/emailVerificationService");
 const {
   mergeClientRegistrationProgress,
 } = require("../domain/registrationProgress");
-const { hashPasswordResetToken, isAuthenticPasswordResetToken } = require("../domain/passwordResetLink");
 const {
   SHARED_DEMO_EMAIL,
   canUseSharedDemoEmail,
 } = require("../domain/demoStaffPolicy");
 
-const OTP_TTL_MINUTES = Math.max(
-  3,
-  Math.min(15, Number(env.otpTtlMinutes || 5)),
-);
-const OTP_RESEND_COOLDOWN_SECONDS = Math.max(30, Math.min(300, Number(env.otpResendCooldownSeconds || 60)));
-const OTP_REQUEST_WINDOW_MINUTES = Math.max(5, Math.min(60, Number(env.otpRequestWindowMinutes || 15)));
-const OTP_MAX_REQUESTS_PER_WINDOW = Math.max(2, Math.min(10, Number(env.otpMaxRequestsPerWindow || 5)));
-const OTP_MAX_ATTEMPTS = Math.max(3, Math.min(10, Number(env.otpMaxAttempts || 5)));
-const OTP_ACTION_CHANNELS = {
-  register_email: ["email"],
-  password_reset: ["email"],
-};
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 
-const normalizeEmail = (email = "") => String(email).trim().toLowerCase();
-const isValidEmail = (email = "") => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
 const isReservedSharedDemoEmail = (email = "") => normalizeEmail(email) === SHARED_DEMO_EMAIL;
 const normalizeIdentifier = (value = "") => String(value).trim().toLowerCase();
 const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
-const isValidSixDigitCode = (value = "") =>
-  /^\d{6}$/.test(String(value).trim());
-const signRegistrationVerificationToken = ({ email = "", phone = "" }) =>
+const signRegistrationVerificationToken = ({ email = "" }) =>
   jwt.sign(
     {
       purpose: "registration_verification",
       email: normalizeEmail(email),
-      phone: canonicalizePhMobile(phone),
     },
     env.jwtSecret,
     { expiresIn: `${OTP_TTL_MINUTES}m` },
@@ -108,165 +91,11 @@ const resolvePasswordRecoveryAccount = async ({ identifier = "", accountLoginId 
   return { user, ambiguous: false };
 };
 
-const hashValue = (value = "") =>
-  crypto.createHash("sha256").update(String(value)).digest("hex");
-const isOtpExpired = (otp) =>
-  !otp || !otp.expiresAt || otp.expiresAt.getTime() < Date.now();
-
-const sendOtpMessage = async ({ recipient, channel, action, code }) => {
-  if (channel === "email") {
-    if (!canSendEmail()) {
-      throw new Error("Email verification is temporarily unavailable.");
-    }
-    const email = buildOtpEmail({
-      code,
-      action,
-      expiresInMinutes: OTP_TTL_MINUTES,
-    });
-    await sendEmail({ to: recipient, ...email });
-    return;
-  }
-
-  throw new Error("Only email OTP delivery is supported.");
-};
-
-/**
- * SYMMETRICAL OTP HELPERS
- */
-const createOtpRequest = async ({
-  accountId = "",
-  email = "",
-  phone = "",
-  messenger_handle = "",
-  action,
-  channel,
-  metadata = {},
-}) => {
-  if (!OTP_ACTION_CHANNELS[action]?.includes(channel) || !isValidEmail(email)) {
-    const error = new Error("A supported email verification request is required.");
-    error.status = 400;
-    throw error;
-  }
-  const normalizedEmail = normalizeEmail(email);
-  const normalizedAccountId = String(accountId || "").trim();
-  const targetQuery = {
-    action,
-    channel,
-    email: normalizedEmail,
-    ...(normalizedAccountId ? { accountId: normalizedAccountId } : {}),
-  };
-  const now = new Date();
-  const latest = await OtpRequest.findOne(targetQuery).sort({ requestedAt: -1 });
-  if (latest?.requestedAt) {
-    const retryAfterSeconds = Math.ceil(
-      (latest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000 - now.getTime()) / 1000,
-    );
-    if (retryAfterSeconds > 0) {
-      const error = new Error(`Please wait ${retryAfterSeconds}s before requesting another code.`);
-      error.status = 429;
-      error.retryAfterSeconds = retryAfterSeconds;
-      throw error;
-    }
-  }
-  const windowStart = new Date(now.getTime() - OTP_REQUEST_WINDOW_MINUTES * 60 * 1000);
-  const requestCount = await OtpRequest.countDocuments({ ...targetQuery, requestedAt: { $gte: windowStart } });
-  if (requestCount >= OTP_MAX_REQUESTS_PER_WINDOW) {
-    const error = new Error("Too many verification requests. Please try again later.");
-    error.status = 429;
-    error.retryAfterSeconds = OTP_REQUEST_WINDOW_MINUTES * 60;
-    throw error;
-  }
-  const code = generateOtpCode();
-  const codeHash = hashValue(code);
-  const expiresAt = new Date(now.getTime() + OTP_TTL_MINUTES * 60 * 1000);
-
-  const otpRequest = await OtpRequest.create({
-    accountId: normalizedAccountId,
-    email: normalizedEmail,
-    phone: "",
-    messenger_handle: "",
-    action,
-    channel,
-    codeHash,
-    requestedAt: now,
-    expiresAt,
-    metadata,
-  });
-
-  try {
-    await sendOtpMessage({
-      recipient: normalizedEmail,
-      channel,
-      action,
-      code,
-    });
-  } catch (error) {
-    await OtpRequest.deleteOne({ _id: otpRequest._id });
-    throw error;
-  }
-
-  return { otpRequest };
-};
-
-const findOtpRequest = async ({
-  accountId = "",
-  email = "",
-  phone = "",
-  messenger_handle = "",
-  action,
-  channel,
-}) => {
-  if (!OTP_ACTION_CHANNELS[action]?.includes(channel) || !isValidEmail(email)) return null;
-  const normalizedAccountId = String(accountId || "").trim();
-  const query = {
-    action,
-    channel,
-    verifiedAt: null,
-    email: normalizeEmail(email),
-    ...(normalizedAccountId ? { accountId: normalizedAccountId } : {}),
-  };
-  return OtpRequest.findOne(query).sort({ createdAt: -1 });
-};
-
-const verifyOtpRequest = async ({
-  accountId = "",
-  email = "",
-  phone = "",
-  messenger_handle = "",
-  action,
-  channel,
-  code,
-}) => {
-  const otp = await findOtpRequest({
-    accountId,
-    email,
-    phone,
-    messenger_handle,
-    action,
-    channel,
-  });
-  if (!otp) return { ok: false, reason: "not_found" };
-  if (isOtpExpired(otp)) return { ok: false, reason: "expired" };
-  if (otp.lockedAt || Number(otp.attempts || 0) >= OTP_MAX_ATTEMPTS) return { ok: false, reason: "locked" };
-
-  if (otp.codeHash !== hashValue(code)) {
-    otp.attempts = Number(otp.attempts || 0) + 1;
-    otp.lastAttemptAt = new Date();
-    if (otp.attempts >= OTP_MAX_ATTEMPTS) otp.lockedAt = new Date();
-    await otp.save();
-    return { ok: false, reason: otp.lockedAt ? "locked" : "invalid" };
-  }
-
-  otp.verifiedAt = new Date();
-  await otp.save();
-  return { ok: true };
-};
-
 /**
  * PRIMARY CONTROLLERS
  */
 const requestOtp = async (req, res) => {
-  const { action, channel, email, phone, messenger_handle } = req.body;
+  const { action, channel, email } = req.body;
 
   if (!action || !channel) {
     return res
@@ -276,7 +105,7 @@ const requestOtp = async (req, res) => {
   if (channel !== "email") {
     return res.status(400).json({ message: "Use email verification." });
   }
-  if (!OTP_ACTION_CHANNELS[action]?.includes(channel)) {
+  if (action !== "register_email" || !OTP_ACTION_CHANNELS[action]?.includes(channel)) {
     return res.status(400).json({ message: "This verification request is not supported." });
   }
   if (channel === "email" && !isValidEmail(email)) {
@@ -299,12 +128,9 @@ const requestOtp = async (req, res) => {
   }
 
   try {
-    const { otpRequest } = await createOtpRequest({
+    const { otpRequest } = await createEmailVerification({
       email,
-      phone,
-      messenger_handle,
       action,
-      channel,
     });
 
     return res.json({
@@ -313,7 +139,7 @@ const requestOtp = async (req, res) => {
       resendAvailableAt: new Date(otpRequest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000),
     });
   } catch (err) {
-    console.error("[OTP] Request failed:", err?.message || err);
+    console.error("[EMAIL VERIFICATION] Request failed:", err?.message || err);
     const isRateLimit = Number(err.status) === 429;
     return res.status(isRateLimit ? 429 : 503).json({
       message: isRateLimit
@@ -325,9 +151,13 @@ const requestOtp = async (req, res) => {
 };
 
 const verifyOtp = async (req, res) => {
-  const { action, channel, email, phone, messenger_handle, code } = req.body;
+  const { action, channel, email, code } = req.body;
 
-  if (!OTP_ACTION_CHANNELS[action]?.includes(channel) || !isValidEmail(email)) {
+  if (
+    action !== "register_email"
+    || !OTP_ACTION_CHANNELS[action]?.includes(channel)
+    || !isValidEmail(email)
+  ) {
     return res.status(400).json({ message: "A supported email verification request is required." });
   }
   if (action === "register_email" && isReservedSharedDemoEmail(email)) {
@@ -339,12 +169,9 @@ const verifyOtp = async (req, res) => {
   }
 
   try {
-    const verification = await verifyOtpRequest({
+    const verification = await verifyEmailCode({
       email,
-      phone,
-      messenger_handle,
       action,
-      channel,
       code,
     });
 
@@ -377,7 +204,6 @@ const verifyOtp = async (req, res) => {
     const registrationVerificationToken = action.startsWith("register_")
       ? signRegistrationVerificationToken({
         email: action === "register_email" ? email : "",
-        phone: "",
       })
       : "";
 
@@ -390,8 +216,8 @@ const verifyOtp = async (req, res) => {
       });
     });
   } catch (err) {
-    console.error("[OTP] Verify Error:", err);
-    return res.status(500).json({ message: "Error verifying OTP." });
+    console.error("[EMAIL VERIFICATION] Verification failed:", err);
+    return res.status(500).json({ message: "Unable to verify the email code." });
   }
 };
 
@@ -411,71 +237,6 @@ const checkAliasAvailability = async (req, res) => {
   } catch (err) {
     return res.status(500).json({ message: "Error checking alias." });
   }
-};
-
-const startRegistration = async (req, res) => {
-  const email = normalizeEmail(req.body?.email);
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res
-      .status(400)
-      .json({ errors: { email: "Valid email is required" } });
-  }
-  if (isReservedSharedDemoEmail(email)) {
-    return res.status(409).json({ errors: { email: "This email address is reserved for approved demo staff accounts" } });
-  }
-
-  const existing = await User.findOne({ email });
-  if (existing) {
-    return res.status(409).json({ errors: { email: "Email already exists" } });
-  }
-
-  try {
-    const { otpRequest } = await createOtpRequest({
-      email,
-      action: "register_email",
-      channel: "email",
-    });
-    return res.json({
-      email,
-      message: "Verification code sent.",
-      expiresAt: otpRequest.expiresAt,
-      resendAvailableAt: new Date(otpRequest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000),
-    });
-  } catch (error) {
-    return res.status(error.status || 502).json({ message: error.message || "Unable to send verification code." });
-  }
-};
-
-const verifyRegistrationCode = async (req, res) => {
-  const { email, code } = req.body;
-  const normalizedEmail = normalizeEmail(email);
-
-  if (!normalizedEmail || !isValidSixDigitCode(code)) {
-    return res.status(400).json({ message: "Data required." });
-  }
-  if (isReservedSharedDemoEmail(normalizedEmail)) {
-    return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
-  }
-  const verification = await verifyOtpRequest({ email: normalizedEmail, action: "register_email", channel: "email", code });
-  if (!verification.ok) return res.status(400).json({ message: "Invalid or expired code." });
-
-  req.session.registrationProgress = {
-    email: normalizedEmail,
-    stepIndex: 1,
-    formData: {
-      ...(normalizedEmail ? { email: normalizedEmail } : {}),
-      emailVerified: true,
-    },
-  };
-
-  return req.session.save((error) => {
-    if (error) return res.status(500).json({ message: "Unable to save email verification." });
-    return res.json({
-      message: "Success",
-      registrationProgress: req.session.registrationProgress,
-      registrationVerificationToken: signRegistrationVerificationToken({ email: normalizedEmail }),
-    });
-  });
 };
 
 const { validateRegistrationConsent, registrationConsentRecord } = require("../domain/registrationConsent");
@@ -612,10 +373,8 @@ const register = async (req, res) => {
 
     // Final database purge for this email after successful registration
     await OtpRequest.deleteMany({
-      $or: [
-        { email: normalizedEmail },
-        ...(normalizedPhone ? [{ phone: normalizedPhone }] : []),
-      ],
+      email: normalizedEmail,
+      action: "register_email",
     });
     if (req.session) req.session.destroy();
 
@@ -653,7 +412,11 @@ const login = async (req, res) => {
     ) {
       return res.status(403).json({ message: "This account is not active." });
     }
-    if (!user || !(await bcrypt.compare(String(password || ""), user.passwordHash))) {
+    const passwordMatches = Boolean(
+      user?.passwordHash
+      && await bcrypt.compare(String(password || ""), user.passwordHash),
+    );
+    if (!passwordMatches) {
       if (user) {
         user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
         if (user.failedLoginAttempts >= LOGIN_MAX_ATTEMPTS) {
@@ -664,74 +427,93 @@ const login = async (req, res) => {
       }
       return res.status(401).json({ message: "Invalid credentials" });
     }
-    if (user.security?.totpEnabled) {
-      const challengeToken = jwt.sign(
-        { purpose: "login_totp", sub: user.id },
-        env.jwtSecret,
-        { expiresIn: "5m" },
-      );
-      return res.json({
-        success: true,
-        requiresTotp: true,
-        challengeToken,
-        message: "Enter the six-digit code from your authenticator app.",
-      });
+    const email = normalizeEmail(user.email);
+    if (!isValidEmail(email)) {
+      return res.status(409).json({ message: "This account does not have a valid verification email. Contact your administrator." });
     }
-    user.failedLoginAttempts = 0;
-    user.lockoutUntil = null;
-    user.lastLogin = new Date();
-    await user.save();
-    const token = signUserAccessToken(user, user.security?.totpResetRequired ? { recovery: true } : {});
+    const challengeId = crypto.randomUUID();
+    const { otpRequest } = await createEmailVerification({
+      accountId: user.id,
+      challengeId,
+      email,
+      action: "login_verification",
+      metadata: { role: user.role },
+    });
+    const challengeToken = jwt.sign(
+      {
+        purpose: "login_email_verification",
+        sub: user.id,
+        jti: challengeId,
+        securityVersion: Number(user.security?.sessionVersion || 0),
+      },
+      env.jwtSecret,
+      { expiresIn: `${OTP_TTL_MINUTES}m` },
+    );
     return res.json({
       success: true,
-      token,
-      user: user.toJSON(),
-      requiresTotpSetup: requiresTotpEnrollment(user),
+      requiresEmailVerification: true,
+      challengeToken,
+      maskedEmail: email.replace(/^(.{1,2}).*(@.*)$/, "$1***$2"),
+      expiresAt: otpRequest.expiresAt,
+      resendAvailableAt: new Date(otpRequest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000),
+      message: "Enter the verification code sent to your account email.",
     });
   } catch (err) {
-    return res.status(500).json({ message: "Login error" });
+    const status = Number(err?.status) || 500;
+    return res.status(status).json({
+      message: status === 429 ? err.message : "Unable to send the sign-in verification code. Please try again.",
+      retryAfterSeconds: err?.retryAfterSeconds || undefined,
+    });
   }
 };
 
-const verifyLoginTotp = async (req, res) => {
+const readLoginEmailChallenge = (challengeToken) => {
+  const payload = jwt.verify(String(challengeToken || ""), env.jwtSecret);
+  if (payload?.purpose !== "login_email_verification" || !payload?.sub || !payload?.jti) throw new Error("invalid challenge");
+  return payload;
+};
+
+const verifyLoginEmail = async (req, res) => {
   try {
-    const challengeToken = String(req.body?.challengeToken || "");
-    const code = String(req.body?.code || "").trim();
     let payload;
     try {
-      payload = jwt.verify(challengeToken, env.jwtSecret);
+      payload = readLoginEmailChallenge(req.body?.challengeToken);
     } catch (_error) {
       return res.status(401).json({ message: "The sign-in verification has expired. Sign in again." });
     }
-    if (payload?.purpose !== "login_totp" || !payload?.sub) {
-      return res.status(401).json({ message: "Invalid sign-in verification." });
+    const user = await User.findById(payload.sub);
+    if (!user) return res.status(401).json({ message: "Invalid sign-in verification." });
+    if (user.isDeleted || ["disabled", "deleted"].includes(String(user.accountStatus || ""))) {
+      return res.status(403).json({ message: "This account is not active." });
     }
-    const user = await User.findById(payload.sub).select("+security.totpSecretEncrypted");
-    if (!user || !user.security?.totpEnabled) {
-      return res.status(401).json({ message: "Authenticator verification is not available for this account." });
+    if (
+      payload.securityVersion !== undefined
+      && Number(payload.securityVersion) !== Number(user.security?.sessionVersion || 0)
+    ) {
+      return res.status(401).json({ message: "The sign-in verification has expired. Sign in again." });
     }
     if (user.lockoutUntil && user.lockoutUntil > new Date()) {
       return res.status(429).json({ message: "Too many failed attempts. Try again later." });
     }
-    let secret = "";
-    try {
-      secret = decryptSecret(user.security.totpSecretEncrypted);
-    } catch (_error) {
-      return res.status(500).json({ message: "Authenticator verification is temporarily unavailable." });
-    }
-    if (!secret) {
-      // A missing stored key is an account configuration problem, not a wrong
-      // code. Keep access blocked without counting this against the user.
-      return res.status(409).json({ message: "Your account's authenticator setup needs recovery. Contact support to restore access; requesting another password reset will not repair it." });
-    }
-    if (!verifyTotpCode({ secret, code })) {
+    const verification = await verifyEmailCode({
+      accountId: user.id,
+      challengeId: payload.jti,
+      email: user.email,
+      action: "login_verification",
+      code: req.body?.code,
+    });
+    if (!verification.ok) {
       user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
       if (user.failedLoginAttempts >= LOGIN_MAX_ATTEMPTS) {
         user.lockoutUntil = new Date(Date.now() + LOGIN_LOCKOUT_MS);
         user.failedLoginAttempts = 0;
       }
       await user.save();
-      return res.status(401).json({ message: "Incorrect authenticator code." });
+      return res.status(401).json({
+        message: verification.reason === "locked"
+          ? "Too many incorrect codes. Sign in again to request a new code."
+          : "The verification code is incorrect or expired.",
+      });
     }
     user.failedLoginAttempts = 0;
     user.lockoutUntil = null;
@@ -740,8 +522,54 @@ const verifyLoginTotp = async (req, res) => {
     const token = signUserAccessToken(user);
     return res.json({ success: true, token, user: user.toJSON() });
   } catch (error) {
-    console.error("TOTP login verification failed:", error.message);
-    return res.status(500).json({ message: "Unable to verify the authenticator code." });
+    console.error("Email login verification failed:", error.message);
+    return res.status(500).json({ message: "Unable to verify the sign-in code." });
+  }
+};
+
+const resendLoginEmail = async (req, res) => {
+  try {
+    let payload;
+    try {
+      payload = readLoginEmailChallenge(req.body?.challengeToken);
+    } catch (_error) {
+      return res.status(401).json({ message: "The sign-in verification has expired. Sign in again." });
+    }
+    const user = await User.findById(payload.sub);
+    if (!user || Number(payload.securityVersion || 0) !== Number(user.security?.sessionVersion || 0)) {
+      return res.status(401).json({ message: "The sign-in verification has expired. Sign in again." });
+    }
+    if (user.isDeleted || ["disabled", "deleted"].includes(String(user.accountStatus || ""))) {
+      return res.status(403).json({ message: "This account is not active." });
+    }
+    const { otpRequest } = await createEmailVerification({
+      accountId: user.id,
+      challengeId: payload.jti,
+      email: user.email,
+      action: "login_verification",
+      metadata: { role: user.role, resend: true },
+    });
+    const challengeToken = jwt.sign(
+      {
+        purpose: "login_email_verification",
+        sub: user.id,
+        jti: payload.jti,
+        securityVersion: Number(user.security?.sessionVersion || 0),
+      },
+      env.jwtSecret,
+      { expiresIn: `${OTP_TTL_MINUTES}m` },
+    );
+    return res.json({
+      message: "A new sign-in code was sent.",
+      challengeToken,
+      expiresAt: otpRequest.expiresAt,
+      resendAvailableAt: new Date(otpRequest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000),
+    });
+  } catch (error) {
+    return res.status(error.status || 502).json({
+      message: error.message || "Unable to send a new sign-in code.",
+      retryAfterSeconds: error.retryAfterSeconds || undefined,
+    });
   }
 };
 
@@ -754,8 +582,9 @@ const logout = async (req, res) => {
     if (email) {
       const deleted = await OtpRequest.deleteMany({
         email: normalizeEmail(email),
+        action: "register_email",
       });
-      console.info(`[AUTH] Cleared ${deleted.deletedCount} temporary OTP request(s).`);
+      console.info(`[AUTH] Cleared ${deleted.deletedCount} temporary email verification request(s).`);
     }
     if (req.session) {
       req.session.destroy(() => {
@@ -829,7 +658,7 @@ const requestPasswordReset = async (req, res) => {
   if (!isValidEmail(email)) return res.status(409).json({ message: "This account does not have a valid recovery email. Contact your administrator." });
 
   try {
-    const { otpRequest } = await createOtpRequest({
+    const { otpRequest } = await createEmailVerification({
       accountId: user.id,
       email,
       action: "password_reset",
@@ -845,44 +674,6 @@ const requestPasswordReset = async (req, res) => {
       message: error.message || "Unable to send verification code.",
       retryAfterSeconds: error.retryAfterSeconds || undefined,
     });
-  }
-};
-
-const resetPassword = async (req, res) => {
-  const { token } = req.params;
-  const { password } = req.body;
-  try {
-    if (typeof password !== "string" || password.length < 8 || password.length > 25) {
-      return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
-    }
-    let user = null;
-    try {
-      const decoded = jwt.verify(token, env.jwtSecret);
-      if (decoded.purpose !== "password_reset") throw new Error("Not a password-reset token");
-      user = await User.findById(decoded.sub);
-    } catch {
-      // Account Settings sends a one-time, database-backed link rather than a
-      // login JWT. Validate its signature, hash, expiry and single-use state.
-      if (!isAuthenticPasswordResetToken(token)) {
-        return res.status(400).json({ message: "This reset link is invalid, expired, or has already been used. Request a new link and try again." });
-      }
-      user = await User.findOne({
-        "passwordReset.tokenHash": hashPasswordResetToken(token),
-        "passwordReset.expiresAt": { $gt: new Date() },
-        "passwordReset.usedAt": null,
-      });
-    }
-    if (!user) return res.status(400).json({ message: "This reset link is invalid, expired, or has already been used. Request a new link and try again." });
-    const salt = await bcrypt.genSalt(10);
-    user.passwordHash = await bcrypt.hash(password, salt);
-    user.passwordReset = { tokenHash: "", expiresAt: null, usedAt: new Date(), requestedAt: user.passwordReset?.requestedAt || new Date() };
-    // Hidden authenticator/recovery fields are not selected by this query.
-    // Replacing the parent security object would erase them in the database.
-    user.security.sessionVersion = Number(user.security?.sessionVersion || 0) + 1;
-    await user.save();
-    res.json({ message: "Success" });
-  } catch (err) {
-    res.status(400).json({ message: "This reset link is invalid, expired, or has already been used. Request a new link and try again." });
   }
 };
 
@@ -906,36 +697,40 @@ const resetPasswordWithCode = async (req, res) => {
     return res.status(400).json({ message: "The shared demo email and account login ID do not match an approved demo account." });
   }
   const user = account.user;
-  if (!user) return res.status(404).json({ message: "User not found." });
+  if (!user) {
+    return res.status(400).json({ message: "The verification code is incorrect or expired." });
+  }
   const normalizedEmail = normalizeEmail(user.email);
   if (!isValidEmail(normalizedEmail)) return res.status(409).json({ message: "This account does not have a valid recovery email. Contact your administrator." });
-  const verification = await verifyOtpRequest({
+  const verification = await verifyEmailCode({
     accountId: user.id,
     email: normalizedEmail,
     action: "password_reset",
     channel,
     code,
   });
-  if (!verification.ok)
-    return res.status(400).json({ message: "Invalid code." });
+  if (!verification.ok) {
+    return res.status(400).json({
+      message: verification.reason === "locked"
+        ? "Too many incorrect codes. Request a new verification code."
+        : "The verification code is incorrect or expired.",
+    });
+  }
   const salt = await bcrypt.genSalt(10);
   user.passwordHash = await bcrypt.hash(newPassword, salt);
-  // Preserve the unselected authenticator secret and recovery-code hashes.
   user.security.sessionVersion = Number(user.security?.sessionVersion || 0) + 1;
   await user.save();
   res.json({ message: "Success" });
 };
 
 module.exports = {
-  startRegistration,
-  verifyRegistrationCode,
   register,
   login,
-  verifyLoginTotp,
+  verifyLoginEmail,
+  resendLoginEmail,
   logout,
   me,
   requestPasswordReset,
-  resetPassword,
   requestOtp,
   verifyOtp,
   checkAliasAvailability,

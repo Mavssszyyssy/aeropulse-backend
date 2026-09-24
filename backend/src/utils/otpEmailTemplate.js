@@ -13,6 +13,13 @@ const OTP_CONTENT = {
     introduction:
       "Enter this verification code in Cold Air ACT to continue resetting your password.",
   },
+  login_verification: {
+    subject: "Verify your Cold Air ACT sign-in",
+    eyebrow: "SECURE SIGN-IN",
+    title: "Verify your sign-in",
+    introduction:
+      "Enter this verification code in Cold Air ACT to finish signing in to your account.",
+  },
 };
 
 const buildOtpEmail = ({ code, action, expiresInMinutes }) => {

@@ -32,7 +32,6 @@ const partsRequestRoutes = require("./routes/partsRequestRoutes");
 const warrantyRoutes = require("./routes/warrantyRoutes");
 const branchCoverageRoutes = require("./routes/branchCoverageRoutes");
 const contactMessageRoutes = require("./routes/contactMessageRoutes");
-const securityRoutes = require("./routes/securityRoutes");
 const cronRoutes = require("./routes/cronRoutes");
 
 const app = express();
@@ -138,7 +137,6 @@ app.use(
   authRoutes,
 );
 app.use("/api/users", userRoutes);
-app.use("/api/security", securityRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/reorders", reorderRoutes);

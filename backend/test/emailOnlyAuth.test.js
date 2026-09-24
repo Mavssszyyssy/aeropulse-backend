@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const jwt = require('jsonwebtoken');
 const env = require('../src/config/env');
 const User = require('../src/models/User');
 const OtpRequest = require('../src/models/OtpRequest');
 const auth = require('../src/controllers/authController');
+const { hashVerificationCode } = require('../src/services/emailVerificationService');
 
 const response = () => ({
   statusCode: 200,
@@ -35,11 +35,13 @@ test('a phone-only session or signed SMS proof cannot register a customer', asyn
 
 test('email OTP verification returns email-only proof and resumable progress', async (t) => {
   const code = '123456';
+  const otp = { _id: 'registration-code', codeHash: hashVerificationCode({ email: 'customer@example.com', action: 'register_email', code }), expiresAt: new Date(Date.now() + 60_000), attempts: 0, lockedAt: null, verifiedAt: null, save: async () => {} };
   t.mock.method(OtpRequest, 'findOne', (query) => {
     assert.equal(query.channel, 'email');
     assert.equal(query.email, 'customer@example.com');
-    return { sort: async () => ({ codeHash: crypto.createHash('sha256').update(code).digest('hex'), expiresAt: new Date(Date.now() + 60_000), save: async () => {} }) };
+    return { sort: async () => otp };
   });
+  t.mock.method(OtpRequest, 'findOneAndUpdate', async (_query, update) => ({ ...otp, verifiedAt: update.$set.verifiedAt }));
   const session = { registrationProgress: { formData: { phoneVerified: true } }, save: (callback) => callback() };
   const res = response();
   await auth.verifyOtp({ body: { action: 'register_email', channel: 'email', email: 'Customer@example.com', code }, session }, res);
@@ -48,7 +50,7 @@ test('email OTP verification returns email-only proof and resumable progress', a
   assert.equal(session.registrationProgress.formData.phoneVerified, false);
   const proof = jwt.verify(res.body.registrationVerificationToken, env.jwtSecret);
   assert.equal(proof.email, 'customer@example.com');
-  assert.equal(proof.phone, '');
+  assert.equal(Object.hasOwn(proof, 'phone'), false);
 });
 
 test('email password recovery still accepts the registered email identifier', async (t) => {

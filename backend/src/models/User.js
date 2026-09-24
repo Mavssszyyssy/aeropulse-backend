@@ -179,23 +179,8 @@ const userSchema = new mongoose.Schema(
     lastLogin: { type: Date },
     failedLoginAttempts: { type: Number, default: 0 },
     lockoutUntil: { type: Date, default: null },
-    passwordReset: {
-      tokenHash: { type: String, default: "" },
-      expiresAt: { type: Date, default: null },
-      usedAt: { type: Date, default: null },
-      requestedAt: { type: Date, default: null },
-    },
     security: {
       sessionVersion: { type: Number, default: 0 },
-      totpEnabled: { type: Boolean, default: false },
-      totpSecretEncrypted: { type: String, default: "", select: false },
-      totpPendingSecretEncrypted: { type: String, default: "", select: false },
-      totpVerifiedAt: { type: Date, default: null },
-      totpResetRequired: { type: Boolean, default: false },
-      recoveryCodeHashes: { type: [String], default: [], select: false },
-      recoveryCodesRemaining: { type: Number, default: 0, min: 0, max: 6 },
-      recoveryCodesGeneratedAt: { type: Date, default: null },
-      recoveredAt: { type: Date, default: null },
     },
     accountStatus: {
       type: String,
@@ -250,14 +235,8 @@ userSchema.set("toJSON", {
     delete ret.__v;
     delete ret.passwordHash;
     delete ret.emailIdentityKey;
-    delete ret.passwordReset;
     delete ret.failedLoginAttempts;
     delete ret.lockoutUntil;
-    if (ret.security) {
-      delete ret.security.totpSecretEncrypted;
-      delete ret.security.totpPendingSecretEncrypted;
-      delete ret.security.recoveryCodeHashes;
-    }
     return ret;
   },
 });

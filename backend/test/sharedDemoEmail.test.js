@@ -1,19 +1,20 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcryptjs");
-const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../src/models/User");
 const OtpRequest = require("../src/models/OtpRequest");
 const env = require("../src/config/env");
 const {
   login,
+  resendLoginEmail,
   requestPasswordReset,
+  requestOtp,
   resetPasswordWithCode,
-  startRegistration,
 } = require("../src/controllers/authController");
 const { updateProfileById } = require("../src/controllers/userController");
-const { encryptSecret } = require("../src/domain/accountSecurity");
+const emailService = require("../src/utils/email");
+const { hashVerificationCode } = require("../src/services/emailVerificationService");
 const {
   SHARED_DEMO_ACCOUNTS,
   SHARED_DEMO_EMAIL,
@@ -60,33 +61,46 @@ test("the shared email exception is limited to the five exact demo accounts", as
   assert.equal(buildEmailIdentityKey(ordinaryA), buildEmailIdentityKey(ordinaryB));
 });
 
-test("accounts sharing the demo email still sign in by unique ID and receive account-bound MFA challenges", async (t) => {
-  const carl = fixture(SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.carl"), {
-    security: { totpEnabled: true, totpSecretEncrypted: encryptSecret("CARLSEPARATESECRET") },
+test("all staff demo accounts and customers receive separate account-bound email challenges", async (t) => {
+  const demoUsers = SHARED_DEMO_ACCOUNTS.map((account, index) => fixture(account, {
+    passwordHash: bcrypt.hashSync(`DemoPass${index + 1}!`, 4),
+  }));
+  const customer = new User({
+    name_first: "Demo",
+    name_last: "Customer",
+    alias: "customer.email.challenge",
+    username: "customer.email.challenge",
+    role: "customer",
+    email: "customer@example.com",
+    passwordHash: bcrypt.hashSync("CustomerPass1!", 4),
   });
-  const lebron = fixture(SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.lebron"), {
-    security: { totpEnabled: true, totpSecretEncrypted: encryptSecret("LEBRONSEPARATESECRET") },
-  });
-  carl.passwordHash = await bcrypt.hash("CarlPass123!", 4);
-  lebron.passwordHash = await bcrypt.hash("LebronPass123!", 4);
-  assert.notEqual(carl.id, lebron.id);
-  assert.notEqual(carl.security.totpSecretEncrypted, lebron.security.totpSecretEncrypted);
+  const accounts = [...demoUsers, customer];
+  assert.equal(new Set(accounts.map(({ id }) => id)).size, accounts.length);
+  assert.deepEqual(new Set(accounts.map(({ role }) => role)), new Set(["superadmin", "admin", "technician", "customer"]));
+  const created = [];
+  t.mock.method(emailService, "canSendEmail", () => true);
+  t.mock.method(emailService, "sendEmail", async () => {});
+  t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
+  t.mock.method(OtpRequest, "countDocuments", async () => 0);
+  t.mock.method(OtpRequest, "create", async (record) => { created.push(record); return { ...record, _id: String(created.length) }; });
 
   t.mock.method(User, "findOne", async (query) => {
     const aliases = (query.$or || []).map((condition) => condition.alias).filter(Boolean);
-    if (aliases.includes(carl.alias)) return carl;
-    if (aliases.includes(lebron.alias)) return lebron;
-    return null;
+    return accounts.find((account) => aliases.includes(account.alias)) || null;
   });
 
-  for (const [user, password] of [[carl, "CarlPass123!"], [lebron, "LebronPass123!"]]) {
+  for (const [index, user] of accounts.entries()) {
+    const password = user.role === "customer" ? "CustomerPass1!" : `DemoPass${index + 1}!`;
     const res = response();
     await login({ body: { identifier: user.alias, password } }, res);
     assert.equal(res.statusCode, 200);
-    assert.equal(res.body.requiresTotp, true);
+    assert.equal(res.body.requiresEmailVerification, true);
     const challenge = jwt.verify(res.body.challengeToken, env.jwtSecret);
-    assert.equal(challenge.purpose, "login_totp");
+    assert.equal(challenge.purpose, "login_email_verification");
     assert.equal(challenge.sub, user.id);
+    assert.ok(challenge.jti);
+    assert.equal(created.at(-1).accountId, user.id);
+    assert.equal(created.at(-1).challengeId, challenge.jti);
   }
 });
 
@@ -99,6 +113,37 @@ test("sign-in rejects an email that resolves to more than one account", async (t
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.token, undefined);
   assert.match(res.body.message, /unique login ID/i);
+});
+
+test("resending a sign-in code renews the same account-bound challenge", async (t) => {
+  const account = fixture(SHARED_DEMO_ACCOUNTS[0], {
+    security: { sessionVersion: 4 },
+  });
+  t.mock.method(User, "findById", async (id) => {
+    assert.equal(String(id), account.id);
+    return account;
+  });
+  t.mock.method(emailService, "canSendEmail", () => true);
+  t.mock.method(emailService, "sendEmail", async () => {});
+  t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
+  t.mock.method(OtpRequest, "countDocuments", async () => 0);
+  t.mock.method(OtpRequest, "create", async (record) => ({ ...record, _id: "resent" }));
+
+  const originalChallenge = jwt.sign({
+    purpose: "login_email_verification",
+    sub: account.id,
+    jti: "resend-challenge",
+    securityVersion: 4,
+  }, env.jwtSecret, { expiresIn: "1m" });
+  const res = response();
+  await resendLoginEmail({ body: { challengeToken: originalChallenge } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.notEqual(res.body.challengeToken, originalChallenge);
+  const renewed = jwt.verify(res.body.challengeToken, env.jwtSecret);
+  assert.equal(renewed.sub, account.id);
+  assert.equal(renewed.jti, "resend-challenge");
+  assert.equal(renewed.securityVersion, 4);
 });
 
 test("shared demo email recovery requires an exact account login ID", async () => {
@@ -114,6 +159,20 @@ test("shared demo email password reset remains bound to the selected account ID"
     passwordHash: await bcrypt.hash("OldPass123!", 4),
     security: { sessionVersion: 3 },
   });
+  const recoveryOtp = {
+    _id: "shared-recovery-code",
+    codeHash: hashVerificationCode({
+      accountId: carl.id,
+      email: SHARED_DEMO_EMAIL,
+      action: "password_reset",
+      code,
+    }),
+    expiresAt: new Date(Date.now() + 60_000),
+    attempts: 0,
+    lockedAt: null,
+    verifiedAt: null,
+    save: async () => {},
+  };
   const previousPasswordHash = carl.passwordHash;
   t.mock.method(User, "findOne", async (query) => {
     assert.deepEqual(query, {
@@ -127,16 +186,9 @@ test("shared demo email password reset remains bound to the selected account ID"
   t.mock.method(OtpRequest, "findOne", (query) => {
     assert.equal(query.accountId, carl.id);
     assert.equal(query.email, SHARED_DEMO_EMAIL);
-    return {
-      sort: async () => ({
-        codeHash: crypto.createHash("sha256").update(code).digest("hex"),
-        expiresAt: new Date(Date.now() + 60_000),
-        attempts: 0,
-        verifiedAt: null,
-        save: async () => {},
-      }),
-    };
+    return { sort: async () => recoveryOtp };
   });
+  t.mock.method(OtpRequest, "findOneAndUpdate", async (_query, update) => ({ ...recoveryOtp, verifiedAt: update.$set.verifiedAt }));
   t.mock.method(carl, "save", async () => carl);
 
   const res = response();
@@ -158,12 +210,12 @@ test("shared demo email password reset remains bound to the selected account ID"
 
 test("public customer registration cannot claim the reserved shared demo email", async () => {
   const res = response();
-  await startRegistration({ body: { email: SHARED_DEMO_EMAIL } }, res);
+  await requestOtp({ body: { action: "register_email", channel: "email", email: SHARED_DEMO_EMAIL } }, res);
   assert.equal(res.statusCode, 409);
-  assert.match(res.body.errors.email, /reserved/i);
+  assert.match(res.body.message, /reserved/i);
 });
 
-test("superadmin email editing preserves the target account security configuration", async (t) => {
+test("superadmin email editing preserves the target account session and permissions", async (t) => {
   const carlAccount = SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.carl");
   const lebronAccount = SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.lebron");
   const target = fixture(carlAccount, {
@@ -172,11 +224,6 @@ test("superadmin email editing preserves the target account security configurati
     permissions: ["service:complete"],
     security: {
       sessionVersion: 7,
-      totpEnabled: true,
-      totpSecretEncrypted: encryptSecret("CARLSEPARATESECRET"),
-      totpVerifiedAt: new Date("2026-09-01T00:00:00.000Z"),
-      recoveryCodeHashes: ["unchanged-recovery-hash"],
-      recoveryCodesRemaining: 1,
     },
   });
   const existingSharedEmailAccount = fixture(lebronAccount);

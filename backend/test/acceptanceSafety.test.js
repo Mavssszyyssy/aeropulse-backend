@@ -12,3 +12,16 @@ test("destructive QA utilities require a separately named isolated database", ()
   assert.match(reset, /RESET_ISOLATED_QA/);
   assert.match(reset, /\(_qa\|_e2e\)/);
 });
+
+test("the retired-authentication migration is dry-run by default and preserves live sessions", () => {
+  const migration = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "remove-authenticator-data.js"),
+    "utf8",
+  );
+  assert.match(migration, /process\.argv\.includes\("--apply"\)/);
+  assert.match(migration, /CONFIRM_REMOVE_AUTHENTICATOR_DATA/);
+  assert.match(migration, /REMOVE_AUTHENTICATOR_EXPECTED_DATABASE/);
+  assert.match(migration, /passwordReset: ""/);
+  assert.match(migration, /"security\.totpSecretEncrypted": ""/);
+  assert.doesNotMatch(migration.match(/const OBSOLETE_AUTH_FIELDS = \{[\s\S]*?\n\};/)?.[0] || "", /sessionVersion/);
+});

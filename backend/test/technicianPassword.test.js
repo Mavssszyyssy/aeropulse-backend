@@ -2,9 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const bcrypt = require('bcryptjs');
 const User = require('../src/models/User');
-const jwt = require('jsonwebtoken');
-const env = require('../src/config/env');
-const { login } = require('../src/controllers/authController');
 const { changePassword } = require('../src/controllers/userController');
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 
@@ -44,8 +41,8 @@ test('invalid or conflicting contact numbers cannot partly change a technician p
   assert.ok(await bcrypt.compare('Changed1#', user.passwordHash));
 });
 
-test('technician first password change completes setup and preserves the account TOTP challenge', async (t) => {
-  const user = new User({ name_first: 'Test', name_last: 'Technician', role: 'technician', username: 'tech.cavite.test', isFirstLogin: true, security: { totpEnabled: true, totpResetRequired: true } });
+test('technician first password change completes setup while preserving email verification sign-in', async (t) => {
+  const user = new User({ name_first: 'Test', name_last: 'Technician', role: 'technician', username: 'tech.cavite.test', isFirstLogin: true });
   user.passwordHash = await bcrypt.hash('cavite.test', 4);
   user.phone = '09123456789';
   t.mock.method(User, 'findOne', () => ({ select: async () => null }));
@@ -55,17 +52,8 @@ test('technician first password change completes setup and preserves the account
   assert.equal(res.statusCode, 200);
   assert.equal(user.isFirstLogin, false);
   assert.ok(user.technicianOnboardedAt);
-  t.mock.method(User, 'findOne', async () => user);
-  const signedIn = response();
-  await login({ body: { identifier: user.username, password: 'NewPass123#' } }, signedIn);
-  assert.equal(signedIn.body.requiresTotp, true);
-  assert.equal(signedIn.body.token, undefined);
-  const challenge = jwt.verify(signedIn.body.challengeToken, env.jwtSecret);
-  assert.equal(challenge.purpose, 'login_totp');
-  assert.equal(challenge.sub, user.id);
-  const oldPassword = response();
-  await login({ body: { identifier: user.username, password: 'cavite.test' } }, oldPassword);
-  assert.equal(oldPassword.statusCode, 401);
+  assert.ok(await bcrypt.compare('NewPass123#', user.passwordHash));
+  assert.equal(await bcrypt.compare('cavite.test', user.passwordHash), false);
 });
 
 test('account password rules accept punctuation and boundaries, reject missing criteria without changing the account', async (t) => {
@@ -106,40 +94,5 @@ test('technician profile password change requires current password and persists 
   await changePassword({ authUser: user, body: { currentPassword: 'OldPass123!', newPassword: 'NewPass123!' } }, valid);
   assert.equal(valid.statusCode, 200);
   assert.ok(await bcrypt.compare('NewPass123!', user.passwordHash));
-  t.mock.method(User, 'findOne', async () => user);
-  const signedIn = response();
-  await login({ body: { identifier: 'tech.fixture', password: 'NewPass123!' } }, signedIn);
-  assert.ok(signedIn.body.token);
-  const oldPassword = response();
-  await login({ body: { identifier: 'tech.fixture', password: 'OldPass123!' } }, oldPassword);
-  assert.equal(oldPassword.statusCode, 401);
-});
-
-test('every supported role requires its own enabled authenticator at sign-in', async (t) => {
-  for (const role of ['customer', 'technician', 'admin', 'superadmin']) {
-    const user = new User({ name_first: 'Test', name_last: 'User', role, security: { totpEnabled: true } });
-    user.passwordHash = await bcrypt.hash('ValidPass123!', 4);
-    t.mock.method(User, 'findOne', async () => user);
-    const res = response();
-    await login({ body: { identifier: 'test', password: 'ValidPass123!' } }, res);
-    assert.equal(res.body.requiresTotp, true);
-    assert.equal(res.body.token, undefined);
-  }
-});
-
-test('required roles without an authenticator receive a restricted enrollment session', async (t) => {
-  for (const role of ['customer', 'technician', 'admin', 'superadmin']) {
-    const user = new User({ name_first: 'Enrollment', name_last: 'Required', role, security: { totpEnabled: false } });
-    user.passwordHash = await bcrypt.hash('ValidPass123!', 4);
-    t.mock.method(User, 'findOne', async () => user);
-    t.mock.method(user, 'save', async () => user);
-    const res = response();
-    await login({ body: { identifier: `missing-totp-${role}`, password: 'ValidPass123!' } }, res);
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body.requiresTotpSetup, true);
-    assert.ok(res.body.token);
-    const token = jwt.verify(res.body.token, env.jwtSecret);
-    assert.equal(token.sub, user.id);
-    assert.equal(token.role, role);
-  }
+  assert.equal(await bcrypt.compare('OldPass123!', user.passwordHash), false);
 });

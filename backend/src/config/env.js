@@ -135,13 +135,6 @@ const env = {
   smtpFrom: process.env.SMTP_FROM || "",
   resendApiKey: process.env.RESEND_API_KEY || "",
   resendFromEmail: process.env.RESEND_FROM_EMAIL || "",
-  passwordResetTokenSecret:
-    process.env.PASSWORD_RESET_TOKEN_SECRET ||
-    process.env.JWT_SECRET ||
-    "dev-secret",
-  passwordResetTokenTtlMinutes: Number(
-    process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES || 20,
-  ),
   accountDeleteMode: process.env.ACCOUNT_DELETE_MODE || "soft",
   serviceCatalogJson: process.env.SERVICE_CATALOG_JSON || "",
   cronSecret: process.env.CRON_SECRET || "",

@@ -3,11 +3,11 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const jwt = require('jsonwebtoken');
-const speakeasy = require('speakeasy');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { formatDateKeyInTimeZone } = require('../src/utils/dateTime');
 const { BRANCHES } = require('../src/domain/branchRouting');
 const zipRules = require('../src/utils/postalCodeRules.json');
+const { closeIsolatedQaSession, createIsolatedQaSession } = require('./lib/isolatedQaSession');
 const base = 'http://127.0.0.1:5002/api';
 const database = process.env.ACCEPTANCE_EXPECTED_DATABASE;
 if (!/^coldair_logic_\d{8}_e2e$/.test(database || '')) throw new Error('Explicit isolated QA database required');
@@ -27,7 +27,7 @@ async function request(route, token, method = 'GET', body, expected = 200) {
   assert.equal(response.status, expected, `${method} ${route}: ${data.message || response.status}`);
   return data;
 }
-const login = (identifier, password) => request('/auth/login', null, 'POST', { identifier, password });
+const login = createIsolatedQaSession;
 const idOf = value => String(value.id || value._id);
 const checkpoints = [];
 function passed(name) { checkpoints.push(name); console.log(`PASS ${name}`); }
@@ -54,9 +54,6 @@ async function main() {
     contact_method: 'email', locations: [{ address: addresses[0], coordinates: {} }],
     registrationVerificationToken: jwt.sign({ purpose: 'registration_verification', email, phone: '' }, process.env.JWT_SECRET || 'dev-secret', { expiresIn: '5m' }),
   });
-  const setup = await request('/security/totp/setup', customer.token, 'POST', {});
-  const verified = await request('/security/totp/verify', customer.token, 'POST', { code: speakeasy.totp({ secret: setup.secret, encoding: 'base32' }) });
-  customer.token = verified.token;
   await request('/users/profile', customer.token, 'PATCH', { customer_onboarded_at: new Date().toISOString() });
   assert.equal(customer.user.assignedBranch, 'Bulacan');
   passed('One customer account and six branch-specific admin/technician sessions');
@@ -159,4 +156,6 @@ async function main() {
   passed('Nearby-stock order: Bulacan delivery uses Cavite stock/technician; both admins notified; correct QR resolves');
   console.log(`Completed ${checkpoints.length} branch-flow checkpoints in isolated QA only. No live purchases, messages, or payments.`);
 }
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+main()
+  .catch(error => { console.error(error.message); process.exitCode = 1; })
+  .finally(closeIsolatedQaSession);

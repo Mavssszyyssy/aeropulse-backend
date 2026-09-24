@@ -17,7 +17,6 @@ const {
   updatePrivacy,
   updateNotifications,
   changePassword,
-  requestPasswordChangeEmail,
   deleteAccount,
   unlockUser,
   updateUserStatus,
@@ -50,7 +49,6 @@ router.delete("/addresses/:addressId", deleteAddress);
 router.patch("/addresses/:addressId/default", setDefaultAddress);
 
 router.patch("/password", changePassword);
-router.post("/password/request-email", requestPasswordChangeEmail);
 router.delete("/account", deleteAccount);
 router.delete("/me", deleteAccount);
 

@@ -4,8 +4,11 @@
 // support ticket. Never point this script at the production backend.
 const path = require("path");
 const jwt = require("jsonwebtoken");
-const speakeasy = require("speakeasy");
 const { formatDateKeyInTimeZone } = require("../src/utils/dateTime");
+const {
+  closeIsolatedQaSession,
+  createIsolatedQaSession,
+} = require("./lib/isolatedQaSession");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const baseUrl = process.env.ACCEPTANCE_API_BASE || "http://127.0.0.1:5002/api";
@@ -58,14 +61,7 @@ const request = async (pathName, { token, method = "GET", body, headers = {}, ex
   return { status: response.status, data };
 };
 
-const login = async (identifier, password) => {
-  const { data } = await request("/auth/login", {
-    method: "POST",
-    body: { identifier, password },
-  });
-  if (!data.token || !data.user) throw new Error(`Login did not return a session for ${identifier}.`);
-  return data;
-};
+const login = createIsolatedQaSession;
 
 const findProduct = async (token, productId) => {
   const { data } = await request("/products", { token });
@@ -141,30 +137,19 @@ const main = async () => {
     throw new Error("Customer registration did not create a Bulacan-routed account.");
   }
   record("Customer registration and address-to-branch synchronization");
-  // Exercise the real authenticator endpoints for this isolated test account.
-  // No authenticator secrets, recovery codes, or access tokens are logged.
-  await request("/users/profile", { token: customerToken, method: "PATCH", expected: [409], body: { customer_onboarded_at: new Date().toISOString() } });
-  const setup = await request("/security/totp/setup", { token: customerToken, method: "POST", body: {} });
-  const customerVerified = await request("/security/totp/verify", { token: customerToken, method: "POST", body: { code: speakeasy.totp({ secret: setup.data.secret, encoding: "base32" }) } });
-  customerToken = customerVerified.data.token;
-  const authChallenge = await request("/auth/login", { method: "POST", body: { identifier: registrationBody.alias, password: customerPassword } });
-  if (authChallenge.data.token || !authChallenge.data.challengeToken) throw new Error("Password-only login bypassed the enabled authenticator.");
-  await request("/auth/login/totp", { method: "POST", body: { challengeToken: authChallenge.data.challengeToken, code: speakeasy.totp({ secret: setup.data.secret, encoding: "base32" }) } });
-  record("Authenticator setup and subsequent two-step login");
   const setupCompleted = await request("/users/profile", { token: customerToken, method: "PATCH", body: { customer_onboarded_at: new Date().toISOString() } });
   const reloadedCustomer = await request("/users/profile", { token: customerToken });
   if (!setupCompleted.data.user?.customerOnboardedAt || setupCompleted.data.user.customerOnboardedAt !== reloadedCustomer.data.user?.customerOnboardedAt) throw new Error("Customer setup completion did not persist across profile reload.");
   if (JSON.stringify(reloadedCustomer.data.user.addresses) !== JSON.stringify(customer.addresses)) throw new Error("Completing security setup unexpectedly changed customer addresses.");
-  record("Customer onboarding persists after verified setup without changing saved addresses");
+  record("Customer onboarding persists without changing saved addresses");
   const genericTech = await login(staff.data.loginIdentifier, staff.data.tempPassword);
   await request("/tasks", { token: genericTech.token, expected: [403] });
   await request("/users/password", { token: genericTech.token, method: "PATCH", body: { alias: staff.data.loginIdentifier, phone: `0918${runId.slice(-7)}`, newPassword: "QaTechnician9!" } });
   const techSignedIn = await login(staff.data.loginIdentifier, "QaTechnician9!");
   if (!techSignedIn.user?.technicianOnboardedAt || techSignedIn.user?.isFirstLogin) throw new Error("Technician password setup did not persist.");
   genericTech.token = techSignedIn.token;
-  await request("/security/totp/setup", { token: genericTech.token, method: "POST", expected: [403], body: {} });
   await request("/tasks", { token: genericTech.token });
-  record("New technician completes password setup, signs in without an authenticator, and accesses work orders");
+  record("New technician completes password setup and accesses work orders");
   const genericBody = { title: "Inspect cooling controller", customerId: customer.id, customerName: "Acceptance Customer", address: address.street, branch: "Bulacan", assignedTechnicianId: technician.id || technician._id, status: "in-progress" };
   await request("/tasks", { token: superadmin.token, method: "POST", expected: [400], body: { ...genericBody, assignedTechnicianId: superadmin.user.id } });
   await request("/tasks", { token: superadmin.token, method: "POST", expected: [409], body: { ...genericBody, branch: "Cavite" } });
@@ -697,7 +682,9 @@ const main = async () => {
   console.log(`Isolated QA walkthrough technician: ${technician.alias}`);
 };
 
-main().catch((error) => {
-  console.error(`FAIL  ${error.message}`);
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    console.error(`FAIL  ${error.message}`);
+    process.exitCode = 1;
+  })
+  .finally(closeIsolatedQaSession);
