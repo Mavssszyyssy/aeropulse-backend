@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const {
   normalizeOptionalIdentity,
 } = require("../utils/optionalIdentity");
+const { buildEmailIdentityKey } = require("../domain/demoStaffPolicy");
 
 const addressSchema = new mongoose.Schema(
   {
@@ -59,11 +60,20 @@ const userSchema = new mongoose.Schema(
       type: String,
       // Staff and legacy accounts may not have an email; public signup requires email verification.
       required: false,
+      lowercase: true,
+      trim: true,
+      set: normalizeOptionalIdentity,
+    },
+    // Normal accounts store email:<normalized address>. The five named demo
+    // accounts store separate shared-demo:<account alias> keys, so the
+    // database still rejects duplicate customer/ordinary staff email values.
+    emailIdentityKey: {
+      type: String,
       unique: true,
       sparse: true,
       lowercase: true,
       trim: true,
-      set: normalizeOptionalIdentity,
+      select: false,
     },
     username: {
       type: String,
@@ -229,12 +239,17 @@ const userSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+userSchema.pre("validate", function assignEmailIdentityKey() {
+  this.emailIdentityKey = buildEmailIdentityKey(this, this.email);
+});
+
 userSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;
     delete ret.passwordHash;
+    delete ret.emailIdentityKey;
     delete ret.passwordReset;
     delete ret.failedLoginAttempts;
     delete ret.lockoutUntil;

@@ -32,7 +32,7 @@ test("optional identity indexes allow more than one account to omit a field", ()
     User.schema.indexes().map(([keys, options]) => [Object.keys(keys)[0], options]),
   );
 
-  ["email", "phone", "alias", "username", "googleId"].forEach((field) => {
+  ["emailIdentityKey", "phone", "alias", "username", "googleId"].forEach((field) => {
     assert.equal(indexes.get(field)?.unique, true, `${field} must remain unique`);
     assert.equal(indexes.get(field)?.sparse, true, `${field} must remain sparse`);
   });
@@ -63,6 +63,10 @@ test("duplicate account fields return customer-safe conflict messages", () => {
   );
   assert.equal(
     duplicateIdentityMessage({ code: 11000, message: "index: email_1 dup key" }),
+    "An account with this email address already exists.",
+  );
+  assert.equal(
+    duplicateIdentityMessage({ code: 11000, keyPattern: { emailIdentityKey: 1 } }),
     "An account with this email address already exists.",
   );
   assert.equal(duplicateIdentityMessage(new Error("Database offline")), "");

@@ -11,9 +11,14 @@ const { resolveConfiguredBranch } = require("../services/branchCoverageService")
 const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
 const { canSendEmail, sendEmail } = require("../utils/email");
-const { isProtectedDemoStaff } = require("../domain/demoStaffPolicy");
+const {
+  SHARED_DEMO_EMAIL,
+  canUseSharedDemoEmail,
+  isProtectedDemoStaff,
+} = require("../domain/demoStaffPolicy");
 const { generatePasswordResetToken } = require("../domain/passwordResetLink");
 const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
+const { invalidateAuthCache } = require("../middleware/auth");
 
 const PROFILE_VISIBILITY_VALUES = ["public", "private", "role_based"];
 const NOTIFICATION_TYPES = ["account", "order", "system"];
@@ -34,6 +39,8 @@ const sanitizeOptionalUsername = (value = "") =>
     .toLowerCase();
 const isValidUsername = (value = "") =>
   !value || /^[a-z0-9_.-]{3,30}$/.test(value);
+const normalizeEmail = (value = "") => String(value || "").trim().toLowerCase();
+const isValidEmail = (value = "") => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
 const isAllowedAvatarUrl = (value = "") => {
   const avatar = String(value || "").trim();
   if (!avatar) return true;
@@ -463,8 +470,24 @@ const applyProfileUpdate = async (
     user.address = formatAddressLine(normalizedBillingAddress) || user.address;
   }
 
-  if (allowEmailChange && payload.email !== undefined) {
-    // Placeholder for a future verified-email-change flow.
+  if (payload.email !== undefined) {
+    if (!allowEmailChange) {
+      return { ok: false, status: 403, message: "Only the SuperAdmin can change staff email addresses." };
+    }
+    const email = normalizeEmail(payload.email);
+    if (!isValidEmail(email)) {
+      return { ok: false, status: 400, message: "Enter a valid email address." };
+    }
+    if (email === SHARED_DEMO_EMAIL && !canUseSharedDemoEmail(user, email)) {
+      return { ok: false, status: 403, message: "The shared demo email is limited to the five approved demo accounts." };
+    }
+    if (email !== normalizeEmail(user.email)) {
+      const existing = await User.findOne({ email, _id: { $ne: user._id } });
+      if (existing && !(canUseSharedDemoEmail(user, email) && canUseSharedDemoEmail(existing, email))) {
+        return { ok: false, status: 409, message: "An account with this email address already exists." };
+      }
+      user.email = email;
+    }
   }
 
   const technicianOnboardedAt =
@@ -532,13 +555,16 @@ const getProfileById = async (req, res) => {
 };
 
 const updateProfile = async (req, res) => {
-  const result = await applyProfileUpdate(req.authUser, req.body || {});
+  const result = await applyProfileUpdate(req.authUser, req.body || {}, {
+    allowEmailChange: req.authUser.role === "superadmin",
+  });
   if (!result.ok) {
     return res.status(result.status).json({ message: result.message });
   }
 
   await syncCustomerBranchFromDefault(req.authUser, req.authUser.addresses || []);
   await req.authUser.save();
+  invalidateAuthCache(req.authUser.id);
   return res.json({ user: req.authUser.toJSON() });
 };
 
@@ -563,13 +589,16 @@ const updateProfileById = async (req, res) => {
     target.serviceQuota = serviceQuota;
   }
 
-  const result = await applyProfileUpdate(target, req.body || {});
+  const result = await applyProfileUpdate(target, req.body || {}, {
+    allowEmailChange: req.authUser.role === "superadmin" && ["admin", "technician"].includes(target.role),
+  });
   if (!result.ok) {
     return res.status(result.status).json({ message: result.message });
   }
 
   await syncCustomerBranchFromDefault(target, target.addresses || []);
   await target.save();
+  invalidateAuthCache(target.id);
   return res.json({ user: target.toJSON() });
 };
 

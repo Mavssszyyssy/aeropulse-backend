@@ -110,7 +110,11 @@ const demoUsers = [
 
 const seedDemoUsers = async () => {
   for (const item of demoUsers) {
-    const exists = await User.findOne({ email: item.email });
+    // Seed identity is the stable account alias. Approved demo staff may have
+    // their contact email changed without creating a replacement account.
+    const exists = await User.findOne({
+      $or: [{ alias: item.alias }, { username: item.alias }, { email: item.email }],
+    });
     if (exists) {
       continue;
     }

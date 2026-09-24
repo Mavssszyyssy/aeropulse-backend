@@ -52,7 +52,14 @@ test('email OTP verification returns email-only proof and resumable progress', a
 });
 
 test('email password recovery still accepts the registered email identifier', async (t) => {
-  t.mock.method(User, 'findOne', async (query) => { assert.deepEqual(query, { email: 'customer@example.com' }); return null; });
+  t.mock.method(User, 'findOne', async (query) => {
+    assert.deepEqual(query, { $or: [{ alias: 'customer@example.com' }, { username: 'customer@example.com' }] });
+    return null;
+  });
+  t.mock.method(User, 'find', (query) => {
+    assert.deepEqual(query, { email: 'customer@example.com' });
+    return { limit: async () => [] };
+  });
   const res = response();
   await auth.requestPasswordReset({ body: { identifier: 'Customer@example.com' } }, res);
   assert.equal(res.statusCode, 200);

@@ -1,5 +1,6 @@
 const OPTIONAL_IDENTITY_FIELDS = [
   "email",
+  "emailIdentityKey",
   "phone",
   "alias",
   "username",
@@ -17,15 +18,16 @@ const duplicateIdentityField = (error = {}) => {
   const structuredField = Object.keys(
     error.keyPattern || error.keyValue || {},
   ).find((field) => OPTIONAL_IDENTITY_FIELDS.includes(field));
-  if (structuredField) return structuredField;
+  if (structuredField) return structuredField === "emailIdentityKey" ? "email" : structuredField;
 
   const message = String(error?.message || "");
-  return (
+  const messageField = (
     OPTIONAL_IDENTITY_FIELDS.find(
       (field) =>
         message.includes(`${field}_1`) || message.includes(`${field}:`),
     ) || "unknown"
   );
+  return messageField === "emailIdentityKey" ? "email" : messageField;
 };
 
 const duplicateIdentityMessage = (error = {}) => {

@@ -26,15 +26,17 @@ const restoreDemoStaff = async () => {
   const conflicts = demoStaff.filter((staff) => {
     const matches = existingUsers.filter((user) => matchesIdentity(user, staff));
     return matches.some((user) => {
-      const exactActiveEmail =
-        String(user.email || "").toLowerCase() === staff.email &&
+      const exactActiveIdentity =
+        (String(user.email || "").toLowerCase() === staff.email ||
+          String(user.alias || "").toLowerCase() === staff.alias) &&
+        user.role === staff.role &&
         !user.isDeleted &&
         user.accountStatus !== "deleted";
       const restorableSeed =
         String(user.alias || "").toLowerCase() === staff.alias &&
         user.role === staff.role &&
         (user.isDeleted || user.accountStatus === "deleted");
-      return !exactActiveEmail && !restorableSeed;
+      return !exactActiveIdentity && !restorableSeed;
     });
   });
 
@@ -50,7 +52,9 @@ const restoreDemoStaff = async () => {
   for (const staff of demoStaff) {
     const existing = existingUsers.find(
       (user) =>
-        String(user.email || "").toLowerCase() === staff.email &&
+        (String(user.email || "").toLowerCase() === staff.email ||
+          String(user.alias || "").toLowerCase() === staff.alias) &&
+        user.role === staff.role &&
         !user.isDeleted &&
         user.accountStatus !== "deleted",
     );

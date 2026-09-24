@@ -7,6 +7,7 @@ const mongoose = require("mongoose");
  */
 const otpRequestSchema = new mongoose.Schema(
   {
+    accountId: { type: String, default: "", trim: true },
     email: { type: String, default: "" },
     phone: { type: String, default: "" },
     messenger_handle: { type: String, default: "" },
@@ -25,6 +26,7 @@ const otpRequestSchema = new mongoose.Schema(
 );
 
 otpRequestSchema.index({ email: 1, action: 1, channel: 1 });
+otpRequestSchema.index({ accountId: 1, action: 1, channel: 1, requestedAt: -1 });
 otpRequestSchema.index({ phone: 1, action: 1, channel: 1 });
 otpRequestSchema.index({ messenger_handle: 1, action: 1, channel: 1 });
 otpRequestSchema.index({ action: 1, channel: 1, requestedAt: -1 });

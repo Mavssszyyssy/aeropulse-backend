@@ -23,6 +23,7 @@ const {
   mergeClientRegistrationProgress,
 } = require("../domain/registrationProgress");
 const { hashPasswordResetToken, isAuthenticPasswordResetToken } = require("../domain/passwordResetLink");
+const { SHARED_DEMO_EMAIL } = require("../domain/demoStaffPolicy");
 
 const OTP_TTL_MINUTES = Math.max(
   3,
@@ -41,6 +42,7 @@ const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 
 const normalizeEmail = (email = "") => String(email).trim().toLowerCase();
 const isValidEmail = (email = "") => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+const isReservedSharedDemoEmail = (email = "") => normalizeEmail(email) === SHARED_DEMO_EMAIL;
 const normalizeIdentifier = (value = "") => String(value).trim().toLowerCase();
 const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
 const isValidSixDigitCode = (value = "") =>
@@ -55,6 +57,25 @@ const signRegistrationVerificationToken = ({ email = "", phone = "" }) =>
     env.jwtSecret,
     { expiresIn: `${OTP_TTL_MINUTES}m` },
   );
+
+const findAccountByIdentifier = async (identifier = "") => {
+  const normalizedIdentifier = normalizeIdentifier(identifier);
+  if (!normalizedIdentifier) return { user: null, ambiguous: false };
+  const normalizedPhone = canonicalizePhMobile(identifier);
+  const uniqueConditions = [
+    { alias: normalizedIdentifier },
+    { username: normalizedIdentifier },
+  ];
+  if (isValidPhMobile(normalizedPhone)) uniqueConditions.push({ phone: normalizedPhone });
+  const uniqueUser = await User.findOne({ $or: uniqueConditions });
+  if (uniqueUser) return { user: uniqueUser, ambiguous: false };
+  if (!isValidEmail(normalizedIdentifier)) return { user: null, ambiguous: false };
+  const emailUsers = await User.find({ email: normalizedIdentifier }).limit(2);
+  return {
+    user: emailUsers.length === 1 ? emailUsers[0] : null,
+    ambiguous: emailUsers.length > 1,
+  };
+};
 
 const hashValue = (value = "") =>
   crypto.createHash("sha256").update(String(value)).digest("hex");
@@ -82,6 +103,7 @@ const sendOtpMessage = async ({ recipient, channel, action, code }) => {
  * SYMMETRICAL OTP HELPERS
  */
 const createOtpRequest = async ({
+  accountId = "",
   email = "",
   phone = "",
   messenger_handle = "",
@@ -95,7 +117,13 @@ const createOtpRequest = async ({
     throw error;
   }
   const normalizedEmail = normalizeEmail(email);
-  const targetQuery = { action, channel, email: normalizedEmail };
+  const normalizedAccountId = String(accountId || "").trim();
+  const targetQuery = {
+    action,
+    channel,
+    email: normalizedEmail,
+    ...(normalizedAccountId ? { accountId: normalizedAccountId } : {}),
+  };
   const now = new Date();
   const latest = await OtpRequest.findOne(targetQuery).sort({ requestedAt: -1 });
   if (latest?.requestedAt) {
@@ -122,6 +150,7 @@ const createOtpRequest = async ({
   const expiresAt = new Date(now.getTime() + OTP_TTL_MINUTES * 60 * 1000);
 
   const otpRequest = await OtpRequest.create({
+    accountId: normalizedAccountId,
     email: normalizedEmail,
     phone: "",
     messenger_handle: "",
@@ -149,6 +178,7 @@ const createOtpRequest = async ({
 };
 
 const findOtpRequest = async ({
+  accountId = "",
   email = "",
   phone = "",
   messenger_handle = "",
@@ -156,11 +186,19 @@ const findOtpRequest = async ({
   channel,
 }) => {
   if (!OTP_ACTION_CHANNELS[action]?.includes(channel) || !isValidEmail(email)) return null;
-  const query = { action, channel, verifiedAt: null, email: normalizeEmail(email) };
+  const normalizedAccountId = String(accountId || "").trim();
+  const query = {
+    action,
+    channel,
+    verifiedAt: null,
+    email: normalizeEmail(email),
+    ...(normalizedAccountId ? { accountId: normalizedAccountId } : {}),
+  };
   return OtpRequest.findOne(query).sort({ createdAt: -1 });
 };
 
 const verifyOtpRequest = async ({
+  accountId = "",
   email = "",
   phone = "",
   messenger_handle = "",
@@ -169,6 +207,7 @@ const verifyOtpRequest = async ({
   code,
 }) => {
   const otp = await findOtpRequest({
+    accountId,
     email,
     phone,
     messenger_handle,
@@ -211,6 +250,9 @@ const requestOtp = async (req, res) => {
   }
   if (channel === "email" && !isValidEmail(email)) {
     return res.status(400).json({ message: "A valid email address is required for email verification." });
+  }
+  if (action === "register_email" && isReservedSharedDemoEmail(email)) {
+    return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
   }
 
   // 1. Validation for specific actions
@@ -256,6 +298,9 @@ const verifyOtp = async (req, res) => {
 
   if (!OTP_ACTION_CHANNELS[action]?.includes(channel) || !isValidEmail(email)) {
     return res.status(400).json({ message: "A supported email verification request is required." });
+  }
+  if (action === "register_email" && isReservedSharedDemoEmail(email)) {
+    return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
   }
 
   if (!action || !code) {
@@ -344,6 +389,9 @@ const startRegistration = async (req, res) => {
       .status(400)
       .json({ errors: { email: "Valid email is required" } });
   }
+  if (isReservedSharedDemoEmail(email)) {
+    return res.status(409).json({ errors: { email: "This email address is reserved for approved demo staff accounts" } });
+  }
 
   const existing = await User.findOne({ email });
   if (existing) {
@@ -373,6 +421,9 @@ const verifyRegistrationCode = async (req, res) => {
 
   if (!normalizedEmail || !isValidSixDigitCode(code)) {
     return res.status(400).json({ message: "Data required." });
+  }
+  if (isReservedSharedDemoEmail(normalizedEmail)) {
+    return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
   }
   const verification = await verifyOtpRequest({ email: normalizedEmail, action: "register_email", channel: "email", code });
   if (!verification.ok) return res.status(400).json({ message: "Invalid or expired code." });
@@ -428,6 +479,9 @@ const register = async (req, res) => {
     const normalizedEmail = normalizeEmail(email);
     if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({ message: "A valid email address is required." });
+    }
+    if (isReservedSharedDemoEmail(normalizedEmail)) {
+      return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
     }
     const normalizedPhone = canonicalizePhMobile(phone);
     if (normalizedPhone && !isValidPhMobile(normalizedPhone)) {
@@ -551,20 +605,13 @@ const register = async (req, res) => {
 const login = async (req, res) => {
   const { identifier, password } = req.body;
   try {
-    const normalizedIdentifier = normalizeIdentifier(identifier);
-    const normalizedPhone = canonicalizePhMobile(identifier);
-    const lookupConditions = [
-      { email: normalizedIdentifier },
-      { alias: normalizedIdentifier },
-      { username: normalizedIdentifier },
-    ];
-    if (isValidPhMobile(normalizedPhone)) {
-      lookupConditions.push({ phone: normalizedPhone });
+    const account = await findAccountByIdentifier(identifier);
+    if (account.ambiguous) {
+      return res.status(409).json({
+        message: "This demo email belongs to multiple accounts. Sign in with the account's unique login ID.",
+      });
     }
-    // STRICT ALIAS LOGIN: Email is excluded to prioritize technical identity
-    const user = await User.findOne({
-      $or: lookupConditions,
-    });
+    const user = account.user;
 
     if (user?.lockoutUntil && user.lockoutUntil > new Date()) {
       return res.status(429).json({ message: "Too many failed attempts. Try again later." });
@@ -586,7 +633,7 @@ const login = async (req, res) => {
       }
       return res.status(401).json({ message: "Invalid credentials" });
     }
-    if (user.role !== "technician" && user.security?.totpEnabled) {
+    if (user.security?.totpEnabled) {
       const challengeToken = jwt.sign(
         { purpose: "login_totp", sub: user.id },
         env.jwtSecret,
@@ -603,7 +650,7 @@ const login = async (req, res) => {
     user.lockoutUntil = null;
     user.lastLogin = new Date();
     await user.save();
-    const token = signUserAccessToken(user, user.role !== "technician" && user.security?.totpResetRequired ? { recovery: true } : {});
+    const token = signUserAccessToken(user, user.security?.totpResetRequired ? { recovery: true } : {});
     return res.json({ success: true, token, user: user.toJSON() });
   } catch (err) {
     return res.status(500).json({ message: "Login error" });
@@ -730,13 +777,20 @@ const requestPasswordReset = async (req, res) => {
     return res.status(400).json({ message: "Use email verification." });
   }
   const channel = "email";
-  const email = normalizeEmail(req.body.identifier || req.body.email || "");
-  if (!isValidEmail(email)) return res.status(400).json({ message: "A valid email address is required." });
-  const user = await User.findOne({ email });
+  const identifier = normalizeIdentifier(req.body.identifier || req.body.email || "");
+  if (!identifier) return res.status(400).json({ message: "Enter your email address or unique account login ID." });
+  const account = await findAccountByIdentifier(identifier);
+  if (account.ambiguous || identifier === SHARED_DEMO_EMAIL) {
+    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID instead." });
+  }
+  const user = account.user;
   if (!user) return res.json({ message: "If the account exists, a verification code has been sent." });
+  const email = normalizeEmail(user.email);
+  if (!isValidEmail(email)) return res.status(409).json({ message: "This account does not have a valid recovery email. Contact your administrator." });
 
   try {
     const { otpRequest } = await createOtpRequest({
+      accountId: user.id,
       email,
       action: "password_reset",
       channel,
@@ -801,9 +855,18 @@ const resetPasswordWithCode = async (req, res) => {
   if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 25) {
     return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
   }
-  const normalizedEmail = normalizeEmail(identifier || requestedEmail);
-  if (!isValidEmail(normalizedEmail)) return res.status(400).json({ message: "A valid email address is required." });
+  const accountIdentifier = normalizeIdentifier(identifier || requestedEmail);
+  if (!accountIdentifier) return res.status(400).json({ message: "Enter your email address or unique account login ID." });
+  const account = await findAccountByIdentifier(accountIdentifier);
+  if (account.ambiguous || accountIdentifier === SHARED_DEMO_EMAIL) {
+    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID instead." });
+  }
+  const user = account.user;
+  if (!user) return res.status(404).json({ message: "User not found." });
+  const normalizedEmail = normalizeEmail(user.email);
+  if (!isValidEmail(normalizedEmail)) return res.status(409).json({ message: "This account does not have a valid recovery email. Contact your administrator." });
   const verification = await verifyOtpRequest({
+    accountId: user.id,
     email: normalizedEmail,
     action: "password_reset",
     channel,
@@ -811,8 +874,6 @@ const resetPasswordWithCode = async (req, res) => {
   });
   if (!verification.ok)
     return res.status(400).json({ message: "Invalid code." });
-  const user = await User.findOne({ email: normalizedEmail });
-  if (!user) return res.status(404).json({ message: "User not found." });
   const salt = await bcrypt.genSalt(10);
   user.passwordHash = await bcrypt.hash(newPassword, salt);
   // Preserve the unselected authenticator secret and recovery-code hashes.

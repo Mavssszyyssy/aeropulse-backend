@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const bcrypt = require("bcryptjs");
 const { signUserAccessToken } = require("../utils/token");
 const { invalidateAuthCache } = require("../middleware/auth");
 const {
@@ -11,10 +12,13 @@ const {
   normalizeRecoveryCode,
   verifyTotpCode,
 } = require("../domain/accountSecurity");
+const { SHARED_DEMO_EMAIL } = require("../domain/demoStaffPolicy");
 
 const normalizeIdentifier = (value = "") => String(value).trim().toLowerCase();
 const normalizePhone = (value = "") => String(value).replace(/\D/g, "");
-const displayAccountName = (user = {}) => user.email || user.alias || user.username || user.id || "account";
+// The authenticator label must remain account-specific even when approved demo
+// staff intentionally share a delivery email address.
+const displayAccountName = (user = {}) => user.alias || user.username || user.id || user.email || "account";
 
 const securityStatus = (user = {}) => ({
   totpEnabled: Boolean(user.security?.totpEnabled),
@@ -130,12 +134,105 @@ const regenerateRecoveryCodes = async (req, res) => {
   });
 };
 
+const resetTotpAuthenticator = async (req, res) => {
+  try {
+    const user = await User.findById(req.authUser._id).select(
+      "+security.totpSecretEncrypted +security.totpPendingSecretEncrypted +security.recoveryCodeHashes",
+    );
+    if (!user) return res.status(404).json({ message: "Account not found." });
+
+    const currentPassword = String(req.body?.currentPassword || "");
+    const currentCode = String(req.body?.currentCode || "").trim();
+    if (user.passwordHash) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: "Enter your current password." });
+      }
+      if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+        return res.status(400).json({ message: "Current password is incorrect." });
+      }
+    }
+
+    if (user.security?.totpEnabled) {
+      let secret = "";
+      try {
+        secret = decryptSecret(user.security.totpSecretEncrypted);
+      } catch (_error) {
+        secret = "";
+      }
+      if (!secret) {
+        return res.status(409).json({
+          message: "Your authenticator needs recovery. Use a saved recovery code or contact support.",
+        });
+      }
+      if (!verifyTotpCode({ secret, code: currentCode })) {
+        return res.status(400).json({ message: "Current authenticator code is incorrect." });
+      }
+    }
+
+    const version = Number(user.security?.sessionVersion || 0);
+    const resetUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        ...(version
+          ? { "security.sessionVersion": version }
+          : {
+              $or: [
+                { "security.sessionVersion": 0 },
+                { "security.sessionVersion": { $exists: false } },
+              ],
+            }),
+      },
+      {
+        $set: {
+          "security.totpEnabled": false,
+          "security.totpResetRequired": true,
+          "security.totpSecretEncrypted": "",
+          "security.totpPendingSecretEncrypted": "",
+          "security.totpVerifiedAt": null,
+          "security.recoveryCodeHashes": [],
+          "security.recoveryCodesRemaining": 0,
+          "security.recoveryCodesGeneratedAt": null,
+        },
+        $inc: { "security.sessionVersion": 1 },
+      },
+      { new: true },
+    );
+    if (!resetUser) {
+      return res.status(409).json({
+        message: "Account security changed in another session. Sign in again and retry.",
+      });
+    }
+
+    invalidateAuthCache(resetUser.id);
+    const token = signUserAccessToken(
+      resetUser,
+      { recovery: true },
+      { expiresIn: "15m" },
+    );
+    return res.json({
+      message: "Authenticator reset confirmed. Set up and verify a new authenticator now.",
+      token,
+      user: resetUser.toJSON(),
+      security: securityStatus(resetUser),
+      requiresTotpReset: true,
+    });
+  } catch (error) {
+    console.error("Unable to reset authenticator:", error.message);
+    return res.status(500).json({ message: "Unable to reset the authenticator." });
+  }
+};
+
 const consumeRecoveryCode = async (req, res) => {
   try {
     const identifier = normalizeIdentifier(req.body?.identifier || req.body?.email || "");
     const normalizedCode = normalizeRecoveryCode(req.body?.code);
     if (!identifier || normalizedCode.length !== 12) {
       return res.status(400).json({ message: "Enter your account identifier and 12-character recovery code." });
+    }
+    if (identifier === SHARED_DEMO_EMAIL) {
+      return res.status(409).json({
+        message: "This demo email belongs to multiple accounts. Enter the account's unique login ID instead.",
+      });
     }
     const phone = normalizePhone(identifier);
     const conditions = [
@@ -196,5 +293,6 @@ module.exports = {
   getSecurityStatus,
   listRecoveryCodes,
   regenerateRecoveryCodes,
+  resetTotpAuthenticator,
   verifyTotpSetup,
 };
