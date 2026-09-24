@@ -126,3 +126,20 @@ test('every supported role requires its own enabled authenticator at sign-in', a
     assert.equal(res.body.token, undefined);
   }
 });
+
+test('required roles without an authenticator receive a restricted enrollment session', async (t) => {
+  for (const role of ['customer', 'technician', 'admin', 'superadmin']) {
+    const user = new User({ name_first: 'Enrollment', name_last: 'Required', role, security: { totpEnabled: false } });
+    user.passwordHash = await bcrypt.hash('ValidPass123!', 4);
+    t.mock.method(User, 'findOne', async () => user);
+    t.mock.method(user, 'save', async () => user);
+    const res = response();
+    await login({ body: { identifier: `missing-totp-${role}`, password: 'ValidPass123!' } }, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.requiresTotpSetup, true);
+    assert.ok(res.body.token);
+    const token = jwt.verify(res.body.token, env.jwtSecret);
+    assert.equal(token.sub, user.id);
+    assert.equal(token.role, role);
+  }
+});

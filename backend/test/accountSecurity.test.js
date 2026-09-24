@@ -2,9 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const speakeasy = require("speakeasy");
 const User = require("../src/models/User");
-const { isRecoveryRequestAllowed, requireAuth } = require("../src/middleware/auth");
+const {
+  isRecoveryRequestAllowed,
+  isTotpEnrollmentRequestAllowed,
+  requireAuth,
+} = require("../src/middleware/auth");
+const { requiresTotpEnrollment, roleRequiresTotp } = require("../src/domain/accountSecurityPolicy");
 const jwt = require("jsonwebtoken");
 const env = require("../src/config/env");
+const { signUserAccessToken } = require("../src/utils/token");
 const {
   buildTotpSetup,
   decryptSecret,
@@ -16,6 +22,12 @@ const {
   normalizeRecoveryCode,
   verifyTotpCode,
 } = require("../src/domain/accountSecurity");
+
+const response = () => ({
+  statusCode: 200,
+  status(code) { this.statusCode = code; return this; },
+  json(body) { this.body = body; return this; },
+});
 
 test("OTP generation always returns a secure six-digit value", () => {
   const values = new Set(Array.from({ length: 100 }, generateOtpCode));
@@ -73,8 +85,25 @@ test("recovery sessions can only access authenticator setup and session hydratio
   assert.equal(isRecoveryRequestAllowed("/api/security/totp/setup"), true);
   assert.equal(isRecoveryRequestAllowed("/api/security/totp/verify?source=recovery"), true);
   assert.equal(isRecoveryRequestAllowed("/api/auth/me"), true);
+  assert.equal(isRecoveryRequestAllowed("/api/auth/logout"), true);
   assert.equal(isRecoveryRequestAllowed("/api/orders/me"), false);
   assert.equal(isRecoveryRequestAllowed("/api/users/profile"), false);
+});
+
+test("customers and operational staff must enroll an authenticator before normal API access", () => {
+  for (const role of ["customer", "technician", "admin", "superadmin"]) {
+    assert.equal(roleRequiresTotp(role), true);
+    assert.equal(requiresTotpEnrollment({ role, security: { totpEnabled: false } }), true);
+    assert.equal(requiresTotpEnrollment({ role, security: { totpEnabled: true } }), false);
+    assert.equal(requiresTotpEnrollment({ role, security: { totpEnabled: true, totpResetRequired: true } }), true);
+  }
+  assert.equal(roleRequiresTotp("manager"), false);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/security/totp/setup"), true);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/security/totp/verify"), true);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/auth/me"), true);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/auth/logout"), true);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/users/password"), true);
+  assert.equal(isTotpEnrollmentRequestAllowed("/api/orders/me"), false);
 });
 
 test("challenge and incomplete tokens cannot be used as signed-in sessions", async () => {
@@ -86,4 +115,38 @@ test("challenge and incomplete tokens cannot be used as signed-in sessions", asy
     assert.equal(status, 401);
     assert.match(body.message, /verified sign-in session/);
   }
+});
+
+test("authenticated staff without TOTP can reach setup but not operational APIs", async (t) => {
+  const user = new User({
+    name_first: "Enrollment",
+    name_last: "Guard",
+    role: "admin",
+    assignedBranch: "Cavite",
+    activeBranch: "Cavite",
+    security: { totpEnabled: false, sessionVersion: 0 },
+  });
+  const query = {
+    then(resolve, reject) { return Promise.resolve(user).then(resolve, reject); },
+    select() { return { lean: async () => user.toObject() }; },
+  };
+  t.mock.method(User, "findById", () => query);
+  const token = signUserAccessToken(user);
+  const request = (path) => ({
+    headers: { authorization: `Bearer ${token}` },
+    method: "GET",
+    originalUrl: path,
+  });
+
+  let nextCalled = false;
+  const blocked = response();
+  await requireAuth(request("/api/orders"), blocked, () => { nextCalled = true; });
+  assert.equal(nextCalled, false);
+  assert.equal(blocked.statusCode, 403);
+  assert.equal(blocked.body.code, "TOTP_SETUP_REQUIRED");
+  assert.equal(blocked.body.requiresTotpSetup, true);
+
+  const allowed = response();
+  await requireAuth(request("/api/security/status"), allowed, () => { nextCalled = true; });
+  assert.equal(nextCalled, true);
 });

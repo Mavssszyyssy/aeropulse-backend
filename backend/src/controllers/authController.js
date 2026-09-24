@@ -7,6 +7,7 @@ const OtpRequest = require("../models/OtpRequest"); // Symmetrical V3 Model
 const AuditLog = require("../models/AuditLog");
 const { signUserAccessToken } = require("../utils/token");
 const env = require("../config/env");
+const { requiresTotpEnrollment } = require("../domain/accountSecurityPolicy");
 const { BRANCHES } = require("../domain/branchRouting");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const { buildOtpEmail } = require("../utils/otpEmailTemplate");
@@ -23,7 +24,10 @@ const {
   mergeClientRegistrationProgress,
 } = require("../domain/registrationProgress");
 const { hashPasswordResetToken, isAuthenticPasswordResetToken } = require("../domain/passwordResetLink");
-const { SHARED_DEMO_EMAIL } = require("../domain/demoStaffPolicy");
+const {
+  SHARED_DEMO_EMAIL,
+  canUseSharedDemoEmail,
+} = require("../domain/demoStaffPolicy");
 
 const OTP_TTL_MINUTES = Math.max(
   3,
@@ -75,6 +79,33 @@ const findAccountByIdentifier = async (identifier = "") => {
     user: emailUsers.length === 1 ? emailUsers[0] : null,
     ambiguous: emailUsers.length > 1,
   };
+};
+
+const resolvePasswordRecoveryAccount = async ({ identifier = "", accountLoginId = "" } = {}) => {
+  const normalizedIdentifier = normalizeIdentifier(identifier);
+  if (normalizedIdentifier !== SHARED_DEMO_EMAIL) {
+    return findAccountByIdentifier(normalizedIdentifier);
+  }
+
+  const normalizedAccountLoginId = normalizeIdentifier(accountLoginId);
+  if (!normalizedAccountLoginId || normalizedAccountLoginId === SHARED_DEMO_EMAIL) {
+    return { user: null, ambiguous: true, requiresAccountLoginId: true };
+  }
+
+  const user = await User.findOne({
+    $or: [
+      { alias: normalizedAccountLoginId },
+      { username: normalizedAccountLoginId },
+    ],
+  });
+  if (
+    !user ||
+    normalizeEmail(user.email) !== SHARED_DEMO_EMAIL ||
+    !canUseSharedDemoEmail(user, SHARED_DEMO_EMAIL)
+  ) {
+    return { user: null, ambiguous: false, invalidAccountLoginId: true };
+  }
+  return { user, ambiguous: false };
 };
 
 const hashValue = (value = "") =>
@@ -651,7 +682,12 @@ const login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
     const token = signUserAccessToken(user, user.security?.totpResetRequired ? { recovery: true } : {});
-    return res.json({ success: true, token, user: user.toJSON() });
+    return res.json({
+      success: true,
+      token,
+      user: user.toJSON(),
+      requiresTotpSetup: requiresTotpEnrollment(user),
+    });
   } catch (err) {
     return res.status(500).json({ message: "Login error" });
   }
@@ -779,9 +815,13 @@ const requestPasswordReset = async (req, res) => {
   const channel = "email";
   const identifier = normalizeIdentifier(req.body.identifier || req.body.email || "");
   if (!identifier) return res.status(400).json({ message: "Enter your email address or unique account login ID." });
-  const account = await findAccountByIdentifier(identifier);
-  if (account.ambiguous || identifier === SHARED_DEMO_EMAIL) {
-    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID instead." });
+  const accountLoginId = normalizeIdentifier(req.body.accountLoginId || "");
+  const account = await resolvePasswordRecoveryAccount({ identifier, accountLoginId });
+  if (account.requiresAccountLoginId || account.ambiguous) {
+    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID to choose the account to recover." });
+  }
+  if (account.invalidAccountLoginId) {
+    return res.status(400).json({ message: "The shared demo email and account login ID do not match an approved demo account." });
   }
   const user = account.user;
   if (!user) return res.json({ message: "If the account exists, a verification code has been sent." });
@@ -857,9 +897,13 @@ const resetPasswordWithCode = async (req, res) => {
   }
   const accountIdentifier = normalizeIdentifier(identifier || requestedEmail);
   if (!accountIdentifier) return res.status(400).json({ message: "Enter your email address or unique account login ID." });
-  const account = await findAccountByIdentifier(accountIdentifier);
-  if (account.ambiguous || accountIdentifier === SHARED_DEMO_EMAIL) {
-    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID instead." });
+  const accountLoginId = normalizeIdentifier(req.body.accountLoginId || "");
+  const account = await resolvePasswordRecoveryAccount({ identifier: accountIdentifier, accountLoginId });
+  if (account.requiresAccountLoginId || account.ambiguous) {
+    return res.status(409).json({ message: "This demo email belongs to multiple accounts. Enter the account's unique login ID to choose the account to recover." });
+  }
+  if (account.invalidAccountLoginId) {
+    return res.status(400).json({ message: "The shared demo email and account login ID do not match an approved demo account." });
   }
   const user = account.user;
   if (!user) return res.status(404).json({ message: "User not found." });

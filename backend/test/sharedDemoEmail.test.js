@@ -1,10 +1,17 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcryptjs");
+const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../src/models/User");
+const OtpRequest = require("../src/models/OtpRequest");
 const env = require("../src/config/env");
-const { login, startRegistration } = require("../src/controllers/authController");
+const {
+  login,
+  requestPasswordReset,
+  resetPasswordWithCode,
+  startRegistration,
+} = require("../src/controllers/authController");
 const { updateProfileById } = require("../src/controllers/userController");
 const { encryptSecret } = require("../src/domain/accountSecurity");
 const {
@@ -92,6 +99,61 @@ test("sign-in rejects an email that resolves to more than one account", async (t
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.token, undefined);
   assert.match(res.body.message, /unique login ID/i);
+});
+
+test("shared demo email recovery requires an exact account login ID", async () => {
+  const res = response();
+  await requestPasswordReset({ body: { identifier: SHARED_DEMO_EMAIL } }, res);
+  assert.equal(res.statusCode, 409);
+  assert.match(res.body.message, /unique login ID/i);
+});
+
+test("shared demo email password reset remains bound to the selected account ID", async (t) => {
+  const code = "123456";
+  const carl = fixture(SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.carl"), {
+    passwordHash: await bcrypt.hash("OldPass123!", 4),
+    security: { sessionVersion: 3 },
+  });
+  const previousPasswordHash = carl.passwordHash;
+  t.mock.method(User, "findOne", async (query) => {
+    assert.deepEqual(query, {
+      $or: [
+        { alias: "tech.cavite.carl" },
+        { username: "tech.cavite.carl" },
+      ],
+    });
+    return carl;
+  });
+  t.mock.method(OtpRequest, "findOne", (query) => {
+    assert.equal(query.accountId, carl.id);
+    assert.equal(query.email, SHARED_DEMO_EMAIL);
+    return {
+      sort: async () => ({
+        codeHash: crypto.createHash("sha256").update(code).digest("hex"),
+        expiresAt: new Date(Date.now() + 60_000),
+        attempts: 0,
+        verifiedAt: null,
+        save: async () => {},
+      }),
+    };
+  });
+  t.mock.method(carl, "save", async () => carl);
+
+  const res = response();
+  await resetPasswordWithCode({
+    body: {
+      identifier: SHARED_DEMO_EMAIL,
+      accountLoginId: "tech.cavite.carl",
+      code,
+      newPassword: "UpdatedPass2!",
+      channel: "email",
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.message, "Success");
+  assert.notEqual(carl.passwordHash, previousPasswordHash);
+  assert.equal(carl.security.sessionVersion, 4);
 });
 
 test("public customer registration cannot claim the reserved shared demo email", async () => {
