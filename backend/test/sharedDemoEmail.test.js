@@ -93,7 +93,11 @@ test("all staff demo accounts and customers receive separate account-bound email
   t.mock.method(emailService, "sendEmail", async () => {});
   t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
   t.mock.method(OtpRequest, "countDocuments", async () => 0);
-  t.mock.method(OtpRequest, "create", async (record) => { created.push(record); return { ...record, _id: String(created.length) }; });
+  t.mock.method(OtpRequest, "create", async (record) => {
+    const saved = { ...record, _id: String(created.length + 1), async save() { return this; } };
+    created.push(saved);
+    return saved;
+  });
 
   t.mock.method(User, "findOne", async (query) => {
     const aliases = (query.$or || []).map((condition) => condition.alias).filter(Boolean);
@@ -138,7 +142,11 @@ test("resending a sign-in code renews the same account-bound challenge", async (
   t.mock.method(emailService, "sendEmail", async () => {});
   t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
   t.mock.method(OtpRequest, "countDocuments", async () => 0);
-  t.mock.method(OtpRequest, "create", async (record) => ({ ...record, _id: "resent" }));
+  t.mock.method(OtpRequest, "create", async (record) => ({
+    ...record,
+    _id: "resent",
+    async save() { return this; },
+  }));
 
   const originalChallenge = jwt.sign({
     purpose: "login_email_verification",

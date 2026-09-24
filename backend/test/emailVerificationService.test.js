@@ -5,6 +5,7 @@ const emailService = require("../src/utils/email");
 const {
   createEmailVerification,
   hashVerificationCode,
+  OTP_TTL_MINUTES,
   verifyEmailCode,
 } = require("../src/services/emailVerificationService");
 
@@ -54,6 +55,88 @@ test("login email verification is account-bound, hashed, expiring, and single-us
   assert.deepEqual([verified.ok, duplicate.ok].sort(), [false, true]);
   assert.ok(saved[0].verifiedAt);
   assert.deepEqual(await verifyEmailCode({ accountId: "account-a", challengeId, email: "shared@example.com", action: "login_verification", code: saved.sentCode }), { ok: false, reason: "not_found" });
+});
+
+test("the full advertised lifetime starts after email dispatch is accepted", async (t) => {
+  let created;
+  let expiresBeforeDispatch;
+  t.mock.method(emailService, "canSendEmail", () => true);
+  t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
+  t.mock.method(OtpRequest, "countDocuments", async () => 0);
+  t.mock.method(OtpRequest, "create", async (record) => {
+    created = {
+      ...record,
+      _id: "dispatch-window",
+      async save() { return this; },
+    };
+    expiresBeforeDispatch = created.expiresAt.getTime();
+    return created;
+  });
+  t.mock.method(emailService, "sendEmail", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  const { otpRequest } = await createEmailVerification({
+    accountId: "account-a",
+    email: "person@example.com",
+    action: "password_reset",
+  });
+
+  assert.ok(otpRequest.expiresAt.getTime() > expiresBeforeDispatch);
+  assert.equal(
+    otpRequest.expiresAt.getTime() - otpRequest.requestedAt.getTime(),
+    OTP_TTL_MINUTES * 60 * 1000,
+  );
+});
+
+test("resending does not expire an earlier code before its own five-minute window", async (t) => {
+  const firstRequestedAt = new Date(Date.now() - 31_000);
+  const scope = {
+    accountId: "account-a",
+    challengeId: "resend-challenge",
+    email: "person@example.com",
+    action: "login_verification",
+    channel: "email",
+  };
+  const records = ["111111", "222222"].map((code, index) => ({
+    ...scope,
+    _id: `resend-${index + 1}`,
+    codeHash: hashVerificationCode({ ...scope, code }),
+    requestedAt: index === 0 ? firstRequestedAt : new Date(),
+    createdAt: index === 0 ? firstRequestedAt : new Date(),
+    expiresAt: new Date((index === 0 ? firstRequestedAt.getTime() : Date.now()) + 5 * 60 * 1000),
+    attempts: 0,
+    lockedAt: null,
+    verifiedAt: null,
+    async save() { return this; },
+  }));
+
+  t.mock.method(OtpRequest, "findOne", (query) => ({
+    sort: async () => records
+      .filter((record) => !record.verifiedAt)
+      .filter((record) => Object.entries(query).every(([key, value]) => record[key] === value))
+      .at(-1) || null,
+  }));
+  t.mock.method(OtpRequest, "findOneAndUpdate", async (query, update) => {
+    const record = records.find((item) => item._id === String(query._id));
+    if (!record || record.verifiedAt || record.lockedAt || record.codeHash !== query.codeHash) return null;
+    record.verifiedAt = update.$set.verifiedAt;
+    return record;
+  });
+
+  const result = await verifyEmailCode({
+    accountId: scope.accountId,
+    challengeId: scope.challengeId,
+    email: scope.email,
+    action: scope.action,
+    code: "111111",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.otpRequest._id, "resend-1");
+  assert.ok(Date.now() - result.otpRequest.requestedAt.getTime() >= 30_000);
+  assert.ok(records[0].verifiedAt);
+  assert.equal(records[1].verifiedAt, null);
 });
 
 test("wrong email codes are atomically limited and an expired code cannot be consumed", async (t) => {

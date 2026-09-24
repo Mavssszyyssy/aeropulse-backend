@@ -110,6 +110,14 @@ const createEmailVerification = async ({ accountId = "", challengeId = "", email
   try {
     const message = buildOtpEmail({ code, action, expiresInMinutes: OTP_TTL_MINUTES });
     await emailService.sendEmail({ to: normalizedEmail, ...message });
+
+    // Start the advertised lifetime only after the mail provider accepts the
+    // message. A slow provider must not consume part of the five-minute window
+    // before the customer can receive and enter the code.
+    const dispatchedAt = new Date();
+    otpRequest.requestedAt = dispatchedAt;
+    otpRequest.expiresAt = new Date(dispatchedAt.getTime() + OTP_TTL_MINUTES * 60 * 1000);
+    await otpRequest.save();
   } catch (error) {
     await OtpRequest.deleteOne({ _id: otpRequest._id });
     throw error;
@@ -130,10 +138,7 @@ const verifyEmailCode = async ({ accountId = "", challengeId = "", email = "", a
   };
   if (!query.accountId) delete query.accountId;
   if (!query.challengeId) delete query.challengeId;
-  const otp = await OtpRequest.findOne(query).sort({ createdAt: -1 });
-  if (!otp) return { ok: false, reason: "not_found" };
-  if (!otp.expiresAt || otp.expiresAt.getTime() < Date.now()) return { ok: false, reason: "expired" };
-  if (otp.lockedAt || Number(otp.attempts || 0) >= OTP_MAX_ATTEMPTS) return { ok: false, reason: "locked" };
+
   const submittedHash = hashVerificationCode({
     accountId: query.accountId || "",
     challengeId: query.challengeId || "",
@@ -141,7 +146,17 @@ const verifyEmailCode = async ({ accountId = "", challengeId = "", email = "", a
     action,
     code,
   });
-  if (!hashesMatch(otp.codeHash, submittedHash)) {
+
+  // Every delivered code keeps its own advertised lifetime. A resend creates a
+  // second valid, single-use code; it must not silently expire the first email.
+  // If no active record matches, the newest request still receives the bounded
+  // failed-attempt count below.
+  const matchingOtp = await OtpRequest.findOne({ ...query, codeHash: submittedHash }).sort({ createdAt: -1 });
+  const otp = matchingOtp || await OtpRequest.findOne(query).sort({ createdAt: -1 });
+  if (!otp) return { ok: false, reason: "not_found" };
+  if (!otp.expiresAt || otp.expiresAt.getTime() < Date.now()) return { ok: false, reason: "expired" };
+  if (otp.lockedAt || Number(otp.attempts || 0) >= OTP_MAX_ATTEMPTS) return { ok: false, reason: "locked" };
+  if (!matchingOtp || !hashesMatch(otp.codeHash, submittedHash)) {
     const lastAttemptAt = new Date();
     const attempted = await OtpRequest.findOneAndUpdate(
       {
