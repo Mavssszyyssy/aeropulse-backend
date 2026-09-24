@@ -64,7 +64,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
       set: normalizeOptionalIdentity,
     },
-    // Normal accounts store email:<normalized address>. The five named demo
+    // Normal accounts store email:<normalized address>. The approved demo
     // accounts store separate shared-demo:<account alias> keys, so the
     // database still rejects duplicate customer/ordinary staff email values.
     emailIdentityKey: {

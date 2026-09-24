@@ -39,8 +39,19 @@ const fixture = (account, extra = {}) => new User({
   ...extra,
 });
 
-test("the shared email exception is limited to the five exact demo accounts", async () => {
-  assert.equal(SHARED_DEMO_ACCOUNTS.length, 5);
+test("the shared email exception is limited to the six exact demo accounts", async () => {
+  assert.equal(SHARED_DEMO_ACCOUNTS.length, 6);
+  assert.deepEqual(
+    new Set(SHARED_DEMO_ACCOUNTS.map(({ accountKey }) => accountKey)),
+    new Set([
+      "superadmin.main",
+      "admin.cavite",
+      "admin.bulacan",
+      "tech.main",
+      "tech.cavite.carl",
+      "tech.cavite.lebron",
+    ]),
+  );
   const keys = new Set();
   for (const account of SHARED_DEMO_ACCOUNTS) {
     const user = fixture(account);
@@ -49,7 +60,7 @@ test("the shared email exception is limited to the five exact demo accounts", as
     assert.equal(user.emailIdentityKey, `shared-demo:${account.accountKey}`);
     keys.add(user.emailIdentityKey);
   }
-  assert.equal(keys.size, 5);
+  assert.equal(keys.size, 6);
 
   const impostor = fixture({ accountKey: "tech.cavite.other", role: "technician", branch: "Cavite" });
   await impostor.validate();

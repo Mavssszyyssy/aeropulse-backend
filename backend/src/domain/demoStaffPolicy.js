@@ -14,6 +14,7 @@ const SHARED_DEMO_ACCOUNTS = Object.freeze([
   { accountKey: "superadmin.main", role: "superadmin", branch: "" },
   { accountKey: "admin.cavite", role: "admin", branch: "Cavite" },
   { accountKey: "admin.bulacan", role: "admin", branch: "Bulacan" },
+  { accountKey: "tech.main", role: "technician", branch: "Bulacan" },
   { accountKey: "tech.cavite.carl", role: "technician", branch: "Cavite" },
   { accountKey: "tech.cavite.lebron", role: "technician", branch: "Cavite" },
 ]);

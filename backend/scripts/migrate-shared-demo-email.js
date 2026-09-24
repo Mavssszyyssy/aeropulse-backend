@@ -36,7 +36,7 @@ const loadTargets = async (users) => {
     }
   }
   if (new Set(targets.map((target) => String(target._id))).size !== SHARED_DEMO_ACCOUNTS.length) {
-    throw new Error("The five demo aliases do not resolve to five separate account IDs.");
+    throw new Error("The approved demo aliases do not resolve to separate account IDs.");
   }
   return targets;
 };
