@@ -17,10 +17,10 @@ const { explanationForRecommendation } = require("../domain/ampCustomerExplanati
 const { enrichVisitPrescription } = require("../domain/ampVisitAnalysis");
 
 const REPORT_TYPES = {
-  predictive_maintenance: { label: "Next Maintenance Recommendation", filenameLabel: "Maintenance_Recommendation" },
-  maintenance_summary: { label: "Maintenance Summary", filenameLabel: "Maintenance_Summary" },
-  summary_report: { label: "Maintenance Summary", filenameLabel: "Maintenance_Summary" },
-  inventory_reliability_analysis: { label: "Aggregate Recorded Service Analysis", filenameLabel: "Recorded_Service_Analysis" },
+  predictive_maintenance: { label: "Next Service Plan", filenameLabel: "Maintenance_Recommendation" },
+  maintenance_summary: { label: "Service History", filenameLabel: "Maintenance_Summary" },
+  summary_report: { label: "Service History", filenameLabel: "Maintenance_Summary" },
+  inventory_reliability_analysis: { label: "Model and Parts History", filenameLabel: "Recorded_Service_Analysis" },
 };
 const AGGREGATE_ROLES = new Set(["admin", "superadmin", "owner", "manager"]);
 const cleanText = (value, max = 300) => String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
@@ -105,14 +105,14 @@ const buildPredictiveAssessment = ({ unit, recommendation, history = [], request
     historicalContext: visit.historicalContext || "",
     recommendedServicingDate: recommendation.bestServicedBy || null,
     recommendedService: recommendation.recommendedService || "",
-    assessmentSummary: recommendation.aiAssessment || visit.aiAssessment || recommendation.recommendationBasis || "Insufficient historical service data is available to establish a strong maintenance pattern.",
+    assessmentSummary: recommendation.aiAssessment || visit.aiAssessment || recommendation.recommendationBasis || "There are not enough completed service records to show a clear maintenance pattern yet.",
     factorsConsidered: factors,
     observationsConsidered: observations,
     relevantServiceHistory: history.filter((item) => serviceTypeFor(item) !== "installation").slice(0, 5).map(formatHistory),
-    reasonForRecommendation: recommendation.whyThisDate || visit.whyThisDate || recommendation.recommendationBasis || "A completed cleaning or installation date is needed before a date can be calculated.",
+    reasonForRecommendation: recommendation.whyThisDate || visit.whyThisDate || recommendation.recommendationBasis || "A completed cleaning or installation date is needed before a service date can be suggested.",
     recommendedActions,
     priority,
-    evidenceNotice: "Recorded facts, detected patterns, and recommendations are shown separately. A recommendation is not a confirmed mechanical diagnosis or booking.",
+    evidenceNotice: "This plan uses saved service records. A technician must confirm the issue, and no visit is booked automatically.",
   };
 };
 
@@ -170,14 +170,14 @@ async function predictAndSave(req, unit, recommendation) {
   if (ai.provider !== "openai" || !validPrediction(ai.insight, recommendation.predictionEvidence)) return { ai, recommendation };
   const fresh = await calculateMaintenanceRecommendation(unit._id, { persist: false });
   if (fresh.predictionEvidence.fingerprint !== recommendation.predictionEvidence.fingerprint) {
-    return { ai: { provider: "system-fallback", error: "Service history changed during prediction. Generate a new plan using the updated records." }, recommendation: await calculateMaintenanceRecommendation(unit._id) };
+    return { ai: { provider: "system-fallback", error: "The service history changed while the plan was being prepared. Please create the plan again to use the latest records." }, recommendation: await calculateMaintenanceRecommendation(unit._id) };
   }
   await Unit.updateOne({ _id: unit._id }, { $set: { "amp.aiPrediction": {
     engineVersion: ENGINE_VERSION, fingerprint: fresh.predictionEvidence.fingerprint,
     prediction: ai.insight, model: ai.model, requestId: ai.requestId, generatedAt: new Date().toISOString(),
   } } });
   const updated = await calculateMaintenanceRecommendation(unit._id);
-  if (updated.predictionSource !== "openai") return { ai: { provider: "system-fallback", error: "The records changed before the estimate could be applied. Showing the current system schedule." }, recommendation: updated };
+  if (updated.predictionSource !== "openai") return { ai: { provider: "system-fallback", error: "The records changed before the new date could be saved. The current service plan is shown instead." }, recommendation: updated };
   return { ai, recommendation: updated };
 }
 
@@ -209,7 +209,7 @@ const generateAmpReport = async (req, res) => {
     const definition = REPORT_TYPES[type];
     if (!definition) return res.status(400).json({ message: "Unsupported AMP report type." });
     if (type === "inventory_reliability_analysis" && !AGGREGATE_ROLES.has(req.authUser.role)) {
-      return res.status(403).json({ message: "Aggregate recorded-service reports are available to authorized operations staff only." });
+      return res.status(403).json({ message: "Model and parts history is available to authorized staff only." });
     }
     const loaded = await loadUnitAndRecommendation(req, String(req.body?.unitId || ""));
     const unit = loaded.unit;
@@ -280,7 +280,7 @@ const generateAmpReport = async (req, res) => {
         technicianTasks: tasks.map((item) => ({ date: item.completedAt || item.updatedAt, title: cleanText(item.title), status: item.status || "" })),
         aggregateReliability: aggregate,
         predictionReview, predictionReviewWarning,
-        note: "This is a suggested maintenance schedule, not a confirmed booking or confirmed failure diagnosis. Condition follow-ups are limited to the technician's submitted findings and recorded history. Book a service visit in the Cold Air mobile app." + (ai.error ? ` ${ai.error}` : ""),
+        note: "This service plan is a guide, not a confirmed booking or diagnosis. Follow-up suggestions use the technician's notes and saved service records. Book a visit in the Cold Air mobile app.",
       },
     });
   } catch (error) {

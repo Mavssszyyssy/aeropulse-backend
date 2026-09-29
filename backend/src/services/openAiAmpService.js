@@ -165,19 +165,19 @@ async function requestAnalysis(input, facts) {
     if (!retry || attempt >= attempts || Date.now() + 250 >= deadline) break;
     await sleep(250);
   }
-  return { provider: "system-fallback", insight: null, error: timedOut ? "AI timed out. Showing the current saved or system recommendation." : "AI is unavailable. Showing the current saved or system recommendation." };
+  return { provider: "system-fallback", insight: null, error: timedOut ? "The AI suggestion took too long. The current service plan is shown instead." : "The AI suggestion is unavailable right now. The current service plan is shown instead." };
 }
 
 const callStructuredAmpAnalysis = async input => {
   const visitAnalysis = input?.visitAnalysis === true;
   const businessIntelligence = input?.businessIntelligence === true;
   const facts = businessIntelligence ? input?.intelligenceFacts || {} : visitAnalysis ? {} : explanationFacts(input?.recommendation);
-  if (input.predictionMode && !input.recommendation?.predictionEvidence?.eligible) return { provider: "system-fallback", insight: null, error: "Insufficient verified cleaning intervals for an AI estimate. Showing the 6-month system baseline." };
-  if (!env.openAiApiKey) return { provider: "system-fallback", insight: null, error: "AI analysis is unavailable because the provider is not configured." };
+  if (input.predictionMode && !input.recommendation?.predictionEvidence?.eligible) return { provider: "system-fallback", insight: null, error: "There are not enough completed cleanings for a personalized AI date. The standard 6-month plan is shown instead." };
+  if (!env.openAiApiKey) return { provider: "system-fallback", insight: null, error: "AI suggestions are unavailable right now. The service plan based on available records is still shown." };
   if (visitAnalysis && (!input.visitEvidence?.visit?.observation_text || !input.visitEvidence?.visit?.work_performed)) {
-    return { provider: "system-fallback", insight: null, error: "The technician record does not contain enough detail for AI analysis." };
+    return { provider: "system-fallback", insight: null, error: "The technician's report does not have enough detail for an AI suggestion. The available service plan is still shown." };
   }
-  if (businessIntelligence && !Object.keys(facts).length) return { provider: "system-fallback", insight: null, error: "No verified analytics facts are available for this period." };
+  if (businessIntelligence && !Object.keys(facts).length) return { provider: "system-fallback", insight: null, error: "There are no completed records to summarize for this period." };
   if (!visitAnalysis && !businessIntelligence && (!facts.schedule || !facts.method)) return { provider: "system-fallback", insight: null };
   // Exclude only the calculation timestamp; changed history, unit, user, settings
   // and model all invalidate reuse. Authorization is checked before this service.
@@ -190,7 +190,7 @@ const callStructuredAmpAnalysis = async input => {
   for (const [entryKey, entry] of cache) if (entry.expiresAt <= Date.now()) cache.delete(entryKey);
   if (cache.has(key)) return { ...clone(cache.get(key).result), cached: true };
   if (inFlight.has(key)) return clone(await inFlight.get(key));
-  if (inFlight.size >= 50) return { provider: "system-fallback", insight: null, error: "AI is busy. Showing the system recommendation." };
+  if (inFlight.size >= 50) return { provider: "system-fallback", insight: null, error: "AI suggestions are busy right now. The service plan based on available records is shown instead." };
   const pending = requestAnalysis(input, facts);
   inFlight.set(key, pending);
   try {

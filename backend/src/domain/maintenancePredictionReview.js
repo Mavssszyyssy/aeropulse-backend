@@ -79,7 +79,7 @@ async function loadPredictionReview(unit, history) {
   const snapshots = await Prediction.find({ unit: unit._id }).sort({ capturedAt: -1 }).limit(50).lean();
   return {
     entries: comparePredictionHistory(snapshots, history, { installedAt: unit.installation?.installedAt }),
-    note: "Latest 50 saved plans and service records. Only a plan saved before a completed, documented cleaning can be compared. Timing differences reflect when service took place, not AI accuracy. Review the technician findings before judging usefulness.",
+    note: "Shows the latest 50 saved plans and completed cleaning visits. A plan can be compared only when it was saved before the visit. The date difference shows when service happened; it is not an AI score. Always review the technician's notes.",
   };
 }
 module.exports = { buildPredictionSnapshot, savePredictionSnapshot, comparePredictionHistory, loadPredictionReview };

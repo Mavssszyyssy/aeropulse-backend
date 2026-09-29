@@ -100,7 +100,7 @@ test("slow AI is aborted and falls back without duplicate paid retries", async (
     const start = Date.now();
     const result = await callStructuredAmpAnalysis(input("timeout-user"));
     assert.equal(result.provider, "system-fallback");
-    assert.match(result.error, /timed out/);
+    assert.match(result.error, /took too long/);
     assert.equal(calls, 1);
     assert.ok(Date.now() - start < AI_TOTAL_BUDGET_MS);
   });
