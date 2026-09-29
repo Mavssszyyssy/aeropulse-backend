@@ -6,6 +6,7 @@ const { assessServiceEvidence } = require("./serviceEvidence");
 const { effectiveWarrantyStatus } = require("./warrantyService");
 const { businessDay } = require("../utils/dateTime");
 const { BRANCHES } = require("./branchRouting");
+const { enrichVisitPrescription } = require("./ampVisitAnalysis");
 
 const MS_PER_DAY = 86400000;
 const DEFAULT_AVERAGE_SERVICE_REVENUE = 2500;
@@ -29,7 +30,10 @@ const monthLabel = (date) => date.toLocaleString("en-US", { month: "short", year
 const daysBetween = (from, to) => Math.ceil((to.getTime() - from.getTime()) / MS_PER_DAY);
 const PIPELINE_SERVICE_TYPES = new Set(["regular_cleaning", "deep_cleaning", "inspection", "repair"]);
 const concise = (value) => String(value || "").trim();
-const summarizePriorityUnit = (unit) => unit ? {
+const summarizePriorityUnit = (unit) => {
+  if (!unit) return null;
+  const visit = enrichVisitPrescription(unit.amp?.visitFollowUp) || {};
+  return {
   unitId: String(unit._id),
   modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "AC Unit",
   serialNumber: unit.serialNumber || "",
@@ -38,23 +42,28 @@ const summarizePriorityUnit = (unit) => unit ? {
   recommendedService: PIPELINE_SERVICE_TYPES.has(unit.amp?.recommendedService)
     ? unit.amp.recommendedService
     : "inspection",
-  assessment: unit.amp?.aiAssessment || unit.amp?.visitFollowUp?.aiAssessment || "",
+  assessment: visit.aiAssessment || unit.amp?.aiAssessment || "",
   reason: unit.amp?.whyThisDate || unit.amp?.recommendationBasis || unit.amp?.visitFollowUp?.whyThisDate || "",
-  severity: unit.amp?.visitFollowUp?.severity || "",
-  affectedComponent: unit.amp?.visitFollowUp?.affectedComponent || "",
-  currentStatus: unit.amp?.visitFollowUp?.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
-  previousVisitHistory: Array.isArray(unit.amp?.visitFollowUp?.previousVisitHistory) ? unit.amp.visitFollowUp.previousVisitHistory : [],
-  currentIssues: Array.isArray(unit.amp?.visitFollowUp?.currentIssues) ? unit.amp.visitFollowUp.currentIssues : [],
-  completedWork: Array.isArray(unit.amp?.visitFollowUp?.completedWork) ? unit.amp.visitFollowUp.completedWork : [],
-  recommendedPart: unit.amp?.visitFollowUp?.recommendedPart || "",
-  nextPossibleVisit: unit.amp?.visitFollowUp?.recommendedDate || unit.amp?.bestServicedBy || null,
-  recommendedActions: Array.isArray(unit.amp?.visitFollowUp?.recommendedActions)
-    ? unit.amp.visitFollowUp.recommendedActions.filter(Boolean).slice(0, 3)
+  severity: visit.severity || "",
+  affectedComponent: visit.affectedComponent || "",
+  currentStatus: visit.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
+  previousVisitHistory: Array.isArray(visit.previousVisitHistory) ? visit.previousVisitHistory : [],
+  currentIssues: Array.isArray(visit.currentIssues) ? visit.currentIssues : [],
+  completedWork: Array.isArray(visit.completedWork) ? visit.completedWork : [],
+  recommendedPart: visit.recommendedPart || "",
+  partsRecommendation: visit.partsRecommendation || "",
+  possibleCauses: Array.isArray(visit.possibleCauses) ? visit.possibleCauses : [],
+  diagnosticActions: Array.isArray(visit.diagnosticActions) ? visit.diagnosticActions : [],
+  recommendedServiceOrRepair: visit.recommendedServiceOrRepair || "",
+  historicalContext: visit.historicalContext || "",
+  nextPossibleVisit: visit.recommendedDate || unit.amp?.bestServicedBy || null,
+  recommendedActions: Array.isArray(visit.recommendedActions)
+    ? visit.recommendedActions.filter(Boolean).slice(0, 3)
     : [],
   // Keep the original visit facts separate from the generated assessment. The
   // manager dashboard renders these as labeled decision-support fields.
   latestServiceDate: unit.lastVisit?.serviceDate || null,
-  technicianRecorded: unit.amp?.visitFollowUp?.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
+  technicianRecorded: visit.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
   workCompleted: concise(unit.lastVisit?.actionTaken) || (Array.isArray(unit.lastVisit?.serviceActions)
     ? unit.lastVisit.serviceActions.filter(Boolean).join("; ")
     : ""),
@@ -63,7 +72,8 @@ const summarizePriorityUnit = (unit) => unit ? {
     concise(unit.lastVisit?.customerInputs?.notes),
     concise(unit.lastVisit?.customerInputs?.other),
   ].filter(Boolean).join(" "),
-} : null;
+  };
+};
 const buildPipelineActionSummary = ({ serviceDemand = [], priorityUnits = [], earliestDue = [] } = {}) => ({
   serviceDemand: serviceDemand
     .map((item) => ({
@@ -222,13 +232,13 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
     },
     units: units.map((unit) => {
       const dueDate = new Date(unit.amp.bestServicedBy);
+      const visit = enrichVisitPrescription(unit.amp.visitFollowUp) || {};
       return {
         unitId: String(unit._id), serialNumber: unit.serialNumber, customerName: unit.customerName || "Customer",
         modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "AC Unit", serviceBranch: unit.serviceBranch || "",
         zipCode: unit.installation?.zipCode || "", addressLine: unit.installation?.addressLine || "",
         bestServicedBy: dueDate.toISOString(), recommendedService: unit.amp.recommendedService || "regular_cleaning",
         recommendationBasis: unit.amp.recommendationBasis || "", daysUntilDue: daysBetween(now, dueDate),
-        aiAssessment: unit.amp.aiAssessment || "",
         whyThisDate: unit.amp.whyThisDate || unit.amp.recommendationBasis || "",
         overdue: dueDate < now, lastServiceDate: unit.amp.lastServiceDate || null,
         warrantyStatus: effectiveWarrantyStatus(unit.warranty || {}),
@@ -236,16 +246,22 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         patternAnalysis: unit.amp.patternAnalysis || null,
         maintenanceSignals: unit.amp.maintenanceSignals || null,
         condition: unit.amp.visitFollowUp?.condition || "",
-        currentStatus: unit.amp.visitFollowUp?.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
-        technicianRecorded: unit.amp.visitFollowUp?.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
-        previousVisitHistory: unit.amp.visitFollowUp?.previousVisitHistory || [],
-        currentIssues: unit.amp.visitFollowUp?.currentIssues || [],
-        completedWork: unit.amp.visitFollowUp?.completedWork || [],
-        affectedComponent: unit.amp.visitFollowUp?.affectedComponent || "",
-        severity: unit.amp.visitFollowUp?.severity || "",
-        recommendedPart: unit.amp.visitFollowUp?.recommendedPart || "",
-        nextPossibleVisit: unit.amp.visitFollowUp?.recommendedDate || unit.amp.bestServicedBy || null,
-        recommendedActions: unit.amp.visitFollowUp?.recommendedActions || [],
+        currentStatus: visit.currentStatus || concise(unit.lastVisit?.technicianStatus).replace(/_/g, " "),
+        technicianRecorded: visit.technicianRecorded || concise(unit.lastVisit?.findings) || concise(unit.lastVisit?.technicianInputs?.notes),
+        previousVisitHistory: visit.previousVisitHistory || [],
+        currentIssues: visit.currentIssues || [],
+        completedWork: visit.completedWork || [],
+        affectedComponent: visit.affectedComponent || "",
+        severity: visit.severity || "",
+        aiAssessment: visit.aiAssessment || unit.amp.aiAssessment || "",
+        possibleCauses: visit.possibleCauses || [],
+        diagnosticActions: visit.diagnosticActions || [],
+        recommendedServiceOrRepair: visit.recommendedServiceOrRepair || "",
+        recommendedPart: visit.recommendedPart || "",
+        partsRecommendation: visit.partsRecommendation || "",
+        historicalContext: visit.historicalContext || "",
+        nextPossibleVisit: visit.recommendedDate || unit.amp.bestServicedBy || null,
+        recommendedActions: visit.recommendedActions || [],
       };
     }),
   };

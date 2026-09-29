@@ -5,7 +5,7 @@ const Unit = require("../src/models/Unit");
 const Product = require("../src/models/Product");
 const ServiceHistory = require("../src/models/ServiceHistory");
 const { callStructuredAmpAnalysis } = require("../src/services/openAiAmpService");
-const { buildVisitEvidence, finalizeVisitAnalysis, validVisitAnalysis } = require("../src/domain/ampVisitAnalysis");
+const { buildVisitEvidence, enrichVisitPrescription, finalizeVisitAnalysis, validVisitAnalysis } = require("../src/domain/ampVisitAnalysis");
 const { analyzeCompletedVisit, recordedPartsInventory } = require("../src/domain/serviceCompletionService");
 
 const service = {
@@ -89,12 +89,63 @@ test("free-text technician notes identify an unlisted control-board concern and 
     evidence,
     providerResult: { provider: "openai", insight: contextual },
   });
-  assert.equal(result.analysisVersion, 6);
+  assert.equal(result.analysisVersion, 7);
   assert.match(result.recommendedActions.join(" "), /control board concern/i);
   assert.match(result.recommendedActions.join(" "), /confirm the cause before approving repair or replacement/i);
-  assert.match(result.aiAssessment, /inverter main board/i);
+  assert.match(result.aiAssessment, /electrical or control-system problem/i);
+  assert.ok(result.possibleCauses.some((cause) => /fuse/i.test(cause)));
+  assert.ok(result.diagnosticActions.some((action) => /incoming voltage/i.test(action)));
+  assert.match(result.partsRecommendation, /testing confirms/i);
   assert.match(result.whyThisDate, /prompt attention/i);
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-09-17");
+});
+
+test("a non-responsive control board produces causes and an ordered electrical diagnostic sequence without confirming replacement", () => {
+  const controlBoardVisit = {
+    ...service,
+    findings: "The control board did not respond during testing.",
+    actionTaken: "Recorded the failed response and left the unit for further inspection.",
+    technicianStatus: "for_further_inspection",
+  };
+  const evidence = buildVisitEvidence({ serviceHistory: controlBoardVisit, recommendation });
+  const classification = insight({
+    severity: "soon",
+    risk_type: "component_deterioration",
+    affected_component: "control_board",
+    evidence_confidence: "high",
+    follow_up_action: "inspection",
+    follow_up_days: 14,
+    repair_or_replacement: "inspection_needed",
+  });
+  const result = finalizeVisitAnalysis({
+    serviceHistory: controlBoardVisit,
+    recommendation,
+    evidence,
+    providerResult: { provider: "openai", insight: classification },
+  });
+  assert.match(result.aiAssessment, /does not by itself confirm that the board is defective/i);
+  assert.ok(result.possibleCauses.some((cause) => /fuse/i.test(cause)));
+  assert.ok(result.possibleCauses.some((cause) => /capacitor/i.test(cause)));
+  assert.match(result.diagnosticActions[0], /incoming voltage/i);
+  assert.match(result.diagnosticActions.at(-1), /only if testing confirms/i);
+  assert.match(result.partsRecommendation, /do not replace it unless testing confirms/i);
+  assert.doesNotMatch(result.recommendedServiceOrRepair, /confirmed replacement/i);
+});
+
+test("older saved interpretations are enriched on read instead of showing the old repeated-log assessment", () => {
+  const enriched = enrichVisitPrescription({
+    analysisVersion: 6,
+    riskType: "component_deterioration",
+    affectedComponent: "control_board",
+    repairOrReplacement: "inspection_needed",
+    recommendedService: "inspection",
+    aiAssessment: "During the completed inspection, the technician recorded: The control board did not respond during testing.",
+    inventoryMessage: "No exact replacement part number was recorded.",
+  });
+  assert.doesNotMatch(enriched.aiAssessment, /during the completed inspection/i);
+  assert.match(enriched.aiAssessment, /does not by itself confirm that the board is defective/i);
+  assert.ok(enriched.possibleCauses.some((cause) => /relay/i.test(cause)));
+  assert.ok(enriched.diagnosticActions.some((action) => /incoming voltage/i.test(action)));
 });
 
 test("customer comments and custom Other text are labeled evidence without becoming technician findings", () => {
@@ -156,7 +207,7 @@ test("customer visit summary uses the original log and stores contextual follow-
     providerResult: { provider: "openai", model: "test-model", requestId: "request-1", insight: insight({ evidence_fact_ids: ["latest_observations", "latest_work_performed"] }) },
   });
   assert.equal(result.provider, "openai");
-  assert.equal(result.analysisVersion, 6);
+  assert.equal(result.analysisVersion, 7);
   assert.equal(result.recommendedService, "repair");
   assert.equal(new Date(result.recommendedFollowUpDate).toISOString().slice(0, 10), "2026-10-03");
   assert.equal(result.recommendationMode, "condition_based");
@@ -167,6 +218,29 @@ test("customer visit summary uses the original log and stores contextual follow-
   assert.match(result.customerSummary, /Cleaned the filter and tested cooling/);
   assert.equal(result.recommendedActions.length, 4);
   assert.match(result.recommendedActions.at(-1), /2026-10-03/);
+  assert.ok(result.possibleCauses.length > 0);
+  assert.ok(result.diagnosticActions.length > 0);
+  assert.match(result.recommendedServiceOrRepair, /repair assessment/i);
+});
+
+test("comparable model history is labeled as aggregate support and never a diagnosis", () => {
+  const evidence = buildVisitEvidence({
+    unit: { brand: "LG", modelName: "Dual Inverter" },
+    serviceHistory: { ...service, findings: "The control board did not respond during testing." },
+    priorHistory: [],
+    comparableHistory: {
+      source: "same_model",
+      records: [
+        { serviceType: "inspection", findings: "Control board did not respond and required inspection." },
+        { serviceType: "repair", findings: "Control board fault was recorded after electrical testing." },
+      ],
+    },
+    recommendation,
+  });
+  assert.equal(evidence.historical_support.source, "same_model");
+  assert.match(evidence.historical_support.summary, /2 same-model completed service records/i);
+  assert.match(evidence.historical_support.summary, /supporting context only/i);
+  assert.match(evidence.fact_catalog.historical_support, /does not confirm a fault in this AC/i);
 });
 
 test("fallback turns a recorded concern into an evidence-based follow-up while AI is pending", () => {

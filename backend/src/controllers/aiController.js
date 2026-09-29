@@ -14,6 +14,7 @@ const { savePredictionSnapshot, loadPredictionReview } = require("../domain/main
 const { assertAmpBranch } = require("../domain/ampAccess");
 const { ENGINE_VERSION, validPrediction } = require("../domain/ampPrediction");
 const { explanationForRecommendation } = require("../domain/ampCustomerExplanation");
+const { enrichVisitPrescription } = require("../domain/ampVisitAnalysis");
 
 const REPORT_TYPES = {
   predictive_maintenance: { label: "Next Maintenance Recommendation", filenameLabel: "Maintenance_Recommendation" },
@@ -44,7 +45,7 @@ const formatHistory = (item = {}) => ({
     item.customerInputs?.other,
   ].map((value) => cleanText(value, 500)).filter(Boolean),
   evidence: assessServiceEvidence(item),
-  aiInterpretation: item.aiInterpretation?.status ? item.aiInterpretation : null,
+  aiInterpretation: item.aiInterpretation?.status ? enrichVisitPrescription(item.aiInterpretation) : null,
 });
 
 const addDistinct = (items, value, source) => {
@@ -97,6 +98,11 @@ const buildPredictiveAssessment = ({ unit, recommendation, history = [], request
     currentIssues: Array.isArray(visit.currentIssues) ? visit.currentIssues : [],
     completedWork: Array.isArray(visit.completedWork) ? visit.completedWork : [],
     recommendedPart: visit.recommendedPart || "No part recommendation is supported by the recorded history.",
+    partsRecommendation: visit.partsRecommendation || "No part replacement is supported by the recorded history.",
+    possibleCauses: Array.isArray(visit.possibleCauses) ? visit.possibleCauses : [],
+    diagnosticActions: Array.isArray(visit.diagnosticActions) ? visit.diagnosticActions : [],
+    recommendedServiceOrRepair: visit.recommendedServiceOrRepair || "",
+    historicalContext: visit.historicalContext || "",
     recommendedServicingDate: recommendation.bestServicedBy || null,
     recommendedService: recommendation.recommendedService || "",
     assessmentSummary: recommendation.aiAssessment || visit.aiAssessment || recommendation.recommendationBasis || "Insufficient historical service data is available to establish a strong maintenance pattern.",

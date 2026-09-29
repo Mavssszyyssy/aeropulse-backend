@@ -127,7 +127,7 @@ const remindStaff = async (user) => {
     targetType: "order", route: `${prefix}/services?tab=orders`, dedupeKey: `required-action:order-review:${branch || "all"}:${orderReviews}`,
   }));
   if (pendingReorders) reminders.push(createReminder(user, {
-    type: "inventory", title: "Action required: review reorder approvals", message: `${pendingReorders} inventory reorder request${pendingReorders === 1 ? " is" : "s are"} awaiting approval.`,
+    type: "inventory", title: "Action required: review reorder requests", message: `${pendingReorders} inventory reorder request${pendingReorders === 1 ? " is" : "s are"} awaiting review.`,
     targetType: "reorder", route: "/superadmin/inventory?tab=reorders", dedupeKey: `required-action:reorder-approval:${pendingReorders}`,
   }));
   return Promise.all(reminders);

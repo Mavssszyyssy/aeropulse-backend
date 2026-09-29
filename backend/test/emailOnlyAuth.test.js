@@ -28,28 +28,28 @@ for (const [name, action] of [['requestOtp', 'register_phone'], ['verifyOtp', 'r
 test('a phone-only session or signed SMS proof cannot register a customer', async () => {
   const token = jwt.sign({ purpose: 'registration_verification', phone: '09123456789' }, env.jwtSecret);
   const res = response();
-  await auth.register({ body: { email: 'customer@example.com', phone: '09123456789', password: 'StrongPass1!', registrationVerificationToken: token }, session: { registrationProgress: { formData: { phoneVerified: true, phone: '09123456789' } } } }, res);
+  await auth.register({ body: { email: 'customer@gmail.com', phone: '09123456789', password: 'StrongPass1!', registrationVerificationToken: token }, session: { registrationProgress: { formData: { phoneVerified: true, phone: '09123456789' } } } }, res);
   assert.equal(res.statusCode, 403);
   assert.match(res.body.message, /Verify your email/);
 });
 
 test('email OTP verification returns email-only proof and resumable progress', async (t) => {
   const code = '123456';
-  const otp = { _id: 'registration-code', codeHash: hashVerificationCode({ email: 'customer@example.com', action: 'register_email', code }), expiresAt: new Date(Date.now() + 60_000), attempts: 0, lockedAt: null, verifiedAt: null, save: async () => {} };
+  const otp = { _id: 'registration-code', codeHash: hashVerificationCode({ email: 'customer@gmail.com', action: 'register_email', code }), expiresAt: new Date(Date.now() + 60_000), attempts: 0, lockedAt: null, verifiedAt: null, save: async () => {} };
   t.mock.method(OtpRequest, 'findOne', (query) => {
     assert.equal(query.channel, 'email');
-    assert.equal(query.email, 'customer@example.com');
+    assert.equal(query.email, 'customer@gmail.com');
     return { sort: async () => otp };
   });
   t.mock.method(OtpRequest, 'findOneAndUpdate', async (_query, update) => ({ ...otp, verifiedAt: update.$set.verifiedAt }));
   const session = { registrationProgress: { formData: { phoneVerified: true } }, save: (callback) => callback() };
   const res = response();
-  await auth.verifyOtp({ body: { action: 'register_email', channel: 'email', email: 'Customer@example.com', code }, session }, res);
+  await auth.verifyOtp({ body: { action: 'register_email', channel: 'email', email: 'Customer@GMAIL.com', code }, session }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(session.registrationProgress.formData.emailVerified, true);
   assert.equal(session.registrationProgress.formData.phoneVerified, false);
   const proof = jwt.verify(res.body.registrationVerificationToken, env.jwtSecret);
-  assert.equal(proof.email, 'customer@example.com');
+  assert.equal(proof.email, 'customer@gmail.com');
   assert.equal(Object.hasOwn(proof, 'phone'), false);
 });
 

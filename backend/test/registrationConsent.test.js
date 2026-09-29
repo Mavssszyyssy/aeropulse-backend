@@ -10,7 +10,7 @@ const auth = require('../src/controllers/authController');
 const { LEGAL_VERSION, validateRegistrationConsent } = require('../src/domain/registrationConsent');
 const agreed = { version: LEGAL_VERSION, app: true, service: true, warranty: true, privacy: true };
 const response = () => ({ statusCode: 200, status(n) { this.statusCode = n; return this; }, json(body) { this.body = body; return this; } });
-const body = legalConsent => ({ name_first: 'QA', name_last: 'Customer', email: 'legal@example.test', password: 'TestPass1!', legalConsent, registrationVerificationToken: jwt.sign({ purpose: 'registration_verification', email: 'legal@example.test' }, env.jwtSecret) });
+const body = legalConsent => ({ name_first: 'QA', name_last: 'Customer', email: 'legal@gmail.com', password: 'TestPass1!', legalConsent, registrationVerificationToken: jwt.sign({ purpose: 'registration_verification', email: 'legal@gmail.com' }, env.jwtSecret) });
 test('current, explicit consent is required; missing, stale and truthy strings fail', () => {
   assert.equal(validateRegistrationConsent(agreed), '');
   for (const value of [undefined, {}, {...agreed, version:'old'}, ...['app','service','warranty','privacy'].flatMap(key => [ {...agreed,[key]:false}, {...agreed,[key]:'true'} ])]) assert.ok(validateRegistrationConsent(value));

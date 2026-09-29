@@ -5,6 +5,7 @@ const {
   createDedupedNotification,
   notifyOperationalStaff,
 } = require("../services/operationalNotificationService");
+const { validateEmailAddress } = require("../services/emailDomainPolicyService");
 
 const VALID_CATEGORIES = new Set([
   "general",
@@ -67,6 +68,11 @@ const createContactMessage = async (req, res) => {
     if (message.length < 10) {
       return res.status(400).json({ message: "Please add a little more detail so the support team can help." });
     }
+    const submittedEmail = clean(req.body.email, 180) || clean(user.email, 180);
+    const emailValidation = await validateEmailAddress(submittedEmail);
+    if (!emailValidation.ok) {
+      return res.status(400).json({ message: emailValidation.message });
+    }
 
     const idempotencyKey = clean(
       req.headers["idempotency-key"] || req.body.idempotencyKey,
@@ -82,7 +88,7 @@ const createContactMessage = async (req, res) => {
       ticketCode: ticketCode(),
       customer: user._id,
       customerName: clean(req.body.customerName, 120) || displayName(user),
-      email: clean(req.body.email, 180) || clean(user.email, 180),
+      email: emailValidation.email,
       phone: clean(req.body.phone, 30) || clean(user.phone, 30),
       category,
       subject,

@@ -1,7 +1,6 @@
 const bcrypt = require("bcryptjs");
 const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
-const zxcvbn = require("zxcvbn");
 const User = require("../models/User");
 const OtpRequest = require("../models/OtpRequest");
 const AuditLog = require("../models/AuditLog");
@@ -24,6 +23,11 @@ const {
 const {
   mergeClientRegistrationProgress,
 } = require("../domain/registrationProgress");
+const {
+  MIN_REGISTRATION_PASSWORD_SCORE,
+  calculatePasswordStrength,
+} = require("../domain/passwordStrength");
+const { validateEmailAddress } = require("../services/emailDomainPolicyService");
 const {
   SHARED_DEMO_EMAIL,
   canUseSharedDemoEmail,
@@ -111,6 +115,12 @@ const requestOtp = async (req, res) => {
   if (channel === "email" && !isValidEmail(email)) {
     return res.status(400).json({ message: "A valid email address is required for email verification." });
   }
+  if (action === "register_email") {
+    const emailValidation = await validateEmailAddress(email);
+    if (!emailValidation.ok) {
+      return res.status(400).json({ message: emailValidation.message });
+    }
+  }
   if (action === "register_email" && isReservedSharedDemoEmail(email)) {
     return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
   }
@@ -159,6 +169,10 @@ const verifyOtp = async (req, res) => {
     || !isValidEmail(email)
   ) {
     return res.status(400).json({ message: "A supported email verification request is required." });
+  }
+  const emailValidation = await validateEmailAddress(email);
+  if (!emailValidation.ok) {
+    return res.status(400).json({ message: emailValidation.message });
   }
   if (action === "register_email" && isReservedSharedDemoEmail(email)) {
     return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });
@@ -268,9 +282,18 @@ const register = async (req, res) => {
     if (typeof password !== "string" || password.length < 8 || password.length > 25) {
       return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
     }
+    if (calculatePasswordStrength(password) < MIN_REGISTRATION_PASSWORD_SCORE) {
+      return res.status(400).json({
+        message: "Password is not strong enough. Use a less predictable password with more length and variety.",
+      });
+    }
     const normalizedEmail = normalizeEmail(email);
     if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({ message: "A valid email address is required." });
+    }
+    const emailValidation = await validateEmailAddress(normalizedEmail);
+    if (!emailValidation.ok) {
+      return res.status(400).json({ message: emailValidation.message });
     }
     if (isReservedSharedDemoEmail(normalizedEmail)) {
       return res.status(409).json({ message: "This email address is reserved for approved demo staff accounts." });

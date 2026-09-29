@@ -8,6 +8,7 @@ const { maintenanceSignalsFor } = require("./ampMaintenanceSignals");
 const { businessDay } = require("../utils/dateTime");
 const { predictionEvidence, predictionBasis, savedPredictionIsCurrent } = require("./ampPrediction");
 const { explanationForRecommendation } = require("./ampCustomerExplanation");
+const { enrichVisitPrescription } = require("./ampVisitAnalysis");
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SERVICE_INTERVAL_DAYS = 180;
@@ -43,15 +44,16 @@ const componentName = (value) => ({
 })[String(value || "")] || "recorded symptom";
 const ensureVisitActions = (visit = null) => {
   if (!visit) return null;
-  if (Array.isArray(visit.recommendedActions) && visit.recommendedActions.length) return visit;
-  if (!['repair', 'inspection'].includes(String(visit.recommendedService || ''))) return visit;
-  const subject = componentName(visit.affectedComponent);
-  const date = asDate(visit.recommendedDate)?.toISOString().slice(0, 10);
+  const enriched = enrichVisitPrescription(visit);
+  if (Array.isArray(enriched.recommendedActions) && enriched.recommendedActions.length) return enriched;
+  if (!['repair', 'inspection'].includes(String(enriched.recommendedService || ''))) return enriched;
+  const subject = componentName(enriched.affectedComponent);
+  const date = asDate(enriched.recommendedDate)?.toISOString().slice(0, 10);
   return {
-    ...visit,
+    ...enriched,
     recommendedActions: [
       `Arrange a qualified technician assessment of the ${subject}; confirm the cause before approving repair or replacement work.`,
-      date ? `${visit.recommendedService === 'repair' ? 'Repair assessment' : 'AC inspection'} is recommended by ${date}.` : "Arrange the recommended follow-up with the service team.",
+      date ? `${enriched.recommendedService === 'repair' ? 'Repair assessment' : 'AC inspection'} is recommended by ${date}.` : "Arrange the recommended follow-up with the service team.",
     ],
   };
 };

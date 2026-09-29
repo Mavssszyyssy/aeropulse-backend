@@ -5,6 +5,7 @@ const { canSendEmail, sendEmail } = require("../utils/email");
 const { BRANCHES } = require("../domain/branchRouting");
 const { withIdentityConflict } = require("../utils/optionalIdentity");
 const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
+const { validateEmailAddress } = require("../services/emailDomainPolicyService");
 
 const credentialPart = (value = "") => String(value)
   .normalize("NFD")
@@ -109,6 +110,10 @@ const createStaff = async (req, res) => {
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!normalizedEmail) {
     return res.status(400).json({ message: "Email is required for an Admin account." });
+  }
+  const emailValidation = await validateEmailAddress(normalizedEmail);
+  if (!emailValidation.ok) {
+    return res.status(400).json({ message: emailValidation.message });
   }
   const existing = await User.findOne({ email: normalizedEmail });
   if (existing) return res.status(409).json({ message: "Email already exists." });

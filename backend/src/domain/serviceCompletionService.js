@@ -22,6 +22,32 @@ const normalizeTechnicianStatus = (value) => {
   const normalized = clean(value, 80).toLowerCase().replace(/[\s-]+/g, "_");
   return TECHNICIAN_STATUSES.has(normalized) ? normalized : "";
 };
+const mongoId = (value) => /^[a-f\d]{24}$/i.test(String(value || ""));
+
+const loadComparableServiceHistory = async (unit = {}) => {
+  if (!mongoId(unit._id)) return null;
+  const brand = clean(unit.brand, 80);
+  const modelName = clean(unit.modelName || unit.model, 120);
+  const category = clean(unit.category, 80);
+  if (!brand) return null;
+  const exact = (value) => new RegExp(`^${escapeRegex(value)}$`, "i");
+  const scopes = [
+    ...(modelName ? [{ source: "same_model", query: { brand: exact(brand), modelName: exact(modelName) } }] : []),
+    ...(category ? [{ source: "same_brand_type", query: { brand: exact(brand), category: exact(category) } }] : []),
+    { source: "same_brand", query: { brand: exact(brand) } },
+  ];
+  for (const scope of scopes) {
+    const units = await Unit.find({ _id: { $ne: unit._id }, status: { $ne: "retired" }, ...scope.query })
+      .select("_id").limit(25).lean();
+    const unitIds = units.map((item) => item._id);
+    if (!unitIds.length) continue;
+    const records = await ServiceHistory.find({ unit: { $in: unitIds }, serviceType: { $ne: "installation" } })
+      .select("serviceDate serviceType visitType technicianStatus findings actionTaken technicianInputs.notes partsUsed")
+      .sort({ serviceDate: -1 }).limit(100).lean();
+    if (records.length) return { source: scope.source, records };
+  }
+  return null;
+};
 
 // Stock is only shown when a technician recorded an exact part name or SKU
 // that matches an active catalog item. A component inferred from a symptom is
@@ -124,12 +150,15 @@ const analyzeCompletedVisit = async ({
   recalculate = calculateMaintenanceRecommendation,
   deferProvider = false,
 }) => {
-  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 6) {
+  if (serviceHistory.aiInterpretation?.status === "completed" && Number(serviceHistory.aiInterpretation?.analysisVersion || 0) >= 7) {
     return { interpretation: serviceHistory.aiInterpretation, recommendation };
   }
   const priorHistory = await ServiceHistory.find({ unit: unit._id, _id: { $ne: serviceHistory._id } })
     .sort({ serviceDate: -1 }).lean();
-  const evidence = buildVisitEvidence({ unit, serviceHistory, priorHistory, recommendation });
+  const usableOwnHistory = priorHistory.filter((record) => String(record.serviceType || record.visitType || "").toLowerCase() !== "installation"
+    && clean(record.findings || record.technicianInputs?.notes || record.actionTaken, 500));
+  const comparableHistory = usableOwnHistory.length >= 2 ? null : await loadComparableServiceHistory(unit);
+  const evidence = buildVisitEvidence({ unit, serviceHistory, priorHistory, comparableHistory, recommendation });
   let providerResult;
   if (deferProvider) {
     // The completed task, service history, payment, proof, and customer
@@ -193,6 +222,7 @@ const analyzeCompletedVisit = async ({
         repairOrReplacement: interpretation.repairOrReplacement,
         recommendedPart: interpretation.recommendedPart,
         partRecommendationStatus: interpretation.partRecommendationStatus,
+        partsRecommendation: interpretation.partsRecommendation,
         inventoryMessage: interpretation.inventoryMessage,
         inventoryMatches: interpretation.inventoryMatches,
         recommendedService: interpretation.recommendedService,
@@ -202,6 +232,12 @@ const analyzeCompletedVisit = async ({
         whyThisDate: interpretation.whyThisDate,
         customerSummary: interpretation.customerSummary,
         recommendedActions: interpretation.recommendedActions,
+        possibleCauses: interpretation.possibleCauses,
+        diagnosticActions: interpretation.diagnosticActions,
+        recommendedServiceOrRepair: interpretation.recommendedServiceOrRepair,
+        historicalContext: interpretation.historicalContext,
+        historicalSupportSource: interpretation.historicalSupportSource,
+        historicalSupportSampleSize: interpretation.historicalSupportSampleSize,
         generatedAt: interpretation.generatedAt,
       },
     } });
@@ -360,6 +396,7 @@ module.exports = {
   analyzeCompletedVisit,
   buildServiceHistoryUpsert,
   completeServiceForUnit,
+  loadComparableServiceHistory,
   recordedPartsInventory,
   validateStrictServicePayload,
 };

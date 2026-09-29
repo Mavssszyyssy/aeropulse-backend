@@ -26,7 +26,7 @@ const roleMessages = (role = "customer", isFirstLogin = false) => {
   if (normalizedRole === "technician") {
     return {
       welcome:
-        "Your technician workspace is ready. New work order alerts will appear here.",
+        "Your technician workspace is ready. New work order notifications will appear here.",
       status:
         "Open My Work Orders to review Admin-activated assignments, check in with GPS, and scan assigned unit QR codes.",
     };
@@ -35,7 +35,7 @@ const roleMessages = (role = "customer", isFirstLogin = false) => {
   if (isStaff) {
     return {
       welcome:
-        "Your operations inbox is ready. Order, inventory, and branch alerts will appear here.",
+        "Your operations inbox is ready. Order, inventory, and branch notifications will appear here.",
       status:
         "Use Admin Orders and inventory screens to process new transactions from customer checkout.",
     };

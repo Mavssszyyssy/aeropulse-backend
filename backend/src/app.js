@@ -33,6 +33,7 @@ const warrantyRoutes = require("./routes/warrantyRoutes");
 const branchCoverageRoutes = require("./routes/branchCoverageRoutes");
 const contactMessageRoutes = require("./routes/contactMessageRoutes");
 const cronRoutes = require("./routes/cronRoutes");
+const systemSettingsRoutes = require("./routes/systemSettingsRoutes");
 
 const app = express();
 const isProduction = env.nodeEnv === "production";
@@ -137,6 +138,7 @@ app.use(
   authRoutes,
 );
 app.use("/api/users", userRoutes);
+app.use("/api/system-settings", systemSettingsRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/reorders", reorderRoutes);

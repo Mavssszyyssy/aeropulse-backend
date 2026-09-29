@@ -20,10 +20,6 @@ const addDays = (value, days) => {
 };
 const list = (value) => (Array.isArray(value) ? value : String(value || "").split(","))
   .map((item) => clean(item, 180)).filter(Boolean);
-const sentence = (value) => {
-  const text = clean(value, 700);
-  return text && !/[.!?]$/.test(text) ? `${text}.` : text;
-};
 
 const concernText = (text) => String(text || "")
   .replace(/\bno\s+signs?\s+of\s+(?:[a-z0-9/-]+\s+){0,6}(?:faults?|failures?|malfunctions?|damage|wear)(?:\s+(?:or|and)\s+(?:unusual\s+)?(?:noise|leaks?|leaking|damage|wear|faults?|failures?|malfunctions?|problems?|issues?|sparking|smoke|burning|overheating))*\b/gi, "")
@@ -118,7 +114,7 @@ const buildVisitProgression = ({ serviceHistory = {}, priorHistory = [] } = {}) 
   };
 };
 
-function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [], recommendation = {} } = {}) {
+function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [], comparableHistory = null, recommendation = {} } = {}) {
   const findings = clean(serviceHistory.findings, 1000);
   const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 1000);
   const actions = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 1000);
@@ -128,6 +124,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
   const customerNotes = clean(serviceHistory.customerInputs?.notes, 1000);
   const customerOther = clean(serviceHistory.customerInputs?.other, 1000);
   const progression = buildVisitProgression({ serviceHistory, priorHistory });
+  const historicalSupport = buildHistoricalSupport({ serviceHistory, priorHistory, comparableHistory });
   const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== findings.toLowerCase()
     ? technicianNotes : "";
   const currentObservations = clean([
@@ -162,6 +159,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
     customer_notes: customerNotes ? `Customer notes: ${customerNotes}` : "",
     customer_other_observation: customerOther ? `Customer custom observation: ${customerOther}` : "",
     unit_profile: clean([unit.brand, unit.modelName || unit.model, unit.category, unit.capacityHp ? `${unit.capacityHp} HP` : ""].filter(Boolean).join(" · "), 300),
+    historical_support: historicalSupport.summary,
   };
   priorHistory.forEach((history, index) => {
     const previousFinding = clean(history.findings, 500);
@@ -180,7 +178,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
   Object.keys(facts).forEach((key) => { if (!facts[key]) delete facts[key]; });
   const baselineDays = Math.min(365, Math.max(91, Math.round(Number(recommendation.historicalBasis?.intervalDays || recommendation.predictionEvidence?.baselineIntervalDays || 180))));
   return {
-    version: 3,
+    version: 4,
     visit: {
       service_date: dateKey(serviceHistory.serviceDate),
       service_type: serviceTypeFor(serviceHistory),
@@ -196,6 +194,7 @@ function buildVisitEvidence({ unit = {}, serviceHistory = {}, priorHistory = [],
       customer_other_observation: customerOther,
     },
     progression,
+    historical_support: historicalSupport,
     unit: {
       brand: clean(unit.brand, 80),
       model: clean(unit.modelName || unit.model, 120),
@@ -286,6 +285,284 @@ const PART_BY_COMPONENT = {
   casing_or_mount: "Casing or mounting component",
 };
 
+const POSSIBLE_CAUSES_BY_COMPONENT = {
+  control_board: [
+    "Blown or damaged fuse or protection component",
+    "Incorrect or unstable power supply to the control circuit",
+    "Loose, damaged, or disconnected wiring or connectors",
+    "Failed capacitor",
+    "Damaged relay",
+    "Burned or damaged electronic component",
+    "Defective control board",
+  ],
+  button_panel: [
+    "Stuck, worn, or damaged button or switch",
+    "Loose or damaged button-panel connector",
+    "Interrupted wiring between the panel and control board",
+    "Fault in the button panel or its input circuit",
+  ],
+  electrical_system: [
+    "Incorrect or unstable incoming voltage",
+    "Blown fuse, tripped protection, or failed power component",
+    "Loose, damaged, or overheated wiring or connector",
+    "Failed capacitor or relay",
+    "Fault in a connected electrical or control component",
+  ],
+  fan_motor: [
+    "Obstruction affecting the fan or blower",
+    "Loose mounting, worn bearing, or mechanical imbalance",
+    "Weak or failed capacitor",
+    "Loose wiring or incorrect supply voltage",
+    "Motor winding or fan-motor fault",
+  ],
+  fan_or_blower: [
+    "Debris or obstruction in the fan or blower path",
+    "Loose, damaged, or imbalanced fan blade or blower wheel",
+    "Worn bearing or mounting",
+    "Fan-motor, capacitor, wiring, or supply issue",
+  ],
+  compressor: [
+    "Power-supply, protection, or wiring issue",
+    "Weak or failed start/run component",
+    "Refrigerant or system-pressure condition affecting compressor operation",
+    "Thermal overload or mechanical compressor fault",
+  ],
+  air_filter: [
+    "Restricted airflow from a dirty, damaged, or incorrectly fitted filter",
+    "Filter specification or fit that does not match the unit",
+  ],
+  evaporator_or_condenser_coil: [
+    "Dirt or debris restricting heat transfer or airflow",
+    "Coil damage, corrosion, or airflow obstruction",
+    "Related refrigerant or fan-system issue that requires testing",
+  ],
+  drain_system: [
+    "Blocked or restricted drain line",
+    "Disconnected, damaged, or incorrectly sloped drain component",
+    "Drain-pan contamination, damage, or overflow",
+  ],
+  refrigerant_system: [
+    "Refrigerant leak or insufficient charge",
+    "Restricted refrigerant flow",
+    "Valve, connection, coil, or piping issue",
+    "Incorrect operating pressure requiring measured confirmation",
+  ],
+  thermostat_or_sensor: [
+    "Loose, damaged, or incorrectly positioned sensor",
+    "Sensor reading outside its expected range",
+    "Wiring, connector, thermostat, or control-input fault",
+  ],
+  casing_or_mount: [
+    "Loose fastener, bracket, or mounting point",
+    "Damaged or misaligned casing component",
+    "Vibration transferred from a fan, motor, or compressor",
+  ],
+};
+
+const DIAGNOSTIC_ACTIONS_BY_COMPONENT = {
+  control_board: [
+    "Verify the incoming voltage and power supply to the control circuit.",
+    "Inspect the fuse and protection components.",
+    "Check wiring and connectors connected to the control board.",
+    "Inspect capacitors, relays, and visible board components for damage.",
+    "Perform electrical testing on the board and related components.",
+    "Replace the control board only if testing confirms that the board itself is defective.",
+  ],
+  button_panel: [
+    "Reproduce the button or panel symptom and check for physical obstruction or damage.",
+    "Inspect the panel connector and wiring to the control board.",
+    "Test the affected switch or input signal and compare it with the service specification.",
+    "Inspect the button panel and control-board input circuit.",
+    "Replace a panel or board only after testing identifies the failed component.",
+  ],
+  electrical_system: [
+    "Verify the incoming voltage, grounding, and power stability.",
+    "Inspect fuses, breakers, protection devices, and signs of overheating.",
+    "Check wiring, terminals, and connectors for looseness or damage.",
+    "Test capacitors, relays, and the affected electrical circuit.",
+    "Repair or replace only the component confirmed by the electrical tests.",
+  ],
+  fan_motor: [
+    "Inspect the fan path for obstruction and verify that the fan turns freely.",
+    "Check the blade or blower wheel, mounts, and bearings for looseness or wear.",
+    "Measure the motor supply and test its capacitor and wiring.",
+    "Test motor current and winding condition against the service specification.",
+    "Replace the motor only if the inspection and electrical tests confirm failure.",
+  ],
+  fan_or_blower: [
+    "Inspect and clear the fan or blower path.",
+    "Check the blade or blower wheel for damage, imbalance, and secure mounting.",
+    "Inspect the bearing, motor, capacitor, wiring, and supply.",
+    "Replace only the part confirmed defective during testing.",
+  ],
+  compressor: [
+    "Verify supply voltage, wiring, protection devices, and start/run components.",
+    "Measure operating current and system pressures using the correct service procedure.",
+    "Check refrigerant-system conditions that can prevent normal compressor operation.",
+    "Confirm thermal, electrical, and mechanical test results before recommending compressor replacement.",
+  ],
+  air_filter: [
+    "Inspect the filter for dirt, damage, correct fit, and the correct specification.",
+    "Check airflow before and after cleaning or fitting the correct filter.",
+  ],
+  evaporator_or_condenser_coil: [
+    "Inspect the coil and surrounding airflow path for dirt, obstruction, corrosion, or visible damage.",
+    "Measure airflow and operating temperatures after cleaning where applicable.",
+    "Test related fan and refrigerant-system conditions if performance remains abnormal.",
+  ],
+  drain_system: [
+    "Inspect the drain pan, line, joints, and slope.",
+    "Clear restrictions and verify free drainage using the approved service procedure.",
+    "Check for a damaged or disconnected drain component before replacement.",
+  ],
+  refrigerant_system: [
+    "Inspect accessible piping, joints, coils, and valves for evidence of leakage or damage.",
+    "Measure operating pressures and temperatures using the correct service procedure.",
+    "Locate and repair a confirmed leak before charging the system.",
+    "Replace a refrigerant-system component only after tests identify the failed part.",
+  ],
+  thermostat_or_sensor: [
+    "Verify sensor placement, connector condition, and wiring continuity.",
+    "Compare the sensor or thermostat reading with a calibrated reference and service specification.",
+    "Inspect the related control input before replacing the sensor or thermostat.",
+  ],
+  casing_or_mount: [
+    "Inspect the casing, brackets, fasteners, and mounting points.",
+    "Reproduce the vibration or movement and identify its source.",
+    "Check nearby fan, motor, and compressor mounts before replacing a casing component.",
+  ],
+};
+
+const meaningfulHistoricalRecord = (record = {}) => serviceTypeFor(record) !== "installation"
+  && Boolean(clean(record.findings || record.technicianInputs?.notes || record.actionTaken, 500));
+
+function buildHistoricalSupport({ serviceHistory = {}, priorHistory = [], comparableHistory = null } = {}) {
+  const ownRecords = priorHistory.filter(meaningfulHistoricalRecord);
+  if (ownRecords.length >= 2) {
+    return {
+      source: "same_unit",
+      sampleSize: ownRecords.length,
+      summary: `Unit-specific history: ${ownRecords.length} prior completed service records for this AC were reviewed. Current and unresolved findings from those records take priority over aggregate patterns.`,
+    };
+  }
+  const records = Array.isArray(comparableHistory?.records) ? comparableHistory.records.filter(meaningfulHistoricalRecord) : [];
+  if (!records.length) {
+    return {
+      source: "current_visit_only",
+      sampleSize: ownRecords.length,
+      summary: "No sufficient same-unit or comparable model/brand service history is available. This assessment relies on the current recorded visit evidence.",
+    };
+  }
+  const counts = new Map();
+  records.forEach((record) => {
+    const observation = concernText(`${record.findings || ""} ${record.technicianInputs?.notes || ""}`);
+    if (!repairSignal(observation)) return;
+    componentCandidates(observation).filter((component) => component !== "not_specified")
+      .forEach((component) => counts.set(component, (counts.get(component) || 0) + 1));
+  });
+  const repeated = [...counts.entries()].filter(([, count]) => count >= 2).sort((left, right) => right[1] - left[1]).slice(0, 3);
+  const source = ["same_model", "same_brand_type", "same_brand"].includes(comparableHistory?.source)
+    ? comparableHistory.source : "same_brand";
+  const sourceLabel = ({ same_model: "same-model", same_brand_type: "same-brand/type", same_brand: "same-brand" })[source];
+  const pattern = repeated.length
+    ? ` Repeated recorded concerns: ${repeated.map(([component, count]) => `${COMPONENT_LABELS[component] || component} (${count} records)`).join(", ")}.`
+    : " No repeated component concern was supported by at least two comparable records.";
+  return {
+    source,
+    sampleSize: records.length,
+    summary: `Supporting aggregate history: ${records.length} ${sourceLabel} completed service records were reviewed.${pattern} Aggregate history is supporting context only and does not confirm a fault in this AC.`,
+  };
+}
+
+const possibleCausesFor = (analysis = null) => {
+  if (!analysis || analysis.risk_type === "no_problem_indicated") return [];
+  return (POSSIBLE_CAUSES_BY_COMPONENT[analysis.affected_component] || [
+    "A condition related to the recorded symptom that requires physical inspection",
+    "A wiring, connection, power, airflow, or mechanical issue not yet isolated",
+  ]).slice(0, 8);
+};
+
+const diagnosticActionsFor = (analysis = null) => {
+  if (!analysis || analysis.risk_type === "no_problem_indicated") {
+    return ["No fault-specific diagnostic step is indicated by this completed record. Continue routine monitoring and record any new symptom."];
+  }
+  return (DIAGNOSTIC_ACTIONS_BY_COMPONENT[analysis.affected_component] || [
+    "Reproduce and document the recorded symptom.",
+    "Inspect the affected area, its power or airflow path, wiring, connectors, and protection components.",
+    "Take the relevant measurements and isolate the failed component before approving repair or replacement.",
+  ]).slice(0, 8);
+};
+
+const technicalAssessmentFor = ({ analysis = null, evidence = {}, overallCondition = "" } = {}) => {
+  if (!analysis || analysis.risk_type === "no_problem_indicated") {
+    return `${overallCondition} The completed record does not support a current fault diagnosis. Continue the recorded routine maintenance plan and monitor for new symptoms.`;
+  }
+  const component = analysis.affected_component;
+  const assessments = {
+    control_board: "The recorded control-board non-response may indicate an electrical or control-system problem. It does not by itself confirm that the board is defective because the power supply, protection components, wiring, connectors, capacitors, relays, or another board component can produce the same symptom.",
+    button_panel: "The recorded button or panel symptom may come from the physical switch, its connector or wiring, the panel circuit, or the control-board input. Testing is required before identifying the failed part.",
+    electrical_system: "The recorded symptom may indicate a supply, protection, wiring, connection, capacitor, relay, or other electrical-component issue. The failed point has not yet been confirmed.",
+    fan_motor: "The recorded fan-motor symptom may come from an obstruction, loose or worn mechanical parts, the capacitor, wiring, supply voltage, or the motor itself. Inspection and measurements are required before repair or replacement.",
+    fan_or_blower: "The recorded fan or blower symptom may be mechanical, electrical, or airflow-related. The exact source must be isolated before a part is replaced.",
+    compressor: "The recorded compressor-related symptom may involve the power circuit, protection or start components, refrigerant-system conditions, thermal overload, or the compressor itself. Measured testing is required before concluding that the compressor has failed.",
+    air_filter: "The recorded filter condition may restrict airflow or reflect an incorrect or damaged filter. Airflow and fit should be verified after cleaning or correction.",
+    evaporator_or_condenser_coil: "The recorded coil concern may affect heat transfer or airflow, but related fan and refrigerant-system conditions should also be checked before assigning the cause.",
+    drain_system: "The recorded drainage symptom may result from blockage, slope, connection, pan, or component damage. The source should be traced before replacing a drain component.",
+    refrigerant_system: "The recorded refrigerant-system symptom requires measured pressure and temperature checks and leak inspection. A low reading alone does not identify which component is responsible.",
+    thermostat_or_sensor: "The recorded sensor or thermostat symptom may come from placement, wiring, connector, calibration, the sensor itself, or its control input. Comparative testing is needed before replacement.",
+    casing_or_mount: "The recorded casing or mounting symptom may come from loose or damaged hardware or vibration transferred from another component. The physical source should be confirmed first.",
+  };
+  const customerObservation = clean([
+    evidence.visit?.customer_reported_issue,
+    evidence.visit?.customer_notes,
+    evidence.visit?.customer_other_observation,
+  ].filter(Boolean).join(" "), 300);
+  const customerContext = customerObservation
+    ? ` Customer observations considered as supporting, unverified context: ${customerObservation} The technician's tests remain authoritative.`
+    : "";
+  return `${assessments[component] || "The recorded symptom indicates a possible developing condition, but the available evidence does not yet confirm its physical cause."}${customerContext}`;
+};
+
+const recommendedServiceTextFor = ({ analysis = null, recommendedService = "", componentLabel = "component" } = {}) => {
+  if (recommendedService === "deep_cleaning") return "Deep cleaning of the whole unit is recommended because more than one year has passed since the recorded cleaning or installation reference.";
+  if (recommendedService === "regular_cleaning") return "Regular cleaning is recommended because the latest recorded cleaning or installation reference is within one year.";
+  if (recommendedService === "repair") return `Arrange a ${componentLabel} repair assessment after the diagnostic tests identify the actual cause; do not approve replacement from the symptom alone.`;
+  if (recommendedService === "inspection") return `Arrange a focused ${componentLabel} inspection and diagnosis before deciding on repair or replacement.`;
+  return analysis ? "Arrange the recorded follow-up and confirm the diagnosis before repair or replacement." : "Continue the existing recorded service schedule.";
+};
+
+function enrichVisitPrescription(value = null) {
+  if (!value) return null;
+  const visit = value.toObject?.() || value;
+  const riskType = visit.riskType || "not_assessed";
+  const affectedComponent = visit.affectedComponent || "not_specified";
+  const analysis = riskType === "not_assessed" ? null : {
+    risk_type: riskType,
+    affected_component: affectedComponent,
+    repair_or_replacement: visit.repairOrReplacement || "not_assessed",
+  };
+  const componentLabel = COMPONENT_LABELS[affectedComponent] || "recorded symptom";
+  const currentPrescription = Number(visit.analysisVersion || 0) >= 7;
+  const historicalSupport = visit.historicalContext ? null : buildHistoricalSupport({
+    priorHistory: (visit.previousVisitHistory || []).map((detail) => ({ serviceType: "inspection", findings: detail })),
+  });
+  const inventoryMessage = visit.inventoryMessage || "No exact replacement part is identified in the completed report.";
+  const partsRecommendation = analysis && affectedComponent !== "not_specified"
+    ? `Inspect and test the ${componentLabel}. ${guidanceFor(analysis.repair_or_replacement)} Do not replace it unless testing confirms that the component itself is defective. ${inventoryMessage}`
+    : `No component replacement is supported by the completed record. ${inventoryMessage}`;
+  return {
+    ...visit,
+    aiAssessment: currentPrescription && visit.aiAssessment ? visit.aiAssessment : technicalAssessmentFor({ analysis, overallCondition: visit.overallCondition || "" }),
+    possibleCauses: Array.isArray(visit.possibleCauses) && visit.possibleCauses.length ? visit.possibleCauses : possibleCausesFor(analysis),
+    diagnosticActions: Array.isArray(visit.diagnosticActions) && visit.diagnosticActions.length ? visit.diagnosticActions : diagnosticActionsFor(analysis),
+    recommendedServiceOrRepair: visit.recommendedServiceOrRepair || recommendedServiceTextFor({ analysis, recommendedService: visit.recommendedService, componentLabel }),
+    partsRecommendation: visit.partsRecommendation || partsRecommendation,
+    historicalContext: visit.historicalContext || historicalSupport?.summary || "",
+    historicalSupportSource: visit.historicalSupportSource || historicalSupport?.source || "current_visit_only",
+    historicalSupportSampleSize: Number(visit.historicalSupportSampleSize || historicalSupport?.sampleSize || 0),
+  };
+}
+
 const normalPerformanceSignal = (text) => /(?:cooling|airflow|operation|performance).{0,32}\b(?:normal|good|properly|well|stable|working)|\b(?:operating|cooling)\s+(?:normally|properly|well)|\btested\s+(?:cooling|operation).{0,24}\b(?:normal|good|properly|well)/i.test(String(text || ""));
 const componentFor = (text) => componentCandidates(String(text || "")).find((component) => component !== "not_specified") || "not_specified";
 
@@ -370,18 +647,9 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const technicianNotes = clean(serviceHistory.technicianInputs?.notes, 700);
   const distinctNotes = technicianNotes && technicianNotes.toLowerCase() !== finding.toLowerCase()
     ? technicianNotes : "";
-  const parts = list(serviceHistory.partsUsed).slice(0, 12);
   const work = clean(serviceHistory.actionTaken || list(serviceHistory.serviceActions).join(", "), 700);
-  const customerIssue = clean(serviceHistory.customerInputs?.reportedIssue, 700);
-  const customerNotes = clean(serviceHistory.customerInputs?.notes, 700);
-  const customerOther = clean(serviceHistory.customerInputs?.other, 700);
   const progression = evidence.progression || buildVisitProgression({ serviceHistory });
   const visitLabel = serviceLabel(serviceTypeFor(serviceHistory));
-  const recorded = `During the completed ${visitLabel.toLowerCase()}, the technician recorded${progression.currentStatus ? ` a status of ${progression.currentStatusLabel}` : ""}: ${sentence(finding)}${distinctNotes ? ` Additional notes: ${sentence(distinctNotes)}` : ""}${parts.length ? ` Parts recorded: ${sentence(parts.join(", "))}` : ""} Work completed: ${sentence(work)}`;
-  const customerContext = [customerIssue, customerNotes, customerOther].filter(Boolean);
-  const recordedContext = customerContext.length
-    ? `${recorded} Customer observations considered: ${customerContext.map(sentence).join(" ")}`
-    : recorded;
   const riskLabels = { no_problem_indicated: "No developing problem is indicated in the submitted report", component_deterioration: "The report indicates a possible developing component-wear risk", performance_decline: "The report indicates a possible decline in AC performance", leak_or_drainage: "The report indicates a possible leak or drainage risk", electrical_or_safety: "The report indicates a possible electrical or safety risk", other_recorded_risk: "The report indicates another concern that should be monitored" };
   const affectedComponent = analysis?.affected_component || "not_specified";
   const componentLabel = COMPONENT_LABELS[affectedComponent] || "component";
@@ -400,9 +668,14 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
   const inventoryMessage = analysis && affectedComponent !== "not_specified"
     ? partInventory?.message || "No exact replacement part number was recorded. Verify the compatible part during inspection before checking stock or approving replacement."
     : "No exact replacement part is identified in the completed report.";
-  const aiAssessment = analysis
-    ? `${overallCondition} ${recordedContext} ${predictedRisk} ${guidanceFor(analysis.repair_or_replacement)}`
-    : `${overallCondition} ${recordedContext}`;
+  const aiAssessment = technicalAssessmentFor({ analysis, evidence, overallCondition });
+  const possibleCauses = possibleCausesFor(analysis);
+  const diagnosticActions = diagnosticActionsFor(analysis);
+  const historicalSupport = evidence.historical_support || buildHistoricalSupport({ serviceHistory });
+  const recommendedServiceOrRepair = recommendedServiceTextFor({ analysis, recommendedService, componentLabel });
+  const partsRecommendation = analysis && affectedComponent !== "not_specified"
+    ? `Inspect and test the ${componentLabel}. ${guidanceFor(analysis.repair_or_replacement)} Do not replace it unless testing confirms that the component itself is defective. ${inventoryMessage}`
+    : `No component replacement is supported by the completed record. ${inventoryMessage}`;
   const whyThisDate = followUpDate
     ? `${dateKey(followUpDate)} was selected because ${({ routine: "the report supports routine care", monitor: "the recorded concern should be watched", soon: "the recorded concern should be checked soon", urgent: "the recorded concern needs prompt attention", critical: "the recorded concern needs immediate attention" })[analysis?.severity] || "the existing recorded schedule is being kept"}. The timing uses the technician's completed report and the service history available for this AC.`
     : "A date could not be selected from the available records.";
@@ -412,11 +685,16 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     followUp,
     inventoryMessage: analysis ? inventoryMessage : "",
   });
-  const customerSummary = analysis
-    ? `${componentConcern} Recorded detail: ${sentence(finding)} Work performed: ${sentence(work)} ${followUp}`
-    : `${overallCondition} ${followUp}`;
+  const customerSummary = [
+    componentConcern,
+    finding ? `Technician finding: ${finding}` : "",
+    work ? `Work performed: ${work}` : "",
+    aiAssessment,
+    recommendedServiceOrRepair,
+    followUp,
+  ].filter(Boolean).join(" ");
   return {
-    analysisVersion: 6,
+    analysisVersion: 7,
     provider: ai ? "openai" : "system-fallback",
     status: ai ? "completed" : "unavailable",
     whatHappened: `${visitLabel}: ${work}`,
@@ -437,10 +715,17 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
     repairOrReplacement: analysis?.repair_or_replacement || "not_assessed",
     recommendedPart,
     partRecommendationStatus,
+    partsRecommendation: clean(partsRecommendation, 1400),
     inventoryMessage,
     inventoryMatches: Array.isArray(partInventory?.matches) ? partInventory.matches : [],
     recommendedAction: analysis?.follow_up_action || "existing_schedule",
     recommendedActions,
+    possibleCauses,
+    diagnosticActions,
+    recommendedServiceOrRepair: clean(recommendedServiceOrRepair, 800),
+    historicalContext: clean(historicalSupport.summary, 1000),
+    historicalSupportSource: historicalSupport.source || "current_visit_only",
+    historicalSupportSampleSize: Number(historicalSupport.sampleSize || 0),
     recommendedService,
     recommendedFollowUpDays: analysis?.follow_up_days || null,
     recommendedFollowUpDate: followUpDate,
@@ -457,8 +742,12 @@ function finalizeVisitAnalysis({ providerResult = {}, evidence = {}, recommendat
 
 module.exports = {
   FOLLOW_UP_RANGE,
+  buildHistoricalSupport,
   buildVisitEvidence,
+  diagnosticActionsFor,
+  enrichVisitPrescription,
   finalizeVisitAnalysis,
+  possibleCausesFor,
   recordedFollowUpAnalysis,
   validVisitAnalysis,
 };

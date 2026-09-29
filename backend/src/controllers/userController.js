@@ -18,6 +18,7 @@ const {
 const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
 const { containsProtectedAdminFields } = require("../domain/adminSettingsPolicy");
 const { invalidateAuthCache } = require("../middleware/auth");
+const { validateEmailAddress } = require("../services/emailDomainPolicyService");
 
 const PROFILE_VISIBILITY_VALUES = ["public", "private", "role_based"];
 const NOTIFICATION_TYPES = ["account", "order", "system"];
@@ -472,6 +473,10 @@ const applyProfileUpdate = async (
     const email = normalizeEmail(payload.email);
     if (!isValidEmail(email)) {
       return { ok: false, status: 400, message: "Enter a valid email address." };
+    }
+    const emailValidation = await validateEmailAddress(email);
+    if (!emailValidation.ok) {
+      return { ok: false, status: 400, message: emailValidation.message };
     }
     if (email === SHARED_DEMO_EMAIL && !canUseSharedDemoEmail(user, email)) {
       return { ok: false, status: 403, message: "The shared demo email is limited to the five approved demo accounts." };

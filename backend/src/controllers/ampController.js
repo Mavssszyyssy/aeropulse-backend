@@ -13,6 +13,7 @@ const { notifyMaintenanceForUnit } = require("../services/ampDailyMonitorService
 const { BRANCHES } = require("../domain/branchRouting");
 const { formatDateKeyInTimeZone } = require("../utils/dateTime");
 const { assertAmpBranch } = require("../domain/ampAccess");
+const { enrichVisitPrescription } = require("../domain/ampVisitAnalysis");
 
 const INTERNAL_AMP_ROLES = new Set(["technician", "manager", "owner", "admin", "superadmin"]);
 const displayService = serviceLabel;
@@ -63,7 +64,7 @@ const serviceHistoryItem = (service) => ({
     ? service.technician.name || [service.technician.name_first, service.technician.name_last].filter(Boolean).join(" ") || service.technician.email || ""
     : "",
   evidence: assessServiceEvidence(service),
-  aiInterpretation: service.aiInterpretation?.status ? service.aiInterpretation : null,
+  aiInterpretation: service.aiInterpretation?.status ? enrichVisitPrescription(service.aiInterpretation) : null,
 });
 
 const completeUnitHistory = (json, history = []) => {
