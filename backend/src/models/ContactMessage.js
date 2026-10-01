@@ -51,6 +51,8 @@ contactMessageSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
   },
 );
+contactMessageSchema.index({ branch: 1, status: 1, createdAt: -1 });
+contactMessageSchema.index({ customer: 1, createdAt: -1 });
 
 contactMessageSchema.set("toJSON", {
   transform: (_doc, ret) => {

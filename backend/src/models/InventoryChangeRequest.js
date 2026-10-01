@@ -59,6 +59,9 @@ const inventoryChangeRequestSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+inventoryChangeRequestSchema.index({ status: 1, createdAt: -1 });
+inventoryChangeRequestSchema.index({ requestedBy: 1, createdAt: -1 });
+
 inventoryChangeRequestSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();

@@ -5,6 +5,7 @@ const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenance
 const { AI_ANALYSIS_MAX_ATTEMPTS, analyzeCompletedVisit } = require("../domain/serviceCompletionService");
 const { createDedupedNotification, notifyOperationalStaff } = require("./operationalNotificationService");
 const { formatDateKeyInTimeZone, businessDay } = require("../utils/dateTime");
+const { forEachWithConcurrency } = require("../utils/concurrency");
 const env = require("../config/env");
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -115,33 +116,47 @@ const runAmpDailyMonitor = async ({ now = new Date(), limit = 250 } = {}) => {
       customer: { $ne: null },
       ...(lastId ? { _id: { $gt: lastId } } : {}),
     })
-      .select("customer brand modelName serviceBranch status")
       .sort({ _id: 1 })
       .limit(batchSize);
     if (!units.length) break;
     stats.scanned += units.length;
     const unitIds = units.map(unit => String(unit._id));
-    const requests = await ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
-      .select("unitId issue issueType payload status createdAt").sort({ createdAt: -1 }).lean();
+    const [histories, requests] = await Promise.all([
+      ServiceHistory.find({ unit: { $in: unitIds } }).sort({ serviceDate: -1 }).lean(),
+      ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
+        .select("unitId issue issueType payload status createdAt").sort({ createdAt: -1 }).lean(),
+    ]);
+    const historiesByUnit = new Map();
+    histories.forEach(history => historiesByUnit.set(
+      String(history.unit),
+      [...(historiesByUnit.get(String(history.unit)) || []), history],
+    ));
     const requestsByUnit = new Map();
     requests.forEach(request => requestsByUnit.set(String(request.unitId), [...(requestsByUnit.get(String(request.unitId)) || []), request]));
-    for (const unit of units) {
+    await forEachWithConcurrency(units, 5, async (unit) => {
       try {
-        const recommendation = await calculateMaintenanceRecommendation(unit._id, { asOfDate: now, cohortCache, serviceRequests: requestsByUnit.get(String(unit._id)) || [] });
+        const recommendation = await calculateMaintenanceRecommendation(unit._id, {
+          unit,
+          asOfDate: now,
+          cohortCache,
+          allHistory: historiesByUnit.get(String(unit._id)) || [],
+          serviceRequests: requestsByUnit.get(String(unit._id)) || [],
+        });
         const alert = maintenanceAlertForRecommendation(recommendation, now);
-        if (!alert) continue;
-        const notification = await notifyMaintenanceForUnit(unit, recommendation, now);
-        if (notification && notification.$locals?.wasDeduplicated !== true) stats.alertsCreated += 1;
-        if (alert.daysUntilDue < 0) stats.overdue += 1; else stats.dueSoon += 1;
-        const branch = String(unit.serviceBranch || "Unassigned");
-        const summary = branchSummary.get(branch) || { dueSoon: 0, overdue: 0 };
-        if (alert.daysUntilDue < 0) summary.overdue += 1; else summary.dueSoon += 1;
-        branchSummary.set(branch, summary);
+        if (alert) {
+          const notification = await notifyMaintenanceForUnit(unit, recommendation, now);
+          if (notification && notification.$locals?.wasDeduplicated !== true) stats.alertsCreated += 1;
+          if (alert.daysUntilDue < 0) stats.overdue += 1; else stats.dueSoon += 1;
+          const branch = String(unit.serviceBranch || "Unassigned");
+          const summary = branchSummary.get(branch) || { dueSoon: 0, overdue: 0 };
+          if (alert.daysUntilDue < 0) summary.overdue += 1; else summary.dueSoon += 1;
+          branchSummary.set(branch, summary);
+        }
       } catch (error) {
         stats.errors += 1;
         console.warn("AMP daily monitor skipped a unit", { unitId: String(unit._id), reason: error.message });
       }
-    }
+    });
     lastId = units.at(-1)._id;
     if (units.length < batchSize) break;
   }

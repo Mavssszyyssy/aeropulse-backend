@@ -12,6 +12,7 @@ const env = require("./config/env");
 const { getResendEmailConfiguration } = require("./utils/email");
 const { createMemoryRateLimit } = require("./middleware/requestRateLimit");
 const { httpErrorHandler } = require("./middleware/httpErrorHandler");
+const { createPerformanceTiming } = require("./middleware/performanceTiming");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -56,6 +57,7 @@ app.use(morgan("dev"));
 // Expo Go screens without a response body after a long session. Never cache
 // authenticated dashboard, task, notification, order, or unit responses.
 app.disable("etag");
+app.use("/api", createPerformanceTiming());
 app.use("/api", (_req, res, next) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   res.set("Pragma", "no-cache");

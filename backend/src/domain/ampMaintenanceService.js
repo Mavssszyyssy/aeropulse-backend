@@ -9,10 +9,13 @@ const { businessDay } = require("../utils/dateTime");
 const { predictionEvidence, predictionBasis, savedPredictionIsCurrent } = require("./ampPrediction");
 const { explanationForRecommendation } = require("./ampCustomerExplanation");
 const { enrichVisitPrescription } = require("./ampVisitAnalysis");
+const { forEachWithConcurrency } = require("../utils/concurrency");
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_SERVICE_INTERVAL_DAYS = 180;
 const MIN_HISTORICAL_SAMPLES = 2;
+const MAINTENANCE_REFRESH_CONCURRENCY = 5;
+const MAINTENANCE_REFRESH_BATCH_SIZE = 250;
 
 const asDate = (value) => {
   if (!value) return null;
@@ -375,14 +378,36 @@ const calculateMaintenanceRecommendation = async (unitId, options = {}) => {
 };
 
 const refreshMaintenanceRecommendations = async (query = {}, asOfDate = new Date()) => {
-  const units = await Unit.find({ ...query, status: { $in: ["active", "service_due"] } }).select("_id").lean();
-  const unitIds = units.map(unit => String(unit._id));
-  const requests = unitIds.length ? await ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
-    .select("unitId issue issueType payload status createdAt").sort({ createdAt: -1 }).lean() : [];
-  const requestsByUnit = new Map();
-  requests.forEach(request => requestsByUnit.set(String(request.unitId), [...(requestsByUnit.get(String(request.unitId)) || []), request]));
+  const units = await Unit.find({ ...query, status: { $in: ["active", "service_due"] } });
   const cohortCache = new Map();
-  for (const unit of units) await calculateMaintenanceRecommendation(unit._id, { asOfDate, cohortCache, serviceRequests: requestsByUnit.get(String(unit._id)) || [] });
+  for (let offset = 0; offset < units.length; offset += MAINTENANCE_REFRESH_BATCH_SIZE) {
+    const batch = units.slice(offset, offset + MAINTENANCE_REFRESH_BATCH_SIZE);
+    const unitIds = batch.map(unit => String(unit._id));
+    const [histories, requests] = await Promise.all([
+      ServiceHistory.find({ unit: { $in: unitIds } }).sort({ serviceDate: -1 }).lean(),
+      ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
+        .select("unitId issue issueType payload status createdAt").sort({ createdAt: -1 }).lean(),
+    ]);
+    const historiesByUnit = new Map();
+    histories.forEach(history => historiesByUnit.set(
+      String(history.unit),
+      [...(historiesByUnit.get(String(history.unit)) || []), history],
+    ));
+    const requestsByUnit = new Map();
+    requests.forEach(request => requestsByUnit.set(
+      String(request.unitId),
+      [...(requestsByUnit.get(String(request.unitId)) || []), request],
+    ));
+    await forEachWithConcurrency(batch, MAINTENANCE_REFRESH_CONCURRENCY, (unit) => (
+      calculateMaintenanceRecommendation(unit._id, {
+        unit,
+        asOfDate,
+        cohortCache,
+        allHistory: historiesByUnit.get(String(unit._id)) || [],
+        serviceRequests: requestsByUnit.get(String(unit._id)) || [],
+      })
+    ));
+  }
 };
 
 module.exports = {

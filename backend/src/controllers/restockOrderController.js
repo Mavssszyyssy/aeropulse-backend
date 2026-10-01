@@ -164,9 +164,17 @@ const markRestockReceived = async (req, res) => {
       }
     }
 
+    // Load the catalogue records once. A restock can contain many products,
+    // so resolving them one at a time adds avoidable database round trips.
+    const productIds = restockOrder.products.map((entry) => entry.product);
+    const products = await Product.find({ _id: { $in: productIds } });
+    const productsById = new Map(
+      products.map((product) => [String(product._id), product]),
+    );
+
     // Update inventory
     for (const productEntry of restockOrder.products) {
-      const product = await Product.findById(productEntry.product);
+      const product = productsById.get(String(productEntry.product));
       if (product) {
         const receivedQty = productEntry.receivedQuantity || productEntry.quantity;
 

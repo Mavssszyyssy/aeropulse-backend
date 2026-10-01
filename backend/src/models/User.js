@@ -224,6 +224,11 @@ const userSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+userSchema.index({ role: 1, accountStatus: 1, isDeleted: 1, createdAt: -1 });
+userSchema.index({ assignedBranch: 1, role: 1, accountStatus: 1 });
+userSchema.index({ activeBranch: 1, role: 1, accountStatus: 1 });
+userSchema.index({ lastLogin: -1 });
+
 userSchema.pre("validate", function assignEmailIdentityKey() {
   this.emailIdentityKey = buildEmailIdentityKey(this, this.email);
 });

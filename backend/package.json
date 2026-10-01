@@ -15,6 +15,9 @@
     "migrate:demo-email": "node scripts/migrate-shared-demo-email.js",
     "migrate:remove-authenticator": "node scripts/remove-authenticator-data.js",
     "migrate:remove-authenticator:apply": "node scripts/remove-authenticator-data.js --apply",
+    "indexes:performance": "node scripts/ensure-performance-indexes.js",
+    "indexes:performance:apply": "node scripts/ensure-performance-indexes.js --apply",
+    "benchmark:reads": "node scripts/benchmark-read-endpoints.js",
     "cleanup:data": "node scripts/cleanup-live-data.js",
     "test": "node --test test/*.test.js"
   },

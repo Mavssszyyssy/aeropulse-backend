@@ -80,6 +80,9 @@ const restockOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+restockOrderSchema.index({ status: 1, createdAt: -1 });
+restockOrderSchema.index({ branches: 1, status: 1, createdAt: -1 });
+
 restockOrderSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();

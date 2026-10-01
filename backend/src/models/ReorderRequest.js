@@ -15,6 +15,9 @@ const reorderRequestSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+reorderRequestSchema.index({ status: 1, createdAt: -1 });
+reorderRequestSchema.index({ requestedBy: 1, createdAt: -1 });
+
 reorderRequestSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();

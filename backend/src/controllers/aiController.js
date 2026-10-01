@@ -166,6 +166,20 @@ const loadUnitAndRecommendation = async (req, unitId) => {
 // A fresh calculation rechecks the evidence after the provider round trip.
 // Never apply a response based on a cleaning history that changed while waiting.
 async function predictAndSave(req, unit, recommendation) {
+  // Current predictions are stored with an evidence fingerprint. Reuse that
+  // durable result before consulting the process-local cache or AI provider,
+  // which also prevents duplicate paid work across separate Vercel instances.
+  if (recommendation?.predictionSource === "openai" && recommendation?.aiPrediction) {
+    return {
+      ai: {
+        provider: "openai",
+        cached: true,
+        persisted: true,
+        model: recommendation.aiPrediction.model || "",
+      },
+      recommendation,
+    };
+  }
   const ai = await callStructuredAmpAnalysis({ safetyIdentifier: String(req.authUser._id), recommendation, predictionMode: true });
   if (ai.provider !== "openai" || !validPrediction(ai.insight, recommendation.predictionEvidence)) return { ai, recommendation };
   const fresh = await calculateMaintenanceRecommendation(unit._id, { persist: false });
@@ -289,4 +303,4 @@ const generateAmpReport = async (req, res) => {
   }
 };
 
-module.exports = { getMaintenanceRecommendation, generateAmpReport };
+module.exports = { generateAmpReport, getMaintenanceRecommendation, predictAndSave };

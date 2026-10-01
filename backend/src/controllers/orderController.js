@@ -715,7 +715,7 @@ const reReserveReleasedOrderInventory = async (order) => {
 
   const completedReservations = [];
   try {
-    for (const item of order.items || []) {
+    const reservationItems = (order.items || []).map((item) => {
       const quantity = Number(item.quantity || 0);
       const productId = String(item.productId || "").trim();
       const branch = String(item.sourceBranch || order.stockSourceBranch || "").trim();
@@ -723,7 +723,18 @@ const reReserveReleasedOrderInventory = async (order) => {
         throw new HttpError(409, "This order no longer has a valid inventory reservation.");
       }
 
-      const product = await Product.findById(productId);
+      return { item, quantity, productId, branch };
+    });
+    const productQuery = Product.find({
+      _id: { $in: reservationItems.map(({ productId }) => productId) },
+    });
+    const products = await withOptionalSession(productQuery, null);
+    const productsById = new Map(
+      products.map((product) => [String(product._id), product]),
+    );
+
+    for (const { item, quantity, productId, branch } of reservationItems) {
+      const product = productsById.get(productId);
       if (!product) throw new HttpError(409, `Product ${item.name || productId} is no longer available.`);
       const hasBranchSnapshot = Boolean(product.branchStock?.has?.(branch));
       const branchStock = Number(product.branchStock?.get?.(branch) || 0);
@@ -747,6 +758,24 @@ const reReserveReleasedOrderInventory = async (order) => {
       } catch (error) {
         await releaseReservedSerialUnits(product._id, serialNumbers);
         throw error;
+      }
+
+      // The products were loaded in one batch. Keep this in-memory document in
+      // step with the guarded database updates so a legacy order containing
+      // the same product more than once cannot reuse a serial or stale stock.
+      const reservedSerials = new Set(serialNumbers);
+      for (const serialUnit of product.serialUnits || []) {
+        if (reservedSerials.has(String(serialUnit.serialNumber || "").trim())) {
+          serialUnit.status = "assigned";
+          serialUnit.assignedOrderCode = order.orderCode;
+        }
+      }
+      product.stock = Math.max(0, Number(product.stock || 0) - quantity);
+      if (hasBranchSnapshot) {
+        product.branchStock.set(
+          branch,
+          Math.max(0, Number(product.branchStock.get(branch) || 0) - quantity),
+        );
       }
 
       completedReservations.push({ productId, branch, quantity, hasBranchSnapshot, serialNumbers });

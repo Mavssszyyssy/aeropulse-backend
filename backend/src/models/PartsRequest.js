@@ -27,6 +27,9 @@ const partsRequestSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+partsRequestSchema.index({ branch: 1, status: 1, createdAt: -1 });
+partsRequestSchema.index({ requestedBy: 1, createdAt: -1 });
+
 partsRequestSchema.set("toJSON", {
   transform: (_doc, ret) => {
     ret.id = ret._id.toString();

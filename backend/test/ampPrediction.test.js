@@ -6,7 +6,7 @@ const History = require("../src/models/ServiceHistory");
 const { calculateMaintenanceRecommendation } = require("../src/domain/ampMaintenanceService");
 const { predictionEvidence, validPrediction, ENGINE_VERSION } = require("../src/domain/ampPrediction");
 const { callStructuredAmpAnalysis } = require("../src/services/openAiAmpService");
-const { getMaintenanceRecommendation, generateAmpReport } = require("../src/controllers/aiController");
+const { getMaintenanceRecommendation, generateAmpReport, predictAndSave } = require("../src/controllers/aiController");
 const { listWarrantyClaims } = require("../src/controllers/warrantyController");
 const { getReportUnits } = require("../src/controllers/ampController");
 const { assertAmpBranch } = require("../src/domain/ampAccess");
@@ -56,6 +56,27 @@ test("real request builder sends timing evidence only and accepts an AI interval
   assert.equal((await callStructuredAmpAnalysis(afterSave)).cached, true); assert.equal(calls, 1);
   assert.equal((await callStructuredAmpAnalysis({ ...input, recommendation: { ...recommendation, predictionEvidence: { ...evidence(), eligible: false } } })).provider, "system-fallback");
   assert.equal(calls, 1);
+});
+
+test("a current saved prediction is reused across server instances without another provider call", async t => {
+  t.mock.method(global, "fetch", () => {
+    throw new Error("A current persisted prediction must not call the provider");
+  });
+  const recommendation = {
+    predictionSource: "openai",
+    aiPrediction: { model: "saved-model", generatedAt: "2026-09-30T00:00:00.000Z" },
+    predictionEvidence: evidence(),
+    bestServicedBy: "2026-06-30T00:00:00.000Z",
+  };
+  const result = await predictAndSave(
+    { authUser: { _id: "customer" } },
+    { _id: unitId },
+    recommendation,
+  );
+  assert.equal(result.ai.provider, "openai");
+  assert.equal(result.ai.persisted, true);
+  assert.equal(result.ai.cached, true);
+  assert.equal(result.recommendation, recommendation);
 });
 
 test("branchless admins cannot list warranty claims or report units or request paid AI; assigned scope is enforced", async t => {

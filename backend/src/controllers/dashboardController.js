@@ -2,7 +2,7 @@ const User = require("../models/User");
 const Task = require("../models/Task");
 const Order = require("../models/Order");
 const ServiceRequest = require("../models/ServiceRequest");
-const { formatDateKeyInTimeZone } = require("../utils/dateTime");
+const { DEFAULT_BUSINESS_TIME_ZONE } = require("../utils/dateTime");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ORDER_STAGE_LABELS = {
@@ -19,23 +19,6 @@ const startOfToday = () => {
   return now;
 };
 
-const isCancelled = (order = {}) =>
-  order.workflowStatus === "cancelled" ||
-  order.status === "cancelled" ||
-  order.paymentStatus === "cancelled";
-
-const isPaid = (order = {}) =>
-  !isCancelled(order) &&
-  (order.status === "paid" || order.paymentStatus === "paid");
-
-const safeAmount = (order = {}) => Math.max(0, Number(order.totalAmount || 0));
-const safeDate = (value) => {
-  if (value === null || value === undefined || value === "") return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-const salesDate = (order) => safeDate(order?.paymongo?.paidAt) || safeDate(order?.createdAt);
-
 const getOrderQuery = (branch = "") => {
   const query = {};
   if (branch) {
@@ -47,133 +30,299 @@ const getOrderQuery = (branch = "") => {
   return query;
 };
 
-const bucketForDate = (date, interval) => {
-  const copy = new Date(date);
-  if (interval === "monthly") return `${copy.getFullYear()}-${String(copy.getMonth() + 1).padStart(2, "0")}`;
-  if (interval === "quarterly") return `${copy.getFullYear()}-Q${Math.floor(copy.getMonth() / 3) + 1}`;
-  return formatDateKeyInTimeZone(copy);
+const roundMoney = (value) => Math.round(Math.max(0, Number(value || 0)) * 100) / 100;
+const numericExpression = (value) => ({
+  $max: [
+    0,
+    { $convert: { input: value, to: "double", onError: 0, onNull: 0 } },
+  ],
+});
+const trimmedStringExpression = (value, fallback = "") => ({
+  $trim: {
+    input: {
+      $convert: {
+        input: { $ifNull: [value, fallback] },
+        to: "string",
+        onError: fallback,
+        onNull: fallback,
+      },
+    },
+  },
+});
+
+const buildCommerceAnalyticsPipeline = (branch = "") => {
+  const timeZone = process.env.APP_TIME_ZONE || DEFAULT_BUSINESS_TIME_ZONE;
+  const salesDate = { $ifNull: ["$paymongo.paidAt", "$createdAt"] };
+  const year = { $year: { date: salesDate, timezone: timeZone } };
+  const month = { $month: { date: salesDate, timezone: timeZone } };
+
+  return [
+    { $match: getOrderQuery(branch) },
+    {
+      $set: {
+        _analyticsCancelled: {
+          $or: [
+            { $eq: ["$workflowStatus", "cancelled"] },
+            { $eq: ["$status", "cancelled"] },
+            { $eq: ["$paymentStatus", "cancelled"] },
+          ],
+        },
+        _analyticsAmount: numericExpression("$totalAmount"),
+        _analyticsSalesDate: salesDate,
+        _analyticsBranch: {
+          $let: {
+            vars: {
+              stock: trimmedStringExpression("$stockSourceBranch"),
+              customer: trimmedStringExpression("$customerBranch"),
+            },
+            in: {
+              $cond: [
+                { $ne: ["$$stock", ""] },
+                "$$stock",
+                { $cond: [{ $ne: ["$$customer", ""] }, "$$customer", "Unassigned"] },
+              ],
+            },
+          },
+        },
+        _analyticsPaymentMethod: {
+          $let: {
+            vars: { method: trimmedStringExpression("$paymentMethod", "Other") },
+            in: {
+              $cond: [
+                { $eq: ["$$method", ""] },
+                "OTHER",
+                { $toUpper: "$$method" },
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $set: {
+        _analyticsPaid: {
+          $and: [
+            { $eq: ["$_analyticsCancelled", false] },
+            {
+              $or: [
+                { $eq: ["$status", "paid"] },
+                { $eq: ["$paymentStatus", "paid"] },
+              ],
+            },
+          ],
+        },
+        _analyticsStage: {
+          $cond: [
+            "$_analyticsCancelled",
+            "cancelled",
+            {
+              $let: {
+                vars: { stage: trimmedStringExpression("$workflowStatus", "to_pay") },
+                in: { $cond: [{ $eq: ["$$stage", ""] }, "to_pay", "$$stage"] },
+              },
+            },
+          ],
+        },
+      },
+    },
+    {
+      $facet: {
+        summary: [
+          {
+            $group: {
+              _id: null,
+              totalOrders: { $sum: { $cond: ["$_analyticsCancelled", 0, 1] } },
+              paidOrders: { $sum: { $cond: ["$_analyticsPaid", 1, 0] } },
+              cancelledOrders: { $sum: { $cond: ["$_analyticsCancelled", 1, 0] } },
+              revenue: { $sum: { $cond: ["$_analyticsPaid", "$_analyticsAmount", 0] } },
+            },
+          },
+        ],
+        daily: [
+          { $match: { _analyticsPaid: true } },
+          {
+            $group: {
+              _id: { $dateToString: { date: "$_analyticsSalesDate", format: "%Y-%m-%d", timezone: timeZone } },
+              sales: { $sum: "$_analyticsAmount" },
+              orders: { $sum: 1 },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ],
+        monthly: [
+          { $match: { _analyticsPaid: true } },
+          {
+            $group: {
+              _id: { $dateToString: { date: "$_analyticsSalesDate", format: "%Y-%m", timezone: timeZone } },
+              sales: { $sum: "$_analyticsAmount" },
+              orders: { $sum: 1 },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ],
+        quarterly: [
+          { $match: { _analyticsPaid: true } },
+          {
+            $group: {
+              _id: {
+                year,
+                quarter: { $ceil: { $divide: [month, 3] } },
+              },
+              sales: { $sum: "$_analyticsAmount" },
+              orders: { $sum: 1 },
+            },
+          },
+          { $sort: { "_id.year": 1, "_id.quarter": 1 } },
+        ],
+        topProducts: [
+          { $match: { _analyticsPaid: true } },
+          { $unwind: "$items" },
+          {
+            $set: {
+              _itemName: trimmedStringExpression("$items.name", "Unnamed product"),
+              _itemProductId: trimmedStringExpression("$items.productId"),
+              _itemQuantity: numericExpression("$items.quantity"),
+              _itemPrice: numericExpression("$items.price"),
+            },
+          },
+          {
+            $group: {
+              _id: {
+                $cond: [
+                  { $ne: ["$_itemProductId", ""] },
+                  "$_itemProductId",
+                  "$_itemName",
+                ],
+              },
+              product: { $first: "$_itemName" },
+              unitsSold: { $sum: "$_itemQuantity" },
+              sales: { $sum: { $multiply: ["$_itemQuantity", "$_itemPrice"] } },
+            },
+          },
+          { $sort: { sales: -1, unitsSold: -1 } },
+          { $limit: 5 },
+        ],
+        orderStages: [
+          {
+            $group: {
+              _id: "$_analyticsStage",
+              count: { $sum: 1 },
+              revenue: { $sum: { $cond: ["$_analyticsPaid", "$_analyticsAmount", 0] } },
+            },
+          },
+        ],
+        paymentMethods: [
+          { $match: { _analyticsPaid: true } },
+          {
+            $group: {
+              _id: "$_analyticsPaymentMethod",
+              count: { $sum: 1 },
+              revenue: { $sum: "$_analyticsAmount" },
+            },
+          },
+          { $sort: { revenue: -1 } },
+        ],
+        branches: [
+          { $match: { _analyticsCancelled: false } },
+          {
+            $group: {
+              _id: "$_analyticsBranch",
+              orders: { $sum: 1 },
+              paidOrders: { $sum: { $cond: ["$_analyticsPaid", 1, 0] } },
+              revenue: { $sum: { $cond: ["$_analyticsPaid", "$_analyticsAmount", 0] } },
+            },
+          },
+          { $sort: { revenue: -1, orders: -1 } },
+        ],
+      },
+    },
+  ];
 };
 
-const buildSalesSeries = (paidOrders, interval) => {
-  const buckets = new Map();
-  paidOrders.forEach((order) => {
-    const date = salesDate(order);
-    if (!date) return;
-    const bucket = bucketForDate(date, interval);
-    const current = buckets.get(bucket) || { sales: 0, orders: 0 };
-    current.sales += safeAmount(order);
-    current.orders += 1;
-    buckets.set(bucket, current);
-  });
-
-  return [...buckets.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([bucket, values]) => {
-      const common = { sales: Math.round(values.sales * 100) / 100, orders: values.orders };
-      if (interval === "daily") return { date: bucket, ...common };
-      if (interval === "monthly") return { month: bucket, ...common };
-      return { quarter: bucket, ...common };
-    });
-};
-
-const getTopProducts = (paidOrders, limit = 5) => {
-  const products = new Map();
-  paidOrders.forEach((order) => {
-    (order.items || []).forEach((item) => {
-      const name = String(item?.name || "Unnamed product").trim();
-      const key = String(item?.productId || name);
-      const current = products.get(key) || { product: name, sales: 0, unitsSold: 0 };
-      const quantity = Math.max(0, Number(item?.quantity || 0));
-      current.unitsSold += quantity;
-      current.sales += quantity * Math.max(0, Number(item?.price || 0));
-      products.set(key, current);
-    });
-  });
-  return [...products.values()]
-    .sort((left, right) => right.sales - left.sales || right.unitsSold - left.unitsSold)
-    .slice(0, limit)
-    .map((item) => ({ ...item, sales: Math.round(item.sales * 100) / 100 }));
-};
-
-const getCommerceAnalytics = async (branch = "") => {
-  // Analytics never renders addresses, receipts, QR serials, provider
-  // responses or fulfillment timelines. Select only fields used below.
-  const orders = await Order.find(getOrderQuery(branch))
-    .select("workflowStatus status paymentStatus totalAmount paymongo.paidAt createdAt paymentMethod customerBranch stockSourceBranch items.productId items.name items.quantity items.price")
-    .lean();
-  const paidOrders = orders.filter(isPaid);
-  const sellableOrders = orders.filter((order) => !isCancelled(order));
-  const revenue = paidOrders.reduce((sum, order) => sum + safeAmount(order), 0);
-  const orderStages = Object.keys(ORDER_STAGE_LABELS).map((stage) => {
-    const stageOrders = orders.filter((order) => {
-      if (stage === "cancelled") return isCancelled(order);
-      return !isCancelled(order) && String(order.workflowStatus || "to_pay") === stage;
-    });
-    return {
-      key: stage,
-      label: ORDER_STAGE_LABELS[stage],
-      count: stageOrders.length,
-      revenue: stageOrders.filter(isPaid).reduce((sum, order) => sum + safeAmount(order), 0),
-    };
-  });
-
-  const paymentMethodMap = new Map();
-  paidOrders.forEach((order) => {
-    const label = String(order.paymentMethod || "Other").trim().toUpperCase() || "OTHER";
-    const current = paymentMethodMap.get(label) || { label, count: 0, revenue: 0 };
-    current.count += 1;
-    current.revenue += safeAmount(order);
-    paymentMethodMap.set(label, current);
-  });
-
-  const branchMap = new Map();
-  sellableOrders.forEach((order) => {
-    const label = String(order.stockSourceBranch || order.customerBranch || "Unassigned").trim() || "Unassigned";
-    const current = branchMap.get(label) || { branch: label, orders: 0, paidOrders: 0, revenue: 0 };
-    current.orders += 1;
-    if (isPaid(order)) {
-      current.paidOrders += 1;
-      current.revenue += safeAmount(order);
-    }
-    branchMap.set(label, current);
-  });
+const normalizeCommerceAnalytics = (facets = {}) => {
+  const summaryRow = facets.summary?.[0] || {};
+  const paidOrders = Number(summaryRow.paidOrders || 0);
+  const rawRevenue = Math.max(0, Number(summaryRow.revenue || 0));
+  const revenue = roundMoney(rawRevenue);
+  const stageRows = new Map((facets.orderStages || []).map((row) => [String(row._id), row]));
+  const series = (rows = [], key, formatKey = (value) => value) => rows.map((row) => ({
+    [key]: formatKey(row._id),
+    sales: roundMoney(row.sales),
+    orders: Number(row.orders || 0),
+  }));
 
   return {
     summary: {
-      totalOrders: sellableOrders.length,
-      paidOrders: paidOrders.length,
-      cancelledOrders: orders.filter(isCancelled).length,
-      revenue: Math.round(revenue * 100) / 100,
-      averageOrderValue: paidOrders.length ? Math.round((revenue / paidOrders.length) * 100) / 100 : 0,
+      totalOrders: Number(summaryRow.totalOrders || 0),
+      paidOrders,
+      cancelledOrders: Number(summaryRow.cancelledOrders || 0),
+      revenue,
+      averageOrderValue: paidOrders ? roundMoney(rawRevenue / paidOrders) : 0,
     },
     sales: {
-      daily: buildSalesSeries(paidOrders, "daily"),
-      monthly: buildSalesSeries(paidOrders, "monthly"),
-      quarterly: buildSalesSeries(paidOrders, "quarterly"),
+      daily: series(facets.daily, "date"),
+      monthly: series(facets.monthly, "month"),
+      quarterly: series(
+        facets.quarterly,
+        "quarter",
+        (value) => `${value?.year || 0}-Q${value?.quarter || 0}`,
+      ),
     },
-    topProducts: getTopProducts(paidOrders),
-    orderStages,
-    paymentMethods: [...paymentMethodMap.values()]
-      .sort((left, right) => right.revenue - left.revenue)
-      .map((item) => ({ ...item, revenue: Math.round(item.revenue * 100) / 100 })),
-    branches: [...branchMap.values()]
-      .sort((left, right) => right.revenue - left.revenue || right.orders - left.orders)
-      .map((item) => ({ ...item, revenue: Math.round(item.revenue * 100) / 100 })),
+    topProducts: (facets.topProducts || []).map((row) => ({
+      product: String(row.product || "Unnamed product") || "Unnamed product",
+      sales: roundMoney(row.sales),
+      unitsSold: Number(row.unitsSold || 0),
+    })),
+    orderStages: Object.entries(ORDER_STAGE_LABELS).map(([key, label]) => ({
+      key,
+      label,
+      count: Number(stageRows.get(key)?.count || 0),
+      revenue: roundMoney(stageRows.get(key)?.revenue),
+    })),
+    paymentMethods: (facets.paymentMethods || []).map((row) => ({
+      label: String(row._id || "OTHER"),
+      count: Number(row.count || 0),
+      revenue: roundMoney(row.revenue),
+    })),
+    branches: (facets.branches || []).map((row) => ({
+      branch: String(row._id || "Unassigned"),
+      orders: Number(row.orders || 0),
+      paidOrders: Number(row.paidOrders || 0),
+      revenue: roundMoney(row.revenue),
+    })),
   };
 };
 
+const getCommerceAnalytics = async (branch = "") => {
+  const [facets = {}] = await Order.aggregate(buildCommerceAnalyticsPipeline(branch));
+  return normalizeCommerceAnalytics(facets);
+};
+
 const getCustomerAcquisitionBySource = async () => {
-  const customers = await User.find({ role: "customer" })
-    .select("sourceOfAcquisition")
-    .lean();
-  const sourceData = new Map();
-  customers.forEach((customer) => {
-    const source = String(customer.sourceOfAcquisition || "other").replace(/_/g, " ").toUpperCase();
-    sourceData.set(source, (sourceData.get(source) || 0) + 1);
-  });
-  return [...sourceData.entries()]
-    .map(([source, count]) => ({ source, count }))
-    .sort((left, right) => right.count - left.count);
+  return User.aggregate([
+    { $match: { role: "customer" } },
+    {
+      $project: {
+        source: {
+          $let: {
+            vars: { raw: trimmedStringExpression("$sourceOfAcquisition", "other") },
+            in: {
+              $toUpper: {
+                $replaceAll: {
+                  input: { $cond: [{ $eq: ["$$raw", ""] }, "other", "$$raw"] },
+                  find: "_",
+                  replacement: " ",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    { $group: { _id: "$source", count: { $sum: 1 } } },
+    { $sort: { count: -1 } },
+    { $project: { _id: 0, source: "$_id", count: 1 } },
+  ]);
 };
 
 const activeTechnicianQuery = (activeBranch = "") => {
@@ -327,4 +476,11 @@ const getMyDashboard = async (req, res) => {
   }
 };
 
-module.exports = { activeTechnicianQuery, getMyDashboard };
+module.exports = {
+  activeTechnicianQuery,
+  buildCommerceAnalyticsPipeline,
+  getCommerceAnalytics,
+  getCustomerAcquisitionBySource,
+  getMyDashboard,
+  normalizeCommerceAnalytics,
+};
