@@ -331,6 +331,20 @@ const getManagerPipeline = async (req, res) => {
   }
   catch (error) { return res.status(error.status || 500).json({ message: error.message || "Unable to load the maintenance pipeline." }); }
 };
+const serializeReportUnit = (unit = {}) => ({
+  unitId: String(unit._id || unit.id || ""),
+  customerId: String(unit.customer?._id || unit.customer || ""),
+  customerName: unit.customer?.name || [unit.customer?.name_first, unit.customer?.name_last].filter(Boolean).join(" ") || unit.customerName || "Customer name not recorded",
+  capacityHp: unit.capacityHp || null,
+  modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "Installed AC Unit",
+  serialNumber: unit.serialNumber || "",
+  branch: unit.serviceBranch || "Unassigned",
+  status: unit.status || "active",
+  installationAddress: [unit.installation?.addressLine, unit.installation?.city, unit.installation?.province, unit.installation?.zipCode]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(", "),
+});
 const getReportUnits = async (req, res) => {
   try {
     assertAmpBranch(req);
@@ -338,20 +352,12 @@ const getReportUnits = async (req, res) => {
     const query = { status: { $ne: "retired" } };
     if (branch) query.serviceBranch = branch;
     const units = await Unit.find(query)
-      .select("brand modelName serialNumber serviceBranch status customer customerName capacityHp")
+      .select("brand modelName serialNumber serviceBranch status customer customerName capacityHp installation.addressLine installation.city installation.province installation.zipCode")
       .populate("customer", "name name_first name_last")
       .sort({ serviceBranch: 1, modelName: 1, serialNumber: 1 })
       .lean();
     return res.json({
-      units: units.map((unit) => ({
-        unitId: String(unit._id),
-        customerName: unit.customer?.name || [unit.customer?.name_first, unit.customer?.name_last].filter(Boolean).join(" ") || unit.customerName || "Customer name not recorded",
-        capacityHp: unit.capacityHp || null,
-        modelName: [unit.brand, unit.modelName].filter(Boolean).join(" ") || "Installed AC Unit",
-        serialNumber: unit.serialNumber || "",
-        branch: unit.serviceBranch || "Unassigned",
-        status: unit.status || "active",
-      })),
+      units: units.map(serializeReportUnit),
     });
   } catch (error) {
     return res.status(error.status || 500).json({ message: error.status === 403 ? error.message : "Unable to load AMP report units." });
@@ -368,4 +374,4 @@ const getOwnerForecast = async (req, res) => {
   catch (error) { return res.status(error.status || 500).json({ message: error.message || "Unable to load the maintenance forecast." }); }
 };
 
-module.exports = { listMyUnits, calculateNextServiceDate, updateRoomSize, completeService, getManagerPipeline, getReportUnits, getOwnerForecast, resolveManagerPipelineScope, serializeCustomerUnit };
+module.exports = { listMyUnits, calculateNextServiceDate, updateRoomSize, completeService, getManagerPipeline, getReportUnits, getOwnerForecast, resolveManagerPipelineScope, serializeCustomerUnit, serializeReportUnit };

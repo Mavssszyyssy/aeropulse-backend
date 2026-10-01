@@ -8,7 +8,7 @@ const { predictionEvidence, validPrediction, ENGINE_VERSION } = require("../src/
 const { callStructuredAmpAnalysis } = require("../src/services/openAiAmpService");
 const { getMaintenanceRecommendation, generateAmpReport, predictAndSave } = require("../src/controllers/aiController");
 const { listWarrantyClaims } = require("../src/controllers/warrantyController");
-const { getReportUnits } = require("../src/controllers/ampController");
+const { getReportUnits, serializeReportUnit } = require("../src/controllers/ampController");
 const { assertAmpBranch } = require("../src/domain/ampAccess");
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 const chain = rows => ({ select() { return this; }, sort() { return this; }, limit() { return this; }, lean: async () => rows, then(resolve, reject) { return Promise.resolve(rows).then(resolve, reject); } });
@@ -17,6 +17,29 @@ const evidence = () => predictionEvidence({ unit: { brand: "LG", modelName: "AC"
   cohort: { level: "same_model", sampleSize: 3, comparableUnitCount: 2, intervalDays: 180, samples: [120, 180, 240] },
   ownHistory: [], lastCleaningDate: null, installedAt: "2026-01-01", asOfDate: "2026-09-08",
   maintenanceSignals: { filterDirtRecordCount: 1 } });
+
+test("report units include linked customer and installation address identifiers", () => {
+  assert.deepEqual(serializeReportUnit({
+    _id: "unit-1",
+    customer: { _id: "customer-1", name: "Patrick Cruz" },
+    brand: "TCL",
+    modelName: "Window 1.5HP",
+    serialNumber: "CAACT-001",
+    serviceBranch: "Cavite",
+    status: "active",
+    installation: { addressLine: "591 Street", city: "Bacoor", province: "Cavite", zipCode: "4102" },
+  }), {
+    unitId: "unit-1",
+    customerId: "customer-1",
+    customerName: "Patrick Cruz",
+    capacityHp: null,
+    modelName: "TCL Window 1.5HP",
+    serialNumber: "CAACT-001",
+    branch: "Cavite",
+    status: "active",
+    installationAddress: "591 Street, Bacoor, Cavite, 4102",
+  });
+});
 
 test("prediction validates interval and reason without allowing policy/diagnosis overrides", () => {
   assert.equal(validPrediction({ interval_days: 120, reason_code: "earlier_interval" }, evidence()), true);
