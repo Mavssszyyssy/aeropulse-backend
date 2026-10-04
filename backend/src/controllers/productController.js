@@ -872,8 +872,8 @@ const toRoleAwareProduct = (product, req) => {
     return { ...base, branchStock };
   }
   const requestedBranch = String(req.query?.branch || "").trim();
-  // Admins can monitor another branch, but remain read-only. Stock-changing routes
-  // still use the authenticated account's active branch and require SuperAdmin.
+  // Admins may monitor another branch, but stock-changing routes still use the
+  // authenticated account's active branch and require SuperAdmin.
   const branch =
     req.authUser.role === "admin" && BRANCHES.includes(requestedBranch)
       ? requestedBranch
@@ -1437,6 +1437,7 @@ const getProductImage = async (req, res) => {
 
 module.exports = {
   toPublicProduct,
+  toRoleAwareProduct,
   isCustomerCatalogProduct,
   ensureProductSerialUnits,
   ensureSampleInventory,

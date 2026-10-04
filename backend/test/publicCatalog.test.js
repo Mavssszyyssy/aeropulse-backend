@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   isCustomerCatalogProduct,
   toPublicProduct,
+  toRoleAwareProduct,
 } = require("../src/controllers/productController");
 const { isNonRetailCatalogProduct } = require("../src/domain/catalogVisibility");
 
@@ -36,6 +37,31 @@ test("branch-scoped catalog reports only the selected branch quantity", () => {
   assert.equal(result.stock, 2);
   assert.equal(result.totalStock, 5);
   assert.equal(result.inventoryBranch, "Cavite");
+});
+
+test("branch Admin inventory can monitor another requested branch", () => {
+  const roleAwareProduct = {
+    ...product,
+    serialUnits: [
+      { serialNumber: "CAVITE-SERIAL", branch: "Cavite" },
+      { serialNumber: "BULACAN-SERIAL", branch: "Bulacan" },
+    ],
+    toJSON() {
+      return { ...this };
+    },
+  };
+  const result = toRoleAwareProduct(roleAwareProduct, {
+    authUser: { role: "admin" },
+    activeBranch: "Cavite",
+    query: { branch: "Bulacan" },
+  });
+
+  assert.equal(result.activeBranch, "Bulacan");
+  assert.equal(result.stock, 3);
+  assert.deepEqual(result.branchStock, { Bulacan: 3 });
+  assert.deepEqual(result.serialUnits, [
+    { serialNumber: "BULACAN-SERIAL", branch: "Bulacan" },
+  ]);
 });
 
 test("known seeded models use their verified storefront image", () => {
