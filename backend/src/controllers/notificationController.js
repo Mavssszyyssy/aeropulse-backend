@@ -52,16 +52,20 @@ const roleMessages = (role = "customer", isFirstLogin = false) => {
 
 const sanitizeLegacyNotifications = (notifications, role = "customer") => {
   const normalizedRole = String(role || "customer").toLowerCase();
-  if (!STAFF_ROLES.includes(normalizedRole) && normalizedRole !== "technician") {
-    return notifications;
-  }
-
-  const messages = roleMessages(normalizedRole);
   return notifications.map((item) => {
     const json = item.toJSON ? item.toJSON() : { ...item };
+    // Queries in this endpoint use `lean()`, so Mongoose does not add its
+    // virtual `id` field. Every client needs the same public identifier to
+    // open and mark an alert as read, regardless of the user's role.
     if (!json.id && json._id) json.id = String(json._id);
     delete json._id;
     delete json.__v;
+
+    if (!STAFF_ROLES.includes(normalizedRole) && normalizedRole !== "technician") {
+      return json;
+    }
+
+    const messages = roleMessages(normalizedRole);
     if (
       json.title === "Welcome to AeroPulse" &&
       String(json.message || "").includes("shop, book services, and track orders")

@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
 
-const loadController = ({ items = null, anyStored = true } = {}) => {
+const loadController = ({ items = null, anyStored = true, role = "admin" } = {}) => {
   const findQueries = [];
   const updates = [];
   const item = {
@@ -14,7 +14,7 @@ const loadController = ({ items = null, anyStored = true } = {}) => {
     createdAt: new Date("2026-09-11T01:00:00.000Z"),
     toJSON() { return { ...this, id: this._id }; },
   };
-  const user = { role: "admin", notifications: {}, lastLogin: new Date() };
+  const user = { role, notifications: {}, lastLogin: new Date() };
   const visibleItems = items === null ? [item] : items;
   const original = Module._load;
   const mocks = {
@@ -90,6 +90,24 @@ test("archiving every notification does not recreate welcome notices", async () 
   const res = response();
   await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, res);
   assert.deepEqual(res.data.notifications, []);
+});
+
+test("customer alerts expose an id that can be used by the read endpoint", async () => {
+  const customerAlert = {
+    _id: "notification-customer-1",
+    type: "message",
+    unread: true,
+    title: "Your message was received",
+    message: "We will reply soon.",
+    createdAt: new Date("2026-10-04T01:00:00.000Z"),
+  };
+  const fixture = loadController({ items: [customerAlert], role: "customer" });
+  const res = response();
+  await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, res);
+
+  assert.equal(res.data.notifications[0].id, "notification-customer-1");
+  assert.equal(res.data.notifications[0]._id, undefined);
+  assert.equal(res.data.notifications[0].unread, true);
 });
 
 test("technicians do not receive obsolete unassigned-order alerts", () => {
