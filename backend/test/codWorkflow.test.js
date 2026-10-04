@@ -31,6 +31,9 @@ test("legacy pending COD dispatch reserves once and does not record arrival or p
   assert.equal(state.activated, true);
   assert.deepEqual(state.events, ["dispatched"]);
   await assert.rejects(apply(order, "dispatch"), /already dispatched/);
+  order.deliveryStatus = "arrived";
+  await assert.rejects(apply(order, "dispatch"), /already dispatched/);
+  await assert.rejects(apply(order, "cancel"), /can no longer be cancelled/);
   assert.equal(state.reservations, 1);
   await assert.rejects(apply(order, "complete"), /Cannot complete/);
 });

@@ -2740,8 +2740,13 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   if (action === "dispatch" && linkedTaskBeforeAction && ["completed", "failed"].includes(String(linkedTaskBeforeAction.status || "").toLowerCase())) {
     throw new HttpError(409, `Order ${order.orderCode} has a ${linkedTaskBeforeAction.status} technician task and cannot be dispatched again.`);
   }
-  if (action === "dispatch" && order.workflowStatus === "to_dispatch" && order.deliveryStatus === "dispatched") {
-    throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is waiting for technician arrival confirmation.`);
+  const deliveryStatus = String(order.deliveryStatus || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  const dispatchAlreadyStarted = Boolean(order.dispatchedAt) || ["dispatched", "out for delivery", "arrived", "installing", "completed"].includes(deliveryStatus);
+  if (action === "dispatch" && order.workflowStatus === "to_dispatch" && dispatchAlreadyStarted) {
+    throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is in technician fulfillment.`);
+  }
+  if (action === "cancel" && dispatchAlreadyStarted) {
+    throw new HttpError(409, `Order ${order.orderCode} can no longer be cancelled because technician fulfillment has started.`);
   }
 
   if (action === "dispatch" && order.stockReservationStatus === "pending") {
