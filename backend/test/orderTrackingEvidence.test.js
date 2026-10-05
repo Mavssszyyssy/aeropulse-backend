@@ -42,3 +42,48 @@ test('a genuine on-the-way milestone remains before arrival when timestamps matc
 test('legacy inferred arrival events cannot override missing check-in evidence', () => {
   assert.equal(build({ ...order, fulfillmentTimeline: [{ stage: 'arrived', timestamp: now }, { stage: 'installation', timestamp: now }] }, task).currentStage, 'dispatched');
 });
+
+test('completed tracking stays in lifecycle order even when legacy timestamps are out of sequence', () => {
+  const result = build({
+    createdAt: '2026-10-04T04:49:04Z',
+    updatedAt: '2026-10-04T05:01:01Z',
+    dispatchedAt: '2026-10-04T04:52:08Z',
+    workflowStatus: 'complete',
+    fulfillmentTimeline: [
+      { stage: 'dispatched', timestamp: '2026-10-04T04:52:08Z' },
+      { stage: 'arrived', timestamp: '2026-10-04T04:58:48Z' },
+      { stage: 'installation', timestamp: '2026-10-04T04:59:24Z' },
+      { stage: 'completed', timestamp: '2026-10-04T05:00:58Z' },
+    ],
+  }, {
+    status: 'completed',
+    completedAt: '2026-10-04T05:00:58Z',
+    payload: {
+      checkIn: { checkedInAt: '2026-10-04T04:58:48Z', latitude: 14.5, longitude: 121 },
+      installationStartedAt: '2026-10-04T04:59:24Z',
+    },
+  });
+
+  assert.equal(result.timeline.map((event) => event.stage).join(','), 'placed,confirmed,preparing,dispatched,arrived,installation,completed');
+  assert.equal(result.currentStage, 'completed');
+  assert.equal(result.timeline.find((event) => event.stage === 'confirmed').timestamp, '2026-10-04T04:52:08Z');
+  assert.equal(result.timeline.find((event) => event.stage === 'preparing').timestamp, '2026-10-04T04:52:08Z');
+});
+
+test('canonical stage order wins over impossible stored timestamp order', () => {
+  const result = build({
+    createdAt: '2026-10-04T04:49:04Z',
+    updatedAt: '2026-10-04T05:01:01Z',
+    dispatchedAt: '2026-10-04T04:52:08Z',
+    workflowStatus: 'complete',
+    fulfillmentTimeline: [
+      { stage: 'completed', timestamp: '2026-10-04T05:00:58Z' },
+      { stage: 'confirmed', timestamp: '2026-10-04T05:01:01Z' },
+      { stage: 'preparing', timestamp: '2026-10-04T05:01:01Z' },
+      { stage: 'dispatched', timestamp: '2026-10-04T04:52:08Z' },
+    ],
+  });
+
+  assert.equal(result.timeline.map((event) => event.stage).join(','), 'placed,confirmed,preparing,dispatched,completed');
+  assert.equal(result.currentStage, 'completed');
+});

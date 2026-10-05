@@ -117,8 +117,15 @@ const buildTrackingTimeline = (order = {}, task = null) => {
 
   ensure("placed", order.createdAt, "Order submitted");
   if (["to_deliver", "to_dispatch", "to_install", "for_rescheduling", "complete"].includes(order.workflowStatus)) {
-    ensure("confirmed", order.paymongo?.paidAt || order.updatedAt, "Order approved");
-    ensure("preparing", order.updatedAt, "Preparing your assigned unit");
+    // Older COD orders did not persist these two milestones. Infer them from
+    // dispatch when possible so a later order.updatedAt value cannot make the
+    // beginning of the journey appear after arrival or completion.
+    const preparationTimestamp = order.paymongo?.paidAt
+      || order.dispatchedAt
+      || byStage.get("dispatched")?.timestamp
+      || order.updatedAt;
+    ensure("confirmed", preparationTimestamp, "Order approved");
+    ensure("preparing", preparationTimestamp, "Preparing your assigned unit");
   }
   if (["to_dispatch", "to_install", "complete"].includes(order.workflowStatus) && order.dispatchedAt) {
     ensure("dispatched", order.dispatchedAt || order.updatedAt, "Order dispatched");
@@ -144,12 +151,14 @@ const buildTrackingTimeline = (order = {}, task = null) => {
   }
 
   const timeline = [...byStage.values()].sort((left, right) => {
+    const leftRank = stageRank.get(left.stage) ?? stageOrder.length;
+    const rightRank = stageRank.get(right.stage) ?? stageOrder.length;
+    if (leftRank !== rightRank) return leftRank - rightRank;
     const leftTime = new Date(left.timestamp || 0).getTime();
     const rightTime = new Date(right.timestamp || 0).getTime();
     const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
     const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
-    if (safeLeftTime !== safeRightTime) return safeLeftTime - safeRightTime;
-    return (stageRank.get(left.stage) ?? stageOrder.length) - (stageRank.get(right.stage) ?? stageOrder.length);
+    return safeLeftTime - safeRightTime;
   });
   const current = timeline[timeline.length - 1] || null;
   return { timeline, currentStage: current?.stage || "placed", currentLabel: current?.label || "Order Placed" };
