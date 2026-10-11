@@ -74,6 +74,9 @@ async function sendPushForNotification(notification, {
       notificationId: String(notification._id),
       route: resolveRoute(notification, String(user.role || "customer").toLowerCase()),
       type: notification.type,
+      targetId: String(notification.targetId || ""),
+      targetType: String(notification.targetType || ""),
+      category: String(notification.category || ""),
     },
   }));
 

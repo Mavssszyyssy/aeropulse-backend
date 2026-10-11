@@ -164,6 +164,25 @@ const buildTrackingTimeline = (order = {}, task = null) => {
   return { timeline, currentStage: current?.stage || "placed", currentLabel: current?.label || "Order Placed" };
 };
 
+const reconcileReopenedInstallationTracking = (order, tracking) => {
+  const latestVisit = [...tracking.timeline].reverse().find((event) => event.stage.startsWith("visit:"));
+  const completedAt = new Date(tracking.timeline.find((event) => event.stage === "completed")?.timestamp || 0).getTime();
+  if (!latestVisit || new Date(latestVisit.timestamp).getTime() <= completedAt) return tracking;
+
+  // A later failed visit or revisit supersedes an older completion milestone.
+  // Keep the stored audit history, but do not present that milestone as the
+  // final customer-facing outcome of a reopened installation.
+  if (order.workflowStatus === "complete") {
+    const revisitScheduled = latestVisit.stage.endsWith(":scheduled");
+    order.workflowStatus = revisitScheduled ? "to_dispatch" : "for_rescheduling";
+    order.deliveryStatus = revisitScheduled ? "dispatched" : "for_rescheduling";
+  }
+  tracking.timeline = tracking.timeline.filter((event) => event.stage !== "completed");
+  tracking.currentStage = latestVisit.stage;
+  tracking.currentLabel = latestVisit.label;
+  return tracking;
+};
+
 // Monetary amounts are calculated only on the server from the resolved
 // catalogue items and destination branch. Web and mobile may display an
 // estimate, but neither client is allowed to decide the stored transaction
@@ -1710,7 +1729,7 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
       order.receipt = { ...(order.receipt || {}), paymentStatus: order.paymentStatus, amountPaid: hasCodCollection(order) ? Number(order.codCollection.amount || 0) : 0 };
     }
     const paymentStatus = String(order.paymentStatus || order.receipt?.paymentStatus || "pending");
-    const tracking = buildTrackingTimeline(order, task);
+    const tracking = reconcileReopenedInstallationTracking(order, buildTrackingTimeline(order, task));
     order.tracking = {
       trackingNumber: String(order.trackingNumber || ""),
       estimatedDelivery: order.estimatedDelivery || "",
@@ -2927,6 +2946,8 @@ const approveOrder = async (req, res) => {
 
 const listMyOrders = async (req, res) => {
   res.set("Cache-Control", "no-store");
+  const requestedPage = Number(req.query?.page);
+  const page = Number.isFinite(requestedPage) ? Math.max(1, Math.floor(requestedPage)) : 1;
   const requestedLimit = Number(req.query?.limit);
   const limit = Number.isFinite(requestedLimit)
     ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
@@ -2935,16 +2956,19 @@ const listMyOrders = async (req, res) => {
   // payment-proof image bytes. Loading those fields and every linked Task made
   // /orders/me exceed Vercel's 30-second runtime while the other customer
   // endpoints remained healthy.
-  const orders = await Order.find({ customer: req.authUser._id })
+  const filter = { customer: req.authUser._id };
+  const sort = req.query?.sort === "updated" ? { updatedAt: -1, createdAt: -1 } : { createdAt: -1 };
+  const [orders, total] = await Promise.all([Order.find(filter)
     .select("-paymongo.raw -proofOfPayment.imageUrl")
-    .sort({ createdAt: -1 })
+    .sort(sort)
+    .skip((page - 1) * limit)
     .limit(limit)
-    .lean();
+    .lean(), Order.countDocuments(filter)]);
   const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
     includeTaskDetails: false,
   });
 
-  return res.json({ orders: hydratedOrders });
+  return res.json({ orders: hydratedOrders, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } });
 };
 
 const getMyOrderById = async (req, res) => {

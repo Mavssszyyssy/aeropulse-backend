@@ -13,6 +13,7 @@ test("customer order list is bounded and skips heavy task/provider data", async 
   const orderId = new mongoose.Types.ObjectId();
   let selected = "";
   let appliedLimit = 0;
+  let appliedSkip = -1;
   let taskReads = 0;
   const query = {
     select(value) {
@@ -20,6 +21,10 @@ test("customer order list is bounded and skips heavy task/provider data", async 
       return this;
     },
     sort() {
+      return this;
+    },
+    skip(value) {
+      appliedSkip = value;
       return this;
     },
     limit(value) {
@@ -46,6 +51,7 @@ test("customer order list is bounded and skips heavy task/provider data", async 
   };
 
   t.mock.method(Order, "find", () => query);
+  t.mock.method(Order, "countDocuments", async () => 1);
   t.mock.method(Product, "aggregate", async () => []);
   t.mock.method(User, "find", () => ({
     select() { return this; },
@@ -69,12 +75,41 @@ test("customer order list is bounded and skips heavy task/provider data", async 
   assert.match(selected, /-paymongo\.raw/);
   assert.match(selected, /-proofOfPayment\.imageUrl/);
   assert.equal(appliedLimit, 100);
+  assert.equal(appliedSkip, 0);
   assert.equal(taskReads, 0);
   assert.equal(headers["Cache-Control"], "no-store");
   assert.equal(body.orders[0].id, String(orderId));
+  assert.deepEqual(body.pagination, { page: 1, limit: 100, total: 1, totalPages: 1 });
 
   const customerIndex = Order.schema.indexes().find(([fields]) =>
     fields.customer === 1 && fields.createdAt === -1
   );
   assert.ok(customerIndex, "customer newest-order index must exist");
+});
+
+test("customer order pagination skips to the requested page without broadening ownership", async (t) => {
+  const customerId = new mongoose.Types.ObjectId();
+  let filter;
+  let skip;
+  let limit;
+  t.mock.method(Order, "find", (value) => {
+    filter = value;
+    return {
+      select() { return this; },
+      sort() { return this; },
+      skip(value) { skip = value; return this; },
+      limit(value) { limit = value; return this; },
+      lean: async () => [],
+    };
+  });
+  t.mock.method(Order, "countDocuments", async () => 25);
+  let body;
+  await listMyOrders({ authUser: { _id: customerId }, query: { page: "2", limit: "10" } }, {
+    set() {},
+    json(value) { body = value; return value; },
+  });
+  assert.deepEqual(filter, { customer: customerId });
+  assert.equal(skip, 10);
+  assert.equal(limit, 10);
+  assert.deepEqual(body.pagination, { page: 2, limit: 10, total: 25, totalPages: 3 });
 });

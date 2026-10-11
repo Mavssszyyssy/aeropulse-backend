@@ -22,6 +22,8 @@ const serviceRequestSchema = new mongoose.Schema(
     assignedTechnicianName: { type: String, default: "" },
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },
     servicePayment: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Advisory output only. The customer report and technician record remain authoritative.
+    aiPreAssessment: { type: mongoose.Schema.Types.Mixed, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     idempotencyKey: { type: String, default: "", trim: true },
   },

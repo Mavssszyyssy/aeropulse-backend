@@ -24,6 +24,7 @@ const { assessServiceEvidence, serviceTypeFor } = require("../domain/serviceEvid
 const { formatDateKeyInTimeZone, parseInstallationDateTime } = require("../utils/dateTime");
 const { buildTaskScheduleDetails, normalizeTaskSchedule } = require("../domain/taskSchedule");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
+const { getScheduledDateError } = require("../utils/scheduling");
 const {
   getTaskMutationBlocker,
   hasVerifiedTaskCheckIn,
@@ -1166,6 +1167,8 @@ const createTask = async (req, res) => {
     }
 
     const payload = req.body || {};
+    const dateError = getScheduledDateError(payload.scheduledDate || payload.preferredDate, "Scheduled date");
+    if (dateError) return res.status(400).json({ message: dateError });
     const nowIso = new Date().toISOString();
     const taskCode = String(payload.taskCode || `TSK-${Date.now()}`).trim();
     const title = String(payload.title || payload.issueType || "Service Task").trim();
@@ -1229,6 +1232,8 @@ const updateTask = async (req, res) => {
     }
 
     const payload = req.body || {};
+    const dateError = getScheduledDateError(payload.scheduledDate || payload.preferredDate, "Scheduled date");
+    if (dateError) return res.status(400).json({ message: dateError });
     const requestedStatus = parseTaskStatus(payload.status);
     const costError = validateServiceCosts(payload);
     if (costError) return res.status(400).json({ message: costError });

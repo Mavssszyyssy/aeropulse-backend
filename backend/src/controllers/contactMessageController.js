@@ -165,6 +165,19 @@ const listContactMessages = async (req, res) => {
   }
 };
 
+const listMyContactMessages = async (req, res) => {
+  try {
+    const messages = await ContactMessage.find({ customer: req.authUser._id })
+      .select("ticketCode category subject message branch status adminReply repliedAt createdAt updatedAt timeline")
+      .sort({ createdAt: -1 })
+      .limit(100);
+    return res.json({ messages });
+  } catch (error) {
+    console.error("Failed to load customer support history:", error);
+    return res.status(500).json({ message: "Unable to load your support messages." });
+  }
+};
+
 const updateContactMessage = async (req, res) => {
   try {
     const item = await ContactMessage.findOne({ _id: req.params.id, ...staffScope(req) });
@@ -225,4 +238,4 @@ const updateContactMessage = async (req, res) => {
   }
 };
 
-module.exports = { createContactMessage, listContactMessages, updateContactMessage };
+module.exports = { createContactMessage, listContactMessages, listMyContactMessages, updateContactMessage };

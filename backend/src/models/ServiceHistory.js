@@ -72,6 +72,8 @@ const serviceHistorySchema = new mongoose.Schema(
     },
 
     serviceActions: [{ type: String, trim: true }],
+    // Separate from findings, actions, and the existing AMP follow-up analysis.
+    aiFuturePrediction: { type: mongoose.Schema.Types.Mixed, default: null },
 
     ampSnapshot: {
       bestServicedBy: { type: Date, default: null },

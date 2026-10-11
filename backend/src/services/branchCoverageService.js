@@ -2,8 +2,8 @@ const BranchCoverage = require("../models/BranchCoverage");
 
 const DEFAULT_BRANCH_COVERAGE = [
   { name: "Bulacan", coverageAreas: ["bulacan", "plaridel", "malolos", "manila", "quezon city"], nearbyBranches: ["Bataan", "Cavite", "Laguna", "Pangasinan", "Ilocos"] },
-  { name: "Cavite", coverageAreas: ["bacoor", "dasmarinas", "dasmariñas"], nearbyBranches: ["Laguna", "Bulacan", "Bataan", "Pangasinan", "Ilocos"] },
-  { name: "Laguna", coverageAreas: ["laguna", "cabuyao", "cavite", "batangas"], nearbyBranches: ["Cavite", "Bulacan", "Bataan", "Pangasinan", "Ilocos"] },
+  { name: "Cavite", coverageAreas: ["cavite", "bacoor", "dasmarinas", "dasmariñas"], nearbyBranches: ["Laguna", "Bulacan", "Bataan", "Pangasinan", "Ilocos"] },
+  { name: "Laguna", coverageAreas: ["laguna", "cabuyao", "batangas"], nearbyBranches: ["Cavite", "Bulacan", "Bataan", "Pangasinan", "Ilocos"] },
   { name: "Bataan", coverageAreas: ["bataan", "balanga"], nearbyBranches: ["Bulacan", "Pangasinan", "Cavite", "Laguna", "Ilocos"] },
   { name: "Pangasinan", coverageAreas: ["pangasinan", "dagupan", "tarlac"], nearbyBranches: ["Ilocos", "Bataan", "Bulacan", "Laguna", "Cavite"] },
   { name: "Ilocos", coverageAreas: ["ilocos", "la union", "san fernando"], nearbyBranches: ["Pangasinan", "Bataan", "Bulacan", "Laguna", "Cavite"] },
@@ -68,6 +68,12 @@ const resolveConfiguredBranch = async (address = {}) => {
   const keys = getAddressLookupKeys(address);
   if (!keys.length) return null;
   const branches = await getBranchCoverage();
+
+  // Province ownership takes precedence over a legacy cross-branch coverage
+  // entry. Older seeded Laguna rows may still contain "cavite" in MongoDB.
+  const province = normalize(address.province);
+  const ownProvinceBranch = branches.find((branch) => normalize(branch.name) === province);
+  if (ownProvinceBranch) return ownProvinceBranch;
 
   for (const key of keys) {
     const match = branches.find((branch) => branch.coverageAreas.includes(key));

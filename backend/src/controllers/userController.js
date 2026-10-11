@@ -346,6 +346,10 @@ const applyProfileUpdate = async (
     user.name_first = sanitizeText(payload.name_first, 80);
   if (payload.name_last !== undefined)
     user.name_last = sanitizeText(payload.name_last, 80);
+  if (payload.name_first !== undefined || payload.name_last !== undefined) {
+    const fullName = [user.name_first, user.name_last].filter(Boolean).join(" ").trim();
+    if (fullName) user.name = fullName;
+  }
   if (payload.alias !== undefined) {
     const alias = String(payload.alias || "")
       .trim()

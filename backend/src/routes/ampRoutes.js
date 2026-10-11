@@ -11,8 +11,18 @@ const {
 } = require("../controllers/ampController");
 
 const router = express.Router();
+const {
+  generateRequestPreAssessment, generateTaskPreAssessment, getTaskDecisionSupport,
+  generateFuturePrediction, reviewDecisionSupport,
+} = require("../controllers/maintenanceDecisionController");
 
 router.use(requireAuth);
+
+router.post("/requests/:requestId/pre-assessment", allowRoles("admin", "superadmin"), generateRequestPreAssessment);
+router.get("/tasks/:taskId/decision-support", allowRoles("technician", "admin", "superadmin"), getTaskDecisionSupport);
+router.post("/tasks/:taskId/pre-assessment", allowRoles("technician", "admin", "superadmin"), generateTaskPreAssessment);
+router.post("/tasks/:taskId/future-prediction", allowRoles("technician", "admin", "superadmin"), generateFuturePrediction);
+router.patch("/tasks/:taskId/:phase/review", allowRoles("technician"), reviewDecisionSupport);
 
 router.get(
   "/customer/units",

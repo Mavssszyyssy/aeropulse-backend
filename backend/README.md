@@ -51,3 +51,13 @@ The expected response includes `"status":"ok"`.
 - `PATCH /api/users/notifications`
 - `PATCH /api/users/password`
 - `DELETE /api/users/me`
+
+## AI maintenance decision support
+
+Set `OPENAI_API_KEY` **only on the backend** to enable on-demand pre-visit and post-visit assessments. The existing `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENAI_TIMEOUT_MS`, and `OPENAI_MAX_OUTPUT_TOKENS` settings also apply; these larger structured responses reserve at least 1,800 output tokens. No mobile or web API key is needed. Without a configured provider, generation reports an unavailable state and never substitutes a fabricated AI answer.
+
+- Admin/SuperAdmin: `POST /api/amp/requests/:requestId/pre-assessment` on an open service request.
+- Assigned technician or authorized admin: `GET /api/amp/tasks/:taskId/decision-support`, `POST /api/amp/tasks/:taskId/pre-assessment`, and (after a completed work order and saved service history) `POST /api/amp/tasks/:taskId/future-prediction`.
+- Primary assigned technician: `PATCH /api/amp/tasks/:taskId/:phase/review` with `phase` = `pre` or `post` and `decision` = `confirmed` or `rejected`.
+
+Pre-visit output is saved separately on the service request; post-visit output is saved separately on its linked service-history record. Existing technician notes, parts-used records, AMP schedules, and inventory are unchanged. The optional English interpretation does not replace original Tagalog/Taglish notes. These assessments are qualitative decision support, not a statistical failure forecast, confirmed diagnosis, booking, or permission to replace a component. No schema migration is needed for existing MongoDB documents; the new fields default to null.

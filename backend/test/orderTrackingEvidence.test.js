@@ -9,6 +9,9 @@ const start = source.indexOf('const buildTrackingTimeline =');
 const end = source.indexOf('\n};', start) + 3;
 const stages = ['placed', 'confirmed', 'preparing', 'dispatched', 'out_for_delivery', 'arrived', 'installation', 'completed', 'cancelled'];
 const build = vm.runInNewContext(`${source.slice(start, end)}; buildTrackingTimeline`, { require: createRequire(filename), fulfillmentStages: Object.fromEntries(stages.map((stage) => [stage, stage])) });
+const reconcileStart = source.indexOf('const reconcileReopenedInstallationTracking =');
+const reconcileEnd = source.indexOf('\n};', reconcileStart) + 3;
+const reconcile = vm.runInNewContext(`${source.slice(reconcileStart, reconcileEnd)}; reconcileReopenedInstallationTracking`);
 const now = '2026-09-07T02:00:00Z';
 const order = { createdAt: now, updatedAt: now, dispatchedAt: now, workflowStatus: 'to_install' };
 const task = { status: 'in-progress', updatedAt: now, payload: { activatedAt: now } };
@@ -86,4 +89,31 @@ test('canonical stage order wins over impossible stored timestamp order', () => 
 
   assert.equal(result.timeline.map((event) => event.stage).join(','), 'placed,confirmed,preparing,dispatched,completed');
   assert.equal(result.currentStage, 'completed');
+});
+
+test('a later failed visit removes a stale completed outcome without rewriting stored history', () => {
+  const reopened = { workflowStatus: 'complete', deliveryStatus: 'delivered' };
+  const result = reconcile(reopened, {
+    timeline: [
+      { stage: 'completed', timestamp: '2026-10-09T10:00:00Z' },
+      { stage: 'visit:failed', label: 'Failed to Install', timestamp: '2026-10-09T11:00:00Z' },
+    ],
+    currentStage: 'visit:failed',
+  });
+  assert.equal(reopened.workflowStatus, 'for_rescheduling');
+  assert.equal(result.timeline.some((event) => event.stage === 'completed'), false);
+  assert.equal(result.currentLabel, 'Failed to Install');
+});
+
+test('a later confirmed revisit supersedes completed but does not alter a reconciled workflow', () => {
+  const reopened = { workflowStatus: 'to_dispatch', deliveryStatus: 'dispatched' };
+  const result = reconcile(reopened, {
+    timeline: [
+      { stage: 'completed', timestamp: '2026-10-09T10:00:00Z' },
+      { stage: 'visit:scheduled', label: 'Installation revisit confirmed', timestamp: '2026-10-09T12:00:00Z' },
+    ],
+  });
+  assert.equal(reopened.workflowStatus, 'to_dispatch');
+  assert.equal(result.timeline.length, 1);
+  assert.equal(result.currentLabel, 'Installation revisit confirmed');
 });
