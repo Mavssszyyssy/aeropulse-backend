@@ -23,6 +23,23 @@ function buildEvidence({ kind, request, task, unit, history, prior = [] }) {
   const add = (key, label, value) => { const item = evidenceEntry(key, label, value); if (item) evidence.push(item); };
   add("equipment", "Registered AC equipment", [unit?.brand, unit?.modelName, unit?.category, unit?.capacityHp ? `${unit.capacityHp} HP` : ""].filter(Boolean).join(" · ") || request?.unitName || task?.unitName);
   add("reported_issue", "Customer-reported concern (unverified)", requestIssue(request) || task?.description || history?.customerInputs?.reportedIssue);
+  if (kind === "pre" && task && !["completed", "cancelled"].includes(task.status)) {
+    const seen = new Set();
+    const addObservation = (key, label, value) => {
+      if (typeof value !== "string") return;
+      const original = clean(value);
+      if (!original || seen.has(original)) return;
+      seen.add(original);
+      add(key, label, original);
+    };
+    addObservation("in_progress_findings", "Saved in-progress technician findings (original wording)", task.payload?.findings);
+    addObservation("in_progress_notes", "Saved in-progress technician notes (original wording)", task.payload?.notes);
+    const recentLogs = Array.isArray(task.payload?.serviceLogs) ? task.payload.serviceLogs.slice(0, 3) : [];
+    recentLogs.forEach((log, index) => {
+      addObservation(`in_progress_log_${index + 1}_findings`, "Saved service-note findings (original wording)", log?.findings);
+      addObservation(`in_progress_log_${index + 1}_notes`, "Saved service-note notes (original wording)", log?.notes);
+    });
+  }
   if (kind === "post") {
     add("current_findings", "Latest technician findings (original wording)", history?.findings);
     add("current_notes", "Latest technician notes (original wording)", history?.technicianInputs?.notes && history.technicianInputs.notes !== history.findings ? history.technicianInputs.notes : "");
@@ -43,6 +60,31 @@ function buildEvidence({ kind, request, task, unit, history, prior = [] }) {
 function permittedBranch(req, branch) {
   return req.authUser.role === "superadmin" || (req.activeBranch && (!branch || branch === req.activeBranch));
 }
+
+const getUnitDecisionSupport = async (req, res) => {
+  try {
+    if (!id(req.params.unitId)) return res.status(404).json({ message: "AC unit not found." });
+    const unit = await unitFor(req.params.unitId);
+    if (!unit || (req.authUser.role !== "superadmin" && (!unit.serviceBranch || !permittedBranch(req, unit.serviceBranch)))) {
+      return res.status(404).json({ message: "AC unit not found for this branch." });
+    }
+    const unitId = String(unit._id);
+    const [request, history] = await Promise.all([
+      ServiceRequest.findOne({ unitId, status: { $nin: ["Cancelled", "Completed"] }, branch: unit.serviceBranch })
+        .sort({ createdAt: -1 }).lean(),
+      ServiceHistory.findOne({ unit: unit._id, sourceTaskId: { $exists: true, $ne: "" } })
+        .sort({ serviceDate: -1 }).lean(),
+    ]);
+    return res.json({
+      request: request ? { id: String(request._id), status: request.status, aiPreAssessment: request.aiPreAssessment || null } : null,
+      lastVisit: history ? { taskId: history.sourceTaskId, serviceDate: history.serviceDate,
+        futurePrediction: history.aiFuturePrediction || null } : null,
+    });
+  } catch (error) {
+    console.error("Unit decision support load failed", error);
+    return res.status(500).json({ message: "Unable to load maintenance assessments." });
+  }
+};
 async function findRequest(req, requestId) {
   if (!id(requestId)) return null;
   const request = await ServiceRequest.findById(requestId);
@@ -61,11 +103,21 @@ async function findTask(req) {
   return task;
 }
 
-async function makePreAssessment(req, res, request) {
+function taskMatchesRequest(task, request) {
+  return Boolean(task && String(task.payload?.requestId || "") === String(request._id)
+    && (!request.payload?.linkedTaskId || String(request.payload.linkedTaskId) === String(task._id))
+    && (!task.branch || task.branch === request.branch)
+    && (!task.unitId || !request.unitId || String(task.unitId) === String(request.unitId)));
+}
+
+async function makePreAssessment(req, res, request, assignedTask = null) {
   if (["Cancelled", "Completed"].includes(request.status)) return res.status(409).json({ message: "A pre-visit assessment requires an open service request." });
   const unit = await unitFor(request.unitId);
   if (unit && !permittedBranch(req, unit.serviceBranch)) return res.status(403).json({ message: "This AC unit belongs to another branch." });
-  const evidence = buildEvidence({ kind: "pre", request, unit, prior: await priorVisits(unit?._id) });
+  let task = assignedTask;
+  if (!task && id(request.payload?.linkedTaskId)) task = await Task.findById(request.payload.linkedTaskId);
+  if (!taskMatchesRequest(task, request)) task = null;
+  const evidence = buildEvidence({ kind: "pre", request, task, unit, prior: await priorVisits(unit?._id) });
   if (!requestIssue(request) || requestIssue(request).length < 10) return res.status(422).json({ message: "Add more detail about the reported symptoms before generating an AI assessment." });
   const result = await generateMaintenanceAssessment({ kind: "pre", evidence, actorId: req.authUser._id });
   const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
@@ -87,7 +139,8 @@ const generateTaskPreAssessment = async (req, res) => {
     if (!task) return res.status(404).json({ message: "Work order not found." });
     const request = await findRequest(req, task.payload?.requestId);
     if (!request) return res.status(409).json({ message: "This work order has no linked service request." });
-    return makePreAssessment(req, res, request);
+    if (!taskMatchesRequest(task, request)) return res.status(409).json({ message: "This work order does not match its service request." });
+    return makePreAssessment(req, res, request, task);
   } catch (error) { console.error("Task pre-maintenance assessment failed", error); return res.status(500).json({ message: "Unable to generate the assessment." }); }
 };
 
@@ -146,5 +199,5 @@ const reviewDecisionSupport = async (req, res) => {
   } catch (error) { console.error("AI assessment review failed", error); return res.status(500).json({ message: "Unable to save technician review." }); }
 };
 
-module.exports = { buildEvidence, hasSufficientPostEvidence, generateRequestPreAssessment, generateTaskPreAssessment,
+module.exports = { buildEvidence, hasSufficientPostEvidence, getUnitDecisionSupport, generateRequestPreAssessment, generateTaskPreAssessment,
   getTaskDecisionSupport, generateFuturePrediction, reviewDecisionSupport };

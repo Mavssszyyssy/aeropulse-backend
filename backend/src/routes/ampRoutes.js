@@ -12,13 +12,14 @@ const {
 
 const router = express.Router();
 const {
-  generateRequestPreAssessment, generateTaskPreAssessment, getTaskDecisionSupport,
+  getUnitDecisionSupport, generateRequestPreAssessment, generateTaskPreAssessment, getTaskDecisionSupport,
   generateFuturePrediction, reviewDecisionSupport,
 } = require("../controllers/maintenanceDecisionController");
 
 router.use(requireAuth);
 
 router.post("/requests/:requestId/pre-assessment", allowRoles("admin", "superadmin"), generateRequestPreAssessment);
+router.get("/units/:unitId/decision-support", allowRoles("admin", "superadmin"), getUnitDecisionSupport);
 router.get("/tasks/:taskId/decision-support", allowRoles("technician", "admin", "superadmin"), getTaskDecisionSupport);
 router.post("/tasks/:taskId/pre-assessment", allowRoles("technician", "admin", "superadmin"), generateTaskPreAssessment);
 router.post("/tasks/:taskId/future-prediction", allowRoles("technician", "admin", "superadmin"), generateFuturePrediction);
