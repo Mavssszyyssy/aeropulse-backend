@@ -35,10 +35,7 @@ const timeSlotsOverlap = (left, right) => {
   return Boolean(first && second && first.start < second.end && second.start < first.end);
 };
 
-const taskParticipantIds = (task = {}) => normalizeIdList([
-  task.assignedTechnicianId,
-  ...(task.schedule?.teamMemberIds || []),
-]);
+const taskParticipantIds = (task = {}) => normalizeIdList([task.assignedTechnicianId]);
 
 const findTaskScheduleConflicts = async ({
   scheduledDate,
@@ -53,10 +50,7 @@ const findTaskScheduleConflicts = async ({
   const query = {
     scheduledDate: String(scheduledDate),
     status: { $nin: NON_BLOCKING_STATUSES },
-    $or: [
-      { assignedTechnicianId: { $in: participants } },
-      { "schedule.teamMemberIds": { $in: participants } },
-    ],
+    assignedTechnicianId: { $in: participants },
   };
   if (excludeTaskId && mongoose.Types.ObjectId.isValid(String(excludeTaskId))) {
     query._id = { $ne: excludeTaskId };
@@ -79,7 +73,7 @@ const assertNoTaskScheduleConflict = async (input = {}) => {
   if (!conflicts.length) return;
   const first = conflicts[0];
   const error = new Error(
-    `The selected technician or team member is already assigned to ${first.taskCode} during ${first.timeSlot}. Choose another available time or person.`,
+    `The selected technician is already assigned to ${first.taskCode} during ${first.timeSlot}. Choose another available time or technician.`,
   );
   error.status = 409;
   error.statusCode = 409;

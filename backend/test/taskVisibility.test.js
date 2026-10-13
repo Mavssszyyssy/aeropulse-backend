@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const Task = require("../src/models/Task");
 const {
   buildCustomerTaskScopeQuery,
+  findTaskForRequest,
   listTasks,
 } = require("../src/controllers/taskController");
 
@@ -29,6 +30,7 @@ test("customer task visibility fails closed without an account identity", () => 
 });
 
 test("technician task lists exclude embedded proof media before MongoDB returns rows", async (t) => {
+  let appliedQuery = null;
   let selected = "";
   let appliedLimit = 0;
   let appliedSort = null;
@@ -57,6 +59,7 @@ test("technician task lists exclude embedded proof media before MongoDB returns 
         priority: "medium",
         scheduledDate: "2026-09-14",
         timeSlot: "10:00 AM - 12:00 PM",
+        schedule: { driverName: "Tech One", notes: "Bring ladder", teamMemberIds: ["legacy-tech"], teamMemberNames: ["Legacy Tech"] },
         createdAt: new Date("2026-09-14T08:00:00.000Z"),
         updatedAt: new Date("2026-09-20T08:00:00.000Z"),
         payload: {
@@ -67,7 +70,10 @@ test("technician task lists exclude embedded proof media before MongoDB returns 
       }]);
     },
   };
-  t.mock.method(Task, "find", () => chain);
+  t.mock.method(Task, "find", (query) => {
+    appliedQuery = query;
+    return chain;
+  });
   let responseBody;
   const req = {
     authUser: { _id: "tech-1", role: "technician" },
@@ -90,7 +96,27 @@ test("technician task lists exclude embedded proof media before MongoDB returns 
   assert.match(selected, /-payload\.proof/);
   assert.equal(appliedLimit, 100);
   assert.deepEqual(appliedSort, { updatedAt: -1 });
+  assert.deepEqual(appliedQuery.$and[1], { assignedTechnicianId: "tech-1" });
+  assert.equal(JSON.stringify(appliedQuery).includes("teamMemberIds"), false);
   assert.equal(responseBody.tasks[0].id, "task-1");
+  assert.deepEqual(responseBody.tasks[0].schedule, { driverName: "Tech One", notes: "Bring ladder" });
   assert.deepEqual(responseBody.tasks[0].createdAt, new Date("2026-09-14T08:00:00.000Z"));
   assert.deepEqual(responseBody.tasks[0].updatedAt, new Date("2026-09-20T08:00:00.000Z"));
+});
+
+test("technician task details are scoped only to the assigned technician", async (t) => {
+  let appliedQuery = null;
+  t.mock.method(Task, "findOne", (query) => {
+    appliedQuery = query;
+    return Promise.resolve(null);
+  });
+
+  const result = await findTaskForRequest("TSK-1", {
+    authUser: { _id: "tech-1", role: "technician" },
+    activeBranch: "Cavite",
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(appliedQuery.$and[2], { assignedTechnicianId: "tech-1" });
+  assert.equal(JSON.stringify(appliedQuery).includes("teamMemberIds"), false);
 });

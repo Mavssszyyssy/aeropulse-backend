@@ -26,6 +26,8 @@ const taskSeeds = [
     priority: "medium",
     scheduledDate: "2026-04-09",
     timeSlot: "1:00 PM - 4:00 PM",
+    assignedTechnicianId: "tech@example.com", // Will be updated to actual ID
+    assignedTechnicianName: "Technician User",
     branch: "Bulacan",
   },
   {
@@ -38,6 +40,8 @@ const taskSeeds = [
     scheduledDate: "2026-04-08",
     timeSlot: "9:00 AM - 12:00 PM",
     completedAt: new Date(),
+    assignedTechnicianId: "tech@example.com", // Will be updated to actual ID
+    assignedTechnicianName: "Technician User",
     branch: "Bulacan",
   },
 ];
@@ -48,16 +52,23 @@ const orderSeeds = [
   { orderCode: "ORD-003", customerName: "Mike Johnson", totalAmount: 2950, status: "pending" },
 ];
 
+const assignTechnicianToTaskSeeds = (technician) => {
+  const technicianId = String(technician?._id || "").trim();
+  if (!technicianId) {
+    throw new Error("Dashboard task seed requires the canonical demo technician.");
+  }
+  const technicianName = String(technician?.name || "Technician User").trim();
+  return taskSeeds.map((task) => ({
+    ...task,
+    assignedTechnicianId: technicianId,
+    assignedTechnicianName: technicianName,
+  }));
+};
+
 const seedDashboardData = async () => {
   // Get technician user for assignment
   const technician = await require("../models/User").findOne({ email: "tech@example.com" });
-  const technicianId = technician ? technician._id.toString() : "";
-
-  // Update task seeds with actual technician ID
-  const updatedTaskSeeds = taskSeeds.map(task => ({
-    ...task,
-    assignedTechnicianId: task.assignedTechnicianId === "tech@example.com" ? technicianId : task.assignedTechnicianId
-  }));
+  const updatedTaskSeeds = assignTechnicianToTaskSeeds(technician);
 
   for (const seed of updatedTaskSeeds) {
     const exists = await Task.findOne({ taskCode: seed.taskCode });
@@ -74,4 +85,4 @@ const seedDashboardData = async () => {
   }
 };
 
-module.exports = { seedDashboardData };
+module.exports = { seedDashboardData, assignTechnicianToTaskSeeds };

@@ -1982,6 +1982,9 @@ const createTaskForOrder = async (order, options = {}) => {
   const existingTask = await findLinkedTaskForOrder(order);
   if (existingTask?.payload?.visitAttempt?.awaitingAdmin) throw new HttpError(409, 'Use Visit follow-up to confirm the next visit before changing this work order.');
   const assignment = await resolveTechnicianAssignment({ ...options, branch: order.stockSourceBranch || order.customerBranch || "" });
+  if (!assignment.assignedTechnicianId && !String(existingTask?.assignedTechnicianId || "").trim()) {
+    throw new HttpError(400, "Select one technician before creating this work order.");
+  }
   const taskItems = buildOrderTaskItems(order);
   const taskSerialNumbers = Array.from(
     new Set(
@@ -2055,7 +2058,7 @@ const createTaskForOrder = async (order, options = {}) => {
       await assertNoTaskScheduleConflict({
         scheduledDate: existingTask.scheduledDate,
         timeSlot: existingTask.timeSlot,
-        participantIds: [existingTask.assignedTechnicianId, ...(existingTask.schedule?.teamMemberIds || [])],
+        participantIds: [existingTask.assignedTechnicianId],
         excludeTaskId: existingTask._id,
       });
       await existingTask.save();
@@ -2864,7 +2867,7 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
     order.stockReleasedAt = null;
     await order.save();
   }
-  if (action === "approve" || action === "dispatch") {
+  if (action === "dispatch" || (action === "approve" && assignment.assignedTechnicianId)) {
     await createTaskForOrder(order, {
       ...options,
       activate: action === "dispatch",
@@ -3196,6 +3199,9 @@ const recoverOrder = async (req, res) => {
       assignedTechnicianId: form.assignedTechnicianId || "",
       assignedTechnicianName: form.assignedTechnicianName || order.assignedTechnician || "",
     });
+    if (!technician.assignedTechnicianId) {
+      return res.status(400).json({ message: "Select one technician before recreating this work order." });
+    }
     const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
     const task = await createTaskForOrder(order, {
       assignedTechnicianId: technician.assignedTechnicianId,

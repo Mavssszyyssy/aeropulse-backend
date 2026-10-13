@@ -13,9 +13,9 @@ test("schedule slots detect real overlaps without blocking adjacent work", () =>
   assert.equal(timeSlotsOverlap("TBD", "11:00 AM - 1:00 PM"), false);
 });
 
-test("primary technicians and support-team members are all schedule participants", () => {
+test("only the assigned technician participates in schedule conflicts", () => {
   assert.deepEqual(taskParticipantIds({
     assignedTechnicianId: "leader",
     schedule: { teamMemberIds: ["support-1", "leader", "support-2"] },
-  }), ["leader", "support-1", "support-2"]);
+  }), ["leader"]);
 });

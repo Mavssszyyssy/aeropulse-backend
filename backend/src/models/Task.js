@@ -14,7 +14,16 @@ const taskSchema = new mongoose.Schema(
     unitType: { type: String, default: "" },
     issueType: { type: String, default: "" },
     description: { type: String, default: "" },
-    assignedTechnicianId: { type: String, default: "", index: true },
+    assignedTechnicianId: {
+      type: String,
+      required() {
+        // Preserve immutable legacy terminal history while preventing every new
+        // or active work order from being saved without one technician.
+        return this.isNew || !["completed", "cancelled"].includes(String(this.status || "").toLowerCase());
+      },
+      trim: true,
+      index: true,
+    },
     assignedTechnicianName: { type: String, default: "" },
     status: {
       type: String,
@@ -44,6 +53,9 @@ const taskSchema = new mongoose.Schema(
     branch: { type: String, default: "", index: true },
     schedule: {
       driverName: { type: String, default: "", trim: true },
+      // Deprecated historical fields. They remain readable so old records are
+      // not corrupted, but assignment, authorization, scheduling, and API
+      // responses use assignedTechnicianId exclusively.
       teamMemberIds: [{ type: String, trim: true }],
       teamMemberNames: [{ type: String, trim: true }],
       notes: { type: String, default: "", trim: true },
@@ -77,7 +89,6 @@ taskSchema.set("toJSON", {
 taskSchema.index({ branch: 1, updatedAt: -1 });
 taskSchema.index({ branch: 1, scheduledDate: 1, status: 1 });
 taskSchema.index({ assignedTechnicianId: 1, updatedAt: -1 });
-taskSchema.index({ "schedule.teamMemberIds": 1, scheduledDate: 1 });
 taskSchema.index({ customerId: 1, updatedAt: -1 });
 taskSchema.index({ "payload.customerId": 1, updatedAt: -1 });
 taskSchema.index({ "payload.orderCode": 1, updatedAt: -1 });

@@ -98,7 +98,7 @@ async function findTask(req) {
   if (!task || !permittedBranch(req, task.branch)) return null;
   if (req.authUser.role === "technician") {
     const actor = String(req.authUser._id);
-    if (String(task.assignedTechnicianId) !== actor && !(task.schedule?.teamMemberIds || []).includes(actor)) return null;
+    if (String(task.assignedTechnicianId) !== actor) return null;
   }
   return task;
 }

@@ -1,15 +1,7 @@
 const cleanText = (value, maxLength = 500) => String(value || "").trim().slice(0, maxLength);
 
-const uniqueText = (values = []) => Array.from(new Set(
-  (Array.isArray(values) ? values : [])
-    .map((value) => cleanText(value, 100))
-    .filter(Boolean),
-));
-
-const normalizeTaskSchedule = (input = {}, team = []) => ({
+const normalizeTaskSchedule = (input = {}) => ({
   driverName: cleanText(input.driverName, 120),
-  teamMemberIds: uniqueText(team.map((member) => member.id || member._id)),
-  teamMemberNames: uniqueText(team.map((member) => member.name)),
   notes: cleanText(input.notes, 1000),
 });
 
@@ -65,4 +57,8 @@ const buildTaskScheduleDetails = (task = {}, { order = null, serviceRequest = nu
   };
 };
 
-module.exports = { buildTaskScheduleDetails, normalizeTaskSchedule, serviceCategory };
+module.exports = {
+  buildTaskScheduleDetails,
+  normalizeTaskSchedule,
+  serviceCategory,
+};

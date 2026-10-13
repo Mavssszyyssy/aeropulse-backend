@@ -151,7 +151,7 @@ async function scheduleNextVisit(req, res) {
     await assertNoTaskScheduleConflict({
       scheduledDate: resolution.scheduledDate,
       timeSlot: resolution.timeSlot,
-      participantIds: [task.assignedTechnicianId, ...(task.schedule?.teamMemberIds || [])],
+      participantIds: [task.assignedTechnicianId],
       excludeTaskId: task._id,
     });
     if (!awaitingVisitFollowUp(task)) {

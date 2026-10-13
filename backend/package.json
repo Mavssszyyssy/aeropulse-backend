@@ -19,6 +19,8 @@
     "indexes:performance:apply": "node scripts/ensure-performance-indexes.js --apply",
     "benchmark:reads": "node scripts/benchmark-read-endpoints.js",
     "cleanup:data": "node scripts/cleanup-live-data.js",
+    "migrate:retire-legacy-task": "node scripts/retire-legacy-unassigned-demo-task.js",
+    "migrate:retire-legacy-task:apply": "node scripts/retire-legacy-unassigned-demo-task.js --apply",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
