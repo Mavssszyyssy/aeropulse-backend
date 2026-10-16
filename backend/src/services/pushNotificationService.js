@@ -5,6 +5,8 @@ const PUSH_SEND_TIMEOUT_MS = 4000;
 
 function resolveRoute(notification, role) {
   const explicitRoute = String(notification.route || "");
+  const targetType = String(notification.targetType || "").toLowerCase();
+  const targetId = notification.targetId ? encodeURIComponent(notification.targetId) : "";
   if (role === "technician") {
     if (explicitRoute.startsWith("/technician/task/")) return explicitRoute;
     if (notification.targetType === "task" && notification.targetId) {
@@ -12,14 +14,25 @@ function resolveRoute(notification, role) {
     }
     return explicitRoute.startsWith("/technician/") ? explicitRoute : "/technician/tasks";
   }
-  if (notification.targetType === "service_request") return "/customer/services";
-  if (notification.targetType === "unit" || ["maintenance_due", "amp_due_soon", "amp_overdue"].includes(notification.category)) {
-    return notification.targetId ? `/customer/units/${encodeURIComponent(notification.targetId)}` : "/customer/units";
+  if (targetType === "order" || ["order", "payment", "delivery"].includes(notification.type)) {
+    return targetId ? `/customer/orders?orderId=${targetId}` : "/customer/orders";
+  }
+  if (["contact", "contact_message"].includes(targetType)) {
+    return targetId ? `/customer/contact?messageId=${targetId}` : "/customer/contact";
+  }
+  if (["service_request", "service"].includes(targetType)) {
+    return targetId ? `/customer/services?requestId=${targetId}` : "/customer/services";
+  }
+  if (notification.type === "warranty" || targetType === "warranty") {
+    return targetId ? `/customer/units/${targetId}?page=warranty` : "/customer/units";
+  }
+  if (targetType === "unit" || ["maintenance_due", "amp_due_soon", "amp_overdue"].includes(notification.category)) {
+    return targetId ? `/customer/units/${targetId}?page=amp` : "/customer/units";
   }
   if (role === "customer") {
     if (explicitRoute === "/customer/service-requests") return "/customer/services";
-    if (explicitRoute === "/contact") return "/customer/contact";
-    if (explicitRoute === "/my-orders") return "/customer/orders";
+    if (explicitRoute === "/contact") return targetId ? `/customer/contact?messageId=${targetId}` : "/customer/contact";
+    if (explicitRoute === "/my-orders") return targetId ? `/customer/orders?orderId=${targetId}` : "/customer/orders";
     if (explicitRoute === "/myunit" || explicitRoute.startsWith("/myunit/")) return "/customer/units";
     if (explicitRoute === "/settings") return "/customer/settings";
   }

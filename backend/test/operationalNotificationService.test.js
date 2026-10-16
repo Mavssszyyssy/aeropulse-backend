@@ -32,6 +32,20 @@ test("push alerts respect category preferences and valid mobile routes", () => {
     targetType: "order",
     targetId: "order-id",
     message: "Your warranty and active unit record are now available.",
-  }, "customer"), "/customer/orders");
+  }, "customer"), "/customer/orders?orderId=order-id");
+  assert.equal(resolveRoute({
+    route: "/contact",
+    targetType: "contact_message",
+    targetId: "message-id",
+  }, "customer"), "/customer/contact?messageId=message-id");
+  assert.equal(resolveRoute({
+    targetType: "service_request",
+    targetId: "request-id",
+  }, "customer"), "/customer/services?requestId=request-id");
+  assert.equal(resolveRoute({
+    type: "warranty",
+    targetType: "warranty",
+    targetId: "unit-id",
+  }, "customer"), "/customer/units/unit-id?page=warranty");
   assert.equal(resolveRoute({ title: "Parts update" }, "technician"), "/technician/tasks");
 });
