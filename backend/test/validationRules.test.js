@@ -21,6 +21,16 @@ test("ZIP codes must match the selected city", () => {
   };
   assert.equal(validatePostalCodeForAddress({ ...pasayAddress, postalCode: "1300" }), "");
   assert.match(validatePostalCodeForAddress({ ...pasayAddress, postalCode: "4102" }), /does not match/i);
+
+  const muntinlupaAddress = {
+    region: "National Capital Region (NCR)",
+    province: "Metro Manila",
+    city: "City of Muntinlupa",
+    barangay: "Alabang",
+  };
+  assert.equal(validatePostalCodeForAddress({ ...muntinlupaAddress, postalCode: "1770" }), "");
+  assert.equal(validatePostalCodeForAddress({ ...muntinlupaAddress, postalCode: "1780" }), "");
+  assert.match(validatePostalCodeForAddress({ ...muntinlupaAddress, postalCode: "1300" }), /does not match/i);
 });
 
 test("service dates reject invalid and past calendar dates", () => {

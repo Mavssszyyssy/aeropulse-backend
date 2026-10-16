@@ -2,7 +2,9 @@ const postalCodeRules = require("./postalCodeRules.json");
 
 const normalize = (value) => String(value || "")
   .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-  .toLowerCase().replace(/\b(city|municipality|province)\b/g, " ")
+  .toLowerCase()
+  .replace(/\b(?:city|municipality|province)\s+of\b/g, " ")
+  .replace(/\b(city|municipality|province)\b/g, " ")
   .replace(/\s+/g, " ").trim();
 const normalizeRegion = (value) => {
   const text = normalize(value);
