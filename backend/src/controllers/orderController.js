@@ -12,6 +12,7 @@ const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { resolveOrderPaymentStatus } = require("../domain/orderPayment");
+const { shouldActivateOrderTask } = require("../domain/orderTaskActivation");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
@@ -43,7 +44,7 @@ const workflowLabel = (status, deliveryStatus = "") => {
     case "to_deliver":
       return "TO DELIVER";
     case "to_dispatch":
-      return String(deliveryStatus || "").toLowerCase() === "dispatched" ? "DISPATCH" : "TO DISPATCH";
+      return String(deliveryStatus || "").toLowerCase() === "dispatched" ? "DISPATCHED" : "TO DISPATCH";
     case "to_install":
       return "TO INSTALL";
     case "for_rescheduling":
@@ -1978,12 +1979,21 @@ const buildOrderTaskAddress = (order = {}) =>
 
 const createTaskForOrder = async (order, options = {}) => {
   if (!order) return null;
-  const activateTask = Boolean(options.activate);
+  // Assignment and recovery must not leave a dispatched order with a pending task.
+  const activateTask = shouldActivateOrderTask(order, options.activate);
   const existingTask = await findLinkedTaskForOrder(order);
   if (existingTask?.payload?.visitAttempt?.awaitingAdmin) throw new HttpError(409, 'Use Visit follow-up to confirm the next visit before changing this work order.');
+  if (activateTask && existingTask && !["pending", "accepted", "on-the-way", "arrived", "installing", "rescheduled", "in-progress"].includes(String(existingTask.status || "").toLowerCase())) {
+    throw new HttpError(409, `This ${existingTask.status} technician work order cannot be activated by assignment recovery.`);
+  }
   const assignment = await resolveTechnicianAssignment({ ...options, branch: order.stockSourceBranch || order.customerBranch || "" });
   if (!assignment.assignedTechnicianId && !String(existingTask?.assignedTechnicianId || "").trim()) {
     throw new HttpError(400, "Select one technician before creating this work order.");
+  }
+  const changingTechnician = Boolean(existingTask?.assignedTechnicianId && assignment.assignedTechnicianId &&
+    String(existingTask.assignedTechnicianId) !== String(assignment.assignedTechnicianId));
+  if (changingTechnician && (existingTask.payload?.checkIn?.checkedInAt || String(existingTask.status || "").toLowerCase() === "installing")) {
+    throw new HttpError(409, "This technician has already started the visit. Do not reassign it through order recovery; use the visit follow-up workflow.");
   }
   const taskItems = buildOrderTaskItems(order);
   const taskSerialNumbers = Array.from(
@@ -2004,7 +2014,7 @@ const createTaskForOrder = async (order, options = {}) => {
   );
   if (existingTask) {
     let changed = false;
-    if (activateTask && ["pending", "accepted", "on-the-way", "arrived", "installing", "rescheduled"].includes(String(existingTask.status || "").toLowerCase())) {
+    if (activateTask && ["pending", "accepted", "on-the-way", "arrived", "rescheduled"].includes(String(existingTask.status || "").toLowerCase())) {
       existingTask.status = "in-progress";
       changed = true;
     }
@@ -2771,10 +2781,24 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   if (action === "dispatch" && linkedTaskBeforeAction && ["completed", "failed"].includes(String(linkedTaskBeforeAction.status || "").toLowerCase())) {
     throw new HttpError(409, `Order ${order.orderCode} has a ${linkedTaskBeforeAction.status} technician task and cannot be dispatched again.`);
   }
+  if (action === "dispatch" && linkedTaskBeforeAction?.payload?.visitAttempt?.awaitingAdmin) {
+    throw new HttpError(409, 'Use Visit follow-up to confirm the next visit before dispatching this order.');
+  }
+  if (action === "dispatch" && linkedTaskBeforeAction && !["pending", "accepted", "on-the-way", "arrived", "installing", "rescheduled", "in-progress"].includes(String(linkedTaskBeforeAction.status || "").toLowerCase())) {
+    throw new HttpError(409, `The linked ${linkedTaskBeforeAction.status} technician work order cannot be dispatched.`);
+  }
   const deliveryStatus = String(order.deliveryStatus || "").trim().toLowerCase().replace(/[_-]+/g, " ");
   const dispatchAlreadyStarted = Boolean(order.dispatchedAt) || ["dispatched", "out for delivery", "arrived", "installing", "completed"].includes(deliveryStatus);
   if (action === "dispatch" && order.workflowStatus === "to_dispatch" && dispatchAlreadyStarted) {
     throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is in technician fulfillment.`);
+  }
+  if (action === "dispatch") {
+    await assertNoTaskScheduleConflict({
+      scheduledDate: options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || new Date().toISOString().split("T")[0],
+      timeSlot: options.timeSlot || order.installationTimeSlot || "TBD",
+      participantIds: [assignment.assignedTechnicianId],
+      excludeTaskId: linkedTaskBeforeAction?._id,
+    });
   }
   if (action === "cancel" && dispatchAlreadyStarted) {
     throw new HttpError(409, `Order ${order.orderCode} can no longer be cancelled because technician fulfillment has started.`);
@@ -3211,6 +3235,15 @@ const recoverOrder = async (req, res) => {
       timeSlot: form.timeSlot || "",
       forceRefreshTask: true,
     });
+    order.assignedTechnicianId = technician.assignedTechnicianId;
+    order.assignedTechnician = technician.assignedTechnicianName;
+    if (synchronizedDate) {
+      order.estimatedArrival = synchronizedDate;
+      order.estimatedDelivery = synchronizedDate;
+      order.installationDate = synchronizedDate;
+    }
+    if (form.timeSlot) order.installationTimeSlot = form.timeSlot;
+    await order.save();
     const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
     return res.json({
       message: `Technician task synced for ${order.orderCode}.`,
@@ -3232,6 +3265,7 @@ const recoverOrder = async (req, res) => {
       return res.status(409).json({ message: `Cannot change the technician for a ${workflowLabel(order.workflowStatus)} order.` });
     }
 
+    order.assignedTechnicianId = technician.assignedTechnicianId;
     order.assignedTechnician = technician.assignedTechnicianName;
     const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
     if (synchronizedDate) {

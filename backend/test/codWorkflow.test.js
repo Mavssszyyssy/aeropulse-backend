@@ -11,6 +11,7 @@ const buildAction = (state) => vm.runInNewContext(extract("const applyOrderLifec
   ...cod, lifecycleActions: actions, HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
   workflowLabel: s => s, findLinkedTaskForOrder: async () => null,
   resolveTechnicianAssignment: async options => ({ assignedTechnicianId: options.assignedTechnicianId || "", assignedTechnicianName: "Tech" }),
+  assertNoTaskScheduleConflict: noop,
   reReserveReleasedOrderInventory: async order => { state.reservations++; order.stockReservationStatus = "reserved"; },
   appendFulfillmentEvent: (o, stage) => state.events.push(stage), updateSerialUnitsForOrder: noop,
   createTaskForOrder: async (o, opts) => { state.activated = opts.activate; },
