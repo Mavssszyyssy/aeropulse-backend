@@ -67,7 +67,8 @@ test('close saves proof, holds only the attempt, retains request and notifies br
   assert.equal(response.statusCode, 200);
   assert.equal(f.task().status, 'on-hold');
   assert.equal(f.task().payload.checkIn, null);
-  assert.equal(f.request.status, 'In Progress');
+  assert.equal(f.request.status, 'On Hold');
+  assert.equal(f.request.payload.status, 'On Hold');
   assert.equal(f.task().payload.serviceHistoryId, undefined);
   assert.equal(f.attempt().photo.uri, input.photo.uri);
   assert.deepEqual(f.attempt().checkIn, checkIn);
@@ -87,6 +88,8 @@ test('Admin reschedule resets arrival, syncs schedule and is retry-safe', async 
   const result = await f.call('scheduleNextVisit', 'admin', body);
   assert.equal(result.statusCode, 200);
   assert.equal(f.task().status, 'in-progress');
+  assert.equal(f.request.status, 'In Progress');
+  assert.equal(f.request.payload.status, 'In Progress');
   assert.equal(f.task().payload.visitAttempt.awaitingAdmin, false);
   assert.equal(hasVerifiedTaskCheckIn(f.task()), false);
   assert.equal(f.request.payload.scheduledDate, body.scheduledDate);

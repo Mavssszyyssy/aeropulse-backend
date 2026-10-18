@@ -26,7 +26,7 @@ const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict
 const normalizeStatus = (value = "", fallback = "Pending") =>
   normalizeServiceRequestStatus(value, fallback);
 
-const ACTIVE_REQUEST_STATUSES = ["Submitted", "Reviewed", "Assigned", "In Progress", "Pending"];
+const ACTIVE_REQUEST_STATUSES = ["Submitted", "Reviewed", "Assigned", "In Progress", "On Hold", "Pending"];
 const SERVICE_REQUEST_LIST_PROJECTION = [
   "-payload.proof",
   "-payload.beforePhotos",
@@ -53,6 +53,11 @@ const hydrateRequestResponse = (request) => {
   const json = request.toJSON ? request.toJSON() : request;
   const payload = request.payload && Object.keys(request.payload).length ? request.payload : null;
   const id = String(json.id || json._id || request.id || request._id || "");
+  // Older closed visits already have the follow-up marker but were persisted
+  // as In Progress. Present their effective state without rewriting history.
+  const effectiveStatus = payload?.visitAttempt?.awaitingAdmin && !["Completed", "Cancelled"].includes(json.status)
+    ? "On Hold"
+    : json.status;
   if (!payload) return { ...json, id, servicePayment: servicePaymentSummary(request) };
   return {
     ...payload,
@@ -69,7 +74,7 @@ const hydrateRequestResponse = (request) => {
     linkedTaskId: payload.linkedTaskId || "",
     unitSerialNumber: payload.unitSerialNumber || payload.serialNumber || "",
     qrCode: payload.qrCode || "",
-    status: payload.status || json.status,
+    status: effectiveStatus,
     createdAt: payload.createdAt || json.createdAt,
     updatedAt: payload.updatedAt || json.updatedAt,
     // Lean list queries do not run the model's toJSON transform. Always expose

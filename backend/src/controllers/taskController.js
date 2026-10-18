@@ -787,7 +787,7 @@ const syncServiceRequestForTask = async (task, status) => {
   let nextStatus = "";
   if (["pending", "accepted"].includes(normalizedStatus)) nextStatus = "Assigned";
   if (["on-the-way", "arrived", "installing", "in-progress"].includes(normalizedStatus)) nextStatus = "In Progress";
-  if (normalizedStatus === "on-hold") nextStatus = "Assigned";
+  if (normalizedStatus === "on-hold") nextStatus = "On Hold";
   if (normalizedStatus === "cancelled") nextStatus = "Cancelled";
   if (normalizedStatus === "completed") nextStatus = "Completed";
   if (!nextStatus) return;

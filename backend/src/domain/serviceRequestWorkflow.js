@@ -4,6 +4,7 @@ const SERVICE_REQUEST_STATUSES = Object.freeze([
   "Reviewed",
   "Assigned",
   "In Progress",
+  "On Hold",
   "Completed",
   "Cancelled",
 ]);
@@ -17,7 +18,8 @@ const TRANSITIONS = Object.freeze({
   Submitted: ["Reviewed", "Assigned", "In Progress", "Cancelled"],
   Reviewed: ["Assigned", "In Progress", "Cancelled"],
   Assigned: ["In Progress", "Cancelled"],
-  "In Progress": ["Completed", "Cancelled"],
+  "In Progress": ["On Hold", "Completed", "Cancelled"],
+  "On Hold": ["In Progress", "Cancelled"],
   Completed: [],
   Cancelled: [],
 });

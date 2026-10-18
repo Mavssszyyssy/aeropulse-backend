@@ -121,8 +121,10 @@ async function makePreAssessment(req, res, request, assignedTask = null) {
   if (!requestIssue(request) || requestIssue(request).length < 10) return res.status(422).json({ message: "Add more detail about the reported symptoms before generating an AI assessment." });
   const result = await generateMaintenanceAssessment({ kind: "pre", evidence, actorId: req.authUser._id });
   const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
-  await ServiceRequest.updateOne({ _id: request._id }, { $set: { aiPreAssessment: saved } });
-  return res.status(result.status === "completed" ? 200 : 503).json({ preAssessment: saved, message: result.error || "Pre-maintenance assessment saved." });
+  if (result.status === "completed" || request.aiPreAssessment?.status !== "completed") {
+    await ServiceRequest.updateOne({ _id: request._id }, { $set: { aiPreAssessment: saved } });
+  }
+  return res.status(result.status === "completed" ? 200 : 424).json({ preAssessment: result.status === "completed" ? saved : request.aiPreAssessment?.status === "completed" ? request.aiPreAssessment : saved, message: result.error || "Pre-maintenance assessment saved." });
 }
 
 const generateRequestPreAssessment = async (req, res) => {
@@ -175,8 +177,10 @@ const generateFuturePrediction = async (req, res) => {
     }
     const result = await generateMaintenanceAssessment({ kind: "post", evidence, actorId: req.authUser._id });
     const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
-    await ServiceHistory.updateOne({ _id: history._id }, { $set: { aiFuturePrediction: saved } });
-    return res.status(result.status === "completed" ? 200 : 503).json({ futurePrediction: saved, message: result.error || "Future-issue assessment saved." });
+    if (result.status === "completed" || history.aiFuturePrediction?.status !== "completed") {
+      await ServiceHistory.updateOne({ _id: history._id }, { $set: { aiFuturePrediction: saved } });
+    }
+    return res.status(result.status === "completed" ? 200 : 424).json({ futurePrediction: result.status === "completed" ? saved : history.aiFuturePrediction?.status === "completed" ? history.aiFuturePrediction : saved, message: result.error || "Future-issue assessment saved." });
   } catch (error) { console.error("Future-issue assessment failed", error); return res.status(500).json({ message: "Unable to generate the prediction." }); }
 };
 

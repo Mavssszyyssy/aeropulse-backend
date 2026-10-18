@@ -143,7 +143,7 @@ const createWarrantyClaim = async (req, res) => {
     const activeServiceRequest = await ServiceRequest.findOne({
       createdBy: req.authUser._id,
       unitId: String(unit._id),
-      status: { $in: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress"] },
+      status: { $in: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress", "On Hold"] },
     }).sort({ createdAt: -1 });
     if (activeServiceRequest) {
       return res.status(409).json({
@@ -245,7 +245,7 @@ const reviewWarrantyClaim = async (req, res) => {
       const conflictingRequest = existingWarrantyRequest ? null : await ServiceRequest.findOne({
         createdBy: unit.customer,
         unitId: String(unit._id),
-        status: { $in: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress"] },
+        status: { $in: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress", "On Hold"] },
       }).sort({ createdAt: -1 });
       if (conflictingRequest) {
         return res.status(409).json({

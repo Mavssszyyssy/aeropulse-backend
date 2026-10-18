@@ -51,8 +51,9 @@ async function syncAttempt(task, attempt, resolved = false) {
   if (request) {
     const timeline = Array.isArray(request.payload?.timeline) ? request.payload.timeline : [];
     if (!timeline.some(item => item.id === eventId)) timeline.push({ id: eventId, title, description, actor: resolved ? 'Admin' : attempt.technicianName, timestamp: new Date().toISOString() });
+    if (!['Completed', 'Cancelled'].includes(request.status)) request.status = resolved ? 'In Progress' : 'On Hold';
     request.payload = { ...(request.payload || {}), timeline, visitAttempt: summary, linkedTaskStatus: task.status,
-      ...(resolved ? { scheduledDate: task.scheduledDate, timeSlot: task.timeSlot } : {}) };
+      status: request.status, ...(resolved ? { scheduledDate: task.scheduledDate, timeSlot: task.timeSlot } : {}) };
     await request.save();
   } else {
     order = await linkedInstallationOrder(task);

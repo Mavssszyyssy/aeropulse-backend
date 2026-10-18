@@ -8,6 +8,16 @@ const {
   canCustomerCancelServiceRequest,
   resolveServiceAppointmentDate,
 } = require("../src/domain/serviceRequestWorkflow");
+const { hydrateRequestResponse } = require("../src/controllers/serviceRequestController");
+
+test("older unattended service visits display On Hold without changing saved history", () => {
+  const oldRequest = { _id: "legacy-request", status: "In Progress", payload: {
+    status: "In Progress", visitAttempt: { awaitingAdmin: true },
+  } };
+  assert.equal(hydrateRequestResponse(oldRequest).status, "On Hold");
+  assert.equal(oldRequest.status, "In Progress");
+  assert.equal(hydrateRequestResponse({ ...oldRequest, status: "Completed" }).status, "Completed");
+});
 
 test("normalizes supported service request statuses and rejects unknown values", () => {
   assert.equal(normalizeServiceRequestStatus("in progress"), "In Progress");
@@ -38,6 +48,8 @@ test("allows forward workflow transitions and idempotent retries", () => {
   assert.equal(canTransitionServiceRequest("Submitted", "Reviewed"), true);
   assert.equal(canTransitionServiceRequest("Reviewed", "In Progress"), true);
   assert.equal(canTransitionServiceRequest("In Progress", "Completed"), true);
+  assert.equal(canTransitionServiceRequest("In Progress", "On Hold"), true);
+  assert.equal(canTransitionServiceRequest("On Hold", "In Progress"), true);
   assert.equal(canTransitionServiceRequest("Assigned", "Assigned"), true);
 });
 

@@ -172,6 +172,32 @@ test("admin generation persists advice beside, not over, the original service re
   }
 });
 
+test("provider failure keeps a prior assessment and is not reported as backend connectivity loss", async () => {
+  const originalKey = env.openAiApiKey;
+  const originalFetch = global.fetch;
+  const originalFind = ServiceRequest.findById;
+  const originalUpdate = ServiceRequest.updateOne;
+  const priorAssessment = { status: "completed", assessment: pre, generatedAt: new Date() };
+  const request = { _id: "507f1f77bcf86cd799439011", branch: "Cavite", status: "In Progress",
+    issue: "Air conditioner is not cooling properly", unitId: "", payload: {}, aiPreAssessment: priorAssessment };
+  let writes = 0;
+  env.openAiApiKey = "test-key";
+  ServiceRequest.findById = async () => request;
+  ServiceRequest.updateOne = async () => { writes += 1; };
+  global.fetch = async () => ({ ok: false, status: 503 });
+  try {
+    const response = { code: 200, status(value) { this.code = value; return this; }, json(value) { this.body = value; return this; } };
+    await generateRequestPreAssessment({ authUser: { role: "admin", _id: "admin-1" }, activeBranch: "Cavite", params: { requestId: String(request._id) } }, response);
+    assert.equal(response.code, 424);
+    assert.equal(response.body.preAssessment, priorAssessment);
+    assert.equal(writes, 0);
+    assert.match(response.body.message, /unavailable right now/);
+  } finally {
+    env.openAiApiKey = originalKey; global.fetch = originalFetch;
+    ServiceRequest.findById = originalFind; ServiceRequest.updateOne = originalUpdate;
+  }
+});
+
 test("admin and assigned technician send only matching saved work-order observations for a pre-visit assessment", async () => {
   const originals = { key: env.openAiApiKey, fetch: global.fetch, taskFindById: Task.findById,
     taskFindOne: Task.findOne, requestFind: ServiceRequest.findById, requestUpdate: ServiceRequest.updateOne,

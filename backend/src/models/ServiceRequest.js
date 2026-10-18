@@ -8,7 +8,7 @@ const serviceRequestSchema = new mongoose.Schema(
     branch: { type: String, default: "", index: true },
     status: {
       type: String,
-      enum: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress", "Completed", "Cancelled"],
+      enum: ["Pending", "Submitted", "Reviewed", "Assigned", "In Progress", "On Hold", "Completed", "Cancelled"],
       default: "Pending",
       index: true,
     },
