@@ -372,11 +372,8 @@ let sampleSeedPromise = null;
 let sampleSeedDone = false;
 
 const DISTRIBUTION_FALLBACK_STOCK = 6;
-const isCustomerCatalogProduct = (product = {}) => {
-  return Number(product.stock || 0) > 0 &&
-    product.isActive !== false &&
-    !isNonRetailCatalogProduct(product);
-};
+const isCustomerCatalogProduct = (product = {}) =>
+  product.isActive !== false && !isNonRetailCatalogProduct(product);
 
 const distributeStockToBranches = (total) => {
   const safeTotal = Math.max(0, Number(total) || 0);
@@ -927,7 +924,6 @@ const listPublicProducts = async (req, res) => {
   const requestedBranch = String(req.query?.branch || "").trim();
   const scopedBranch = BRANCHES.includes(requestedBranch) ? requestedBranch : "";
   const products = await Product.find({
-    stock: { $gt: 0 },
     isActive: { $ne: false },
   })
     .select("name sku brand category description specs features image stock branchStock price isActive")

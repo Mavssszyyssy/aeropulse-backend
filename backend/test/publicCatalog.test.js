@@ -1,7 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const Product = require("../src/models/Product");
 const {
   isCustomerCatalogProduct,
+  listPublicProducts,
   toPublicProduct,
   toRoleAwareProduct,
 } = require("../src/controllers/productController");
@@ -83,12 +85,41 @@ test("unknown products keep their uploaded catalog image", () => {
 
 test("customer catalog excludes test, demo, QA, and E2E inventory", () => {
   assert.equal(isCustomerCatalogProduct(product), true);
+  assert.equal(isCustomerCatalogProduct({ ...product, stock: 0 }), true);
+  assert.equal(toPublicProduct({ ...product, stock: 0, branchStock: new Map() }).stock, 0);
+  assert.equal(isCustomerCatalogProduct({ ...product, stock: 0, isActive: false }), false);
   assert.equal(isCustomerCatalogProduct({ ...product, name: "Installed Unit E2E 123" }), false);
   assert.equal(isCustomerCatalogProduct({ ...product, sku: "TEST-PAYMENT-001" }), false);
   assert.equal(isCustomerCatalogProduct({ ...product, brand: "AeroPulse QA" }), false);
   assert.equal(isCustomerCatalogProduct({ ...product, name: "Demo Window Unit" }), false);
   assert.equal(isNonRetailCatalogProduct({ ...product, brand: "AeroPulse QA" }), true);
   assert.equal(isNonRetailCatalogProduct(product), false);
+});
+
+test("public catalog returns active zero-stock products without exposing archived inventory", async (t) => {
+  const originalEnvironment = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  t.after(() => {
+    if (originalEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalEnvironment;
+  });
+  let query;
+  t.mock.method(Product, "find", (filter) => {
+    query = filter;
+    return {
+      select() { return this; },
+      async sort() {
+        return [
+          new Product({ name: product.name, sku: product.sku, brand: product.brand, category: product.category, price: product.price, stock: 0, branchStock: {} }),
+          new Product({ name: product.name, sku: "AC-OLD", isActive: false, stock: 0 }),
+        ];
+      },
+    };
+  });
+  const res = { set() {}, json(body) { this.body = body; return this; } };
+  await listPublicProducts({ query: {} }, res);
+  assert.deepEqual(query, { isActive: { $ne: false } });
+  assert.deepEqual(res.body.products.map((item) => [item.sku, item.stock]), [["AC-100", 0]]);
 });
 
 test("authenticated inventory uses the same non-retail marker for internal QR lists", () => {
