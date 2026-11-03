@@ -26,6 +26,8 @@ const containsProtectedAdminFields = (payload = {}) => {
       .some((key) => hasOwn(general, key))) return true;
   }
 
+  if (hasOwn(payload.preferences, "currency")) return true;
+
   return false;
 };
 

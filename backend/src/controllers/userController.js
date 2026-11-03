@@ -772,7 +772,7 @@ const updateSettings = async (req, res) => {
   const payload = req.body || {};
   if (req.authUser.role === "admin" && containsProtectedAdminFields(payload)) {
     return res.status(403).json({
-      message: "Company, branch, role, and permission fields are read-only for Admin accounts.",
+      message: "Currency, company, branch, role, and permission fields are read-only for Admin accounts.",
     });
   }
   const preferencesPayload = payload.preferences || payload;
@@ -799,6 +799,9 @@ const updateSettings = async (req, res) => {
 };
 
 const updatePreferences = async (req, res) => {
+  if (req.authUser.role === "admin" && containsProtectedAdminFields(req.body)) {
+    return res.status(403).json({ message: "Currency and company settings are read-only for Admin accounts." });
+  }
   req.authUser.preferences = normalizePreferences(
     req.authUser.preferences?.toObject?.() || req.authUser.preferences || {},
     req.body || {},
