@@ -143,7 +143,7 @@ async function scheduleNextVisit(req, res) {
     let task = await scopedTask(req);
     if (!task) return res.status(404).json({ message: 'Work order not found.' });
     if (['completed', 'cancelled'].includes(task.status)) return res.status(409).json({ message: 'This work order is closed and cannot be rescheduled.' });
-    const error = nextVisitError(req.body);
+    const error = nextVisitError(req.body, { service: Boolean(task.payload?.requestId) });
     if (error) return res.status(400).json({ message: error });
     if (typeof req.body.attemptId !== 'string' || !mongoose.Types.ObjectId.isValid(req.body.attemptId)) return res.status(400).json({ message: 'Choose a valid visit attempt.' });
     const attempt = await VisitAttempt.findOne({ _id: req.body.attemptId, taskId: task._id });

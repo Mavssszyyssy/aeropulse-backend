@@ -31,6 +31,24 @@ const parseReportDate = (value, { endOfDay = false } = {}) => {
 };
 
 const resolveReportRange = ({ from, to } = {}, now = new Date()) => {
+  const businessToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+  for (const [label, value] of [["start", from], ["end", to]]) {
+    if (value === undefined || value === null || value === "") continue;
+    const raw = String(value).trim();
+    const parsed = parseReportDate(raw, { endOfDay: label === "end" });
+    if (!parsed || (/^\d{4}-\d{2}-\d{2}$/.test(raw) && parsed.toISOString().slice(0, 10) !== raw)) {
+      const error = new Error(`Enter a valid report ${label} date.`);
+      error.statusCode = 400;
+      throw error;
+    }
+    if (raw.slice(0, 10) > businessToday) {
+      const error = new Error(`Historical report ${label} date cannot be in the future.`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
   const fallbackTo = new Date(now);
   const resolvedTo = parseReportDate(to, { endOfDay: true }) || fallbackTo;
   const resolvedFrom = parseReportDate(from) || new Date(resolvedTo.getTime() - 30 * DAY_MS);

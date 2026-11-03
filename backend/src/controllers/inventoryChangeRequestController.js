@@ -3,6 +3,7 @@ const AuditLog = require("../models/AuditLog");
 const Product = require("../models/Product");
 const { createDedupedNotification, notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { ensureProductSerialUnits } = require("./productController");
+const { parsePositiveWholeQuantity } = require("../domain/quantityValidation");
 
 /**
  * Manager creates a change request for inventory
@@ -27,16 +28,16 @@ const createChangeRequest = async (req, res) => {
   const currentStockValue = Number(product.branchStock.get(branch) || 0);
   let requestedQuantity = 0;
   if (addQuantity !== undefined) {
-    const qty = Number(addQuantity);
-    if (!Number.isFinite(qty) || qty <= 0) {
-      return res.status(400).json({ message: "Quantity must be a valid positive number" });
+    const qty = parsePositiveWholeQuantity(addQuantity);
+    if (qty === null) {
+      return res.status(400).json({ message: "Quantity must be a positive whole number within the supported range." });
     }
     requestedQuantity = currentStockValue + qty;
   } else {
-    requestedQuantity = Number(requestedStock);
+    requestedQuantity = parsePositiveWholeQuantity(requestedStock);
   }
 
-  if (!Number.isFinite(requestedQuantity) || requestedQuantity <= currentStockValue) {
+  if (!Number.isSafeInteger(requestedQuantity) || requestedQuantity <= currentStockValue) {
     return res.status(400).json({ message: "Requested stock must be greater than the current branch stock." });
   }
 
@@ -141,6 +142,9 @@ const approveRequest = async (req, res) => {
 
     if (request.requestedStock <= oldStock) {
       return res.status(400).json({ message: "Approved inventory changes must increase branch stock." });
+    }
+    if (!Number.isSafeInteger(request.requestedStock) || !Number.isSafeInteger(Number(product.stock || 0) + request.requestedStock - oldStock)) {
+      return res.status(400).json({ message: "Approved stock must be a whole number within the supported range." });
     }
 
     // Update inventory

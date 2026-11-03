@@ -70,8 +70,9 @@ async function sendPushForNotification(notification, {
 } = {}) {
   if (typeof fetchImpl !== "function") return;
 
-  const user = await User.findById(notification.user).select("expoPushTokens notifications role");
-  if (!user || !canReceivePush(user, notification.type)) return;
+  const user = await User.findById(notification.user).select("expoPushTokens notifications role accountStatus isDeleted");
+  if (!user || user.isDeleted || ["disabled", "deleted"].includes(user.accountStatus)
+    || !canReceivePush(user, notification.type)) return;
 
   const tokens = [...new Set(user.expoPushTokens || [])].filter((token) =>
     /^(ExponentPushToken|ExpoPushToken)\[.+\]$/.test(token),
@@ -85,6 +86,7 @@ async function sendPushForNotification(notification, {
     body: notification.message,
     data: {
       notificationId: String(notification._id),
+      recipientId: String(notification.user),
       route: resolveRoute(notification, String(user.role || "customer").toLowerCase()),
       type: notification.type,
       targetId: String(notification.targetId || ""),
@@ -105,6 +107,23 @@ async function sendPushForNotification(notification, {
       ...(controller ? { signal: controller.signal } : {}),
     });
     if (!response.ok) throw new Error(`Expo push service returned ${response.status}`);
+    const result = await response.json();
+    if (!Array.isArray(result?.data)) throw new Error("Expo push service returned an invalid response.");
+    const expiredTokens = [];
+    result.data.forEach((ticket, index) => {
+      if (ticket?.status !== "error") return;
+      if (ticket.details?.error === "DeviceNotRegistered") {
+        expiredTokens.push(messages[index]?.to);
+      } else {
+        console.warn("Expo push ticket failed:", ticket.details?.error || "unknown error");
+      }
+    });
+    if (expiredTokens.length) {
+      await User.updateOne(
+        { _id: notification.user },
+        { $pull: { expoPushTokens: { $in: expiredTokens.filter(Boolean) } } },
+      );
+    }
   } catch (error) {
     if (controller?.signal.aborted) {
       throw new Error("Expo push delivery timed out; the in-app notification remains saved.");

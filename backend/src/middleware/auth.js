@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const env = require("../config/env");
 const User = require("../models/User");
 const { BRANCHES } = require("../domain/branchRouting");
+const { getBranchCoverage } = require("../services/branchCoverageService");
 
 // Dashboard pages make several authenticated reads at once (orders, tasks,
 // notifications, stock). Reusing a recently-read account avoids turning a
@@ -83,6 +84,7 @@ const authenticate = async (req, res, next, options = {}) => {
     }
     const headerBranch = typeof req.headers["x-branch"] === "string" ? req.headers["x-branch"].trim() : "";
     const isBranchScopedRole = user.role === "admin" || user.role === "manager" || user.role === "technician";
+    await getBranchCoverage();
     req.activeBranch = "";
     if (isBranchScopedRole) {
       const storedBranch = BRANCHES.includes(user.activeBranch)

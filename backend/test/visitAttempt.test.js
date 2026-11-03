@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const Module = require('node:module');
 const { visitAttemptError, nextVisitError } = require('../src/domain/visitAttempt');
 const { hasVerifiedTaskCheckIn } = require('../src/domain/taskWorkflow');
+const { getServiceBookingMaxDateKey } = require('../src/utils/scheduling');
 const taskId = '111111111111111111111111';
 const attemptId = '222222222222222222222222';
 const userId = '333333333333333333333333';
@@ -24,6 +25,9 @@ test('unattended visits require active GPS arrival, outcome, note and embedded p
 
 test('new visits require a valid date and dropdown time, never technician free text', () => {
   assert.equal(nextVisitError({ scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' }), '');
+  assert.match(nextVisitError({ scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' }, { service: true }), /90 calendar days/);
+  assert.equal(nextVisitError({ scheduledDate: getServiceBookingMaxDateKey(), timeSlot: '10:00 AM – 12:00 PM' }, { service: true }), '');
+  assert.match(nextVisitError({ scheduledDate: '2026-10-26', timeSlot: '8:00 AM – 10:00 AM' }, { service: true, now: new Date('2026-10-26T04:00:00.000Z') }), /passed/);
   for (const value of [{}, { scheduledDate: '2020-01-01' }, { scheduledDate: '2099-02-30' }, { scheduledDate: '2099-01-01', timeSlot: 'anytime' }]) assert.notEqual(nextVisitError(value), '');
 });
 
@@ -82,7 +86,7 @@ test('close saves proof, holds only the attempt, retains request and notifies br
 
 test('Admin reschedule resets arrival, syncs schedule and is retry-safe', async () => {
   const f = fixture(); await f.call('submitVisitAttempt', 'technician', { ...input, outcome: 'reschedule' });
-  const body = { attemptId, scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' };
+  const body = { attemptId, scheduledDate: getServiceBookingMaxDateKey(), timeSlot: '10:00 AM – 12:00 PM' };
   const denied = await f.call('scheduleNextVisit', 'technician', body);
   assert.equal(denied.statusCode, 403);
   const result = await f.call('scheduleNextVisit', 'admin', body);

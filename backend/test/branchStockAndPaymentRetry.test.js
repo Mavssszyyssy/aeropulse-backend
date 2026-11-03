@@ -32,7 +32,8 @@ test('GCash has three total checkout attempts including the original session', (
   assert.equal(gcashRetryableStatus('pending'), true);
   assert.equal(GCASH_PAYMENT_LIMIT_MESSAGE, 'Maximum payment attempts reached. You can no longer retry payment for this order.');
   assert.match(source, /PAYMENT_RETRY_LIMIT_REACHED/);
-  assert.match(source, /paymentStatus: \{ \$in: \["pending", "failed", "cancelled", "expired"\] \}/);
+  assert.match(source, /resumedCheckout: true/);
+  assert.match(source, /paymentStatus: \{ \$in: \["failed", "cancelled", "expired"\] \}/);
   assert.match(source, /paymentAttemptAlreadyCounted: isGcash/);
   assert.match(source, /"paymongo\.retryInProgress": true/);
   assert.match(source, /"paymongo\.retryInProgress": \{ \$ne: true \}/);

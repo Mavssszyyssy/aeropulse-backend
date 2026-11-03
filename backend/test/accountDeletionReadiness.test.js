@@ -11,5 +11,8 @@ test("account deletion retires customer equipment and removes cross-module conta
   assert.match(source, /ServiceRequest\.updateMany/);
   assert.match(source, /Task\.updateMany/);
   assert.match(source, /ContactMessage\.updateMany/);
+  assert.match(source, /hiddenFromOperationalInbox: true/);
+  assert.match(source, /subject: "Deleted account conversation"/);
+  assert.match(source, /\$mergeObjects: \["\$\$event", \{ note: "Conversation removed with deleted account\."/);
   assert.match(source, /address\.street": "Removed with deleted account"/);
 });

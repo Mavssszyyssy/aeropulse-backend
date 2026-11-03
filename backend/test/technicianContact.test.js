@@ -1,21 +1,47 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const User = require('../src/models/User');
-const { changePassword } = require('../src/controllers/userController');
+const { changePassword, updateProfile } = require('../src/controllers/userController');
 const { createStaff } = require('../src/controllers/staffController');
 const { login, register } = require('../src/controllers/authController');
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 
+test('technician profile rejects invalid alias edits without changing the stored login', async (t) => {
+  const user = new User({ name_first: 'Fixture', name_last: 'Tech', role: 'technician', alias: 'tech.fixture' });
+  const save = t.mock.method(user, 'save', async () => user);
+  for (const alias of ['', 'bad alias', 'x', 'a'.repeat(31)]) {
+    const res = response();
+    await updateProfile({ authUser: user, body: { alias } }, res);
+    assert.equal(res.statusCode, 400);
+    assert.equal(user.alias, 'tech.fixture');
+  }
+  assert.equal(save.mock.callCount(), 0);
+});
+
+test('technician alias cannot shadow another account username', async (t) => {
+  const user = new User({ name_first: 'Fixture', name_last: 'Tech', role: 'technician', alias: 'tech.fixture' });
+  t.mock.method(User, 'findOne', (query) => {
+    assert.deepEqual(query.$or, [{ alias: 'taken.login' }, { username: 'taken.login' }]);
+    return { select: async () => ({ _id: 'another-user' }) };
+  });
+  const save = t.mock.method(user, 'save', async () => user);
+  const res = response();
+  await updateProfile({ authUser: user, body: { alias: 'taken.login' } }, res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(user.alias, 'tech.fixture');
+  assert.equal(save.mock.callCount(), 0);
+});
+
 test('shared phone parsing does not allow invalid customer identities or make phone mandatory at signup', async () => {
   for (const phone of ['abc09123456789', '091234567890', '+659123456789']) {
     const res = response();
-    await register({ body: { email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
+    await register({ body: { name_first: 'Test', name_last: 'Customer', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
     assert.equal(res.statusCode, 400);
     assert.match(res.body.message, /mobile number/);
   }
   for (const phone of ['', undefined, '09123456789', '+63 912 345 6789']) {
     const res = response();
-    await register({ body: { email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
+    await register({ body: { name_first: 'Test', name_last: 'Customer', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
     assert.equal(res.statusCode, 403); // passes optional-phone validation, still requires email verification
     assert.match(res.body.message, /Verify your email/);
   }
@@ -49,6 +75,28 @@ test('new technician accounts require a defined Service Quota', async () => {
   await createStaff({ authUser: { role: 'superadmin' }, body: { name_first: 'Fixture', name_last: 'Tech', loginName: 'fixture', role: 'technician', branch: 'Cavite' } }, res);
   assert.equal(res.statusCode, 400);
   assert.match(res.body.message, /Service Quota is required/);
+});
+
+test('valid technician creation assigns one branch and returns first-use credentials', async (t) => {
+  t.mock.method(User, 'findOne', async () => null);
+  let created;
+  t.mock.method(User, 'create', async (data) => {
+    created = data;
+    return { ...data, toJSON() { return { username: data.username, role: data.role, assignedBranch: data.assignedBranch, serviceQuota: data.serviceQuota }; } };
+  });
+  const res = response();
+  await createStaff({ authUser: { role: 'superadmin' }, body: {
+    name_first: 'Fixture', name_last: 'Technician', loginName: 'fixture',
+    role: 'technician', branch: 'Cavite', serviceQuota: 3,
+  } }, res);
+  assert.equal(res.statusCode, 201);
+  assert.equal(created.username, 'tech.cavite.fixture');
+  assert.equal(created.assignedBranch, 'Cavite');
+  assert.equal(created.activeBranch, 'Cavite');
+  assert.equal(created.serviceQuota, 3);
+  assert.equal(created.isFirstLogin, true);
+  assert.equal(res.body.loginIdentifier, created.username);
+  assert.notEqual(created.passwordHash, res.body.tempPassword);
 });
 
 test('phone save conflicts return a useful error rather than an internal server error', async (t) => {

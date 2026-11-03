@@ -164,7 +164,7 @@ const userSchema = new mongoose.Schema(
       promotions: { type: Boolean, default: true },
       serviceUpdates: { type: Boolean, default: true },
     },
-    expoPushTokens: [{ type: String, trim: true }],
+    expoPushTokens: { type: [{ type: String, trim: true }], select: false, default: [] },
     skills: [{ type: String }],
     serviceQuota: { type: Number, min: 1, default: null },
     permissions: [{ type: String }],
@@ -173,8 +173,8 @@ const userSchema = new mongoose.Schema(
     activeBranch: { type: String, default: "" },
     sourceOfAcquisition: {
       type: String,
-      enum: ["social_media", "google", "friend_referral", "walk_in", "other"],
-      default: "other",
+      enum: ["social_media", "google", "friend_referral", "walk_in", "other", "paid_advertisement", "direct_organic", "unknown"],
+      default: "unknown",
     },
     lastLogin: { type: Date },
     failedLoginAttempts: { type: Number, default: 0 },
@@ -228,6 +228,7 @@ userSchema.index({ role: 1, accountStatus: 1, isDeleted: 1, createdAt: -1 });
 userSchema.index({ assignedBranch: 1, role: 1, accountStatus: 1 });
 userSchema.index({ activeBranch: 1, role: 1, accountStatus: 1 });
 userSchema.index({ lastLogin: -1 });
+userSchema.index({ expoPushTokens: 1 }, { sparse: true });
 
 userSchema.pre("validate", function assignEmailIdentityKey() {
   this.emailIdentityKey = buildEmailIdentityKey(this, this.email);
@@ -239,6 +240,7 @@ userSchema.set("toJSON", {
     delete ret._id;
     delete ret.__v;
     delete ret.passwordHash;
+    delete ret.expoPushTokens;
     delete ret.emailIdentityKey;
     delete ret.failedLoginAttempts;
     delete ret.lockoutUntil;

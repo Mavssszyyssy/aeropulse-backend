@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { boundedNumber, branchFilterMatch, buildPipelineActionSummary } = require("../src/domain/ampDashboardService");
+const { boundedNumber, branchFilterMatch, buildPipelineActionSummary, daysBetween } = require("../src/domain/ampDashboardService");
 const { resolveManagerPipelineScope } = require("../src/controllers/ampController");
 
 test("AMP dashboard query ranges reject abusive or misleading values", () => {
@@ -21,6 +21,12 @@ test("AMP pipeline pagination has bounded page sizes", () => {
   assert.equal(boundedNumber("2", pageOptions), 2);
   assert.equal(boundedNumber("100", sizeOptions), 100);
   assert.throws(() => boundedNumber("201", sizeOptions), /10 to 200/);
+});
+
+test("AMP due-day differences use the Philippine business calendar, not elapsed hours", () => {
+  assert.equal(daysBetween(new Date("2026-10-26T16:30:00Z"), new Date("2026-10-27T15:30:00Z")), 0);
+  assert.equal(daysBetween(new Date("2026-10-27T15:30:00Z"), new Date("2026-10-27T16:30:00Z")), 1);
+  assert.equal(daysBetween(new Date("2026-10-27T16:30:00Z"), new Date("2026-10-27T15:30:00Z")), -1);
 });
 
 test("AMP service pipeline keeps admins branch-scoped and lets Superadmin select an operating branch", () => {

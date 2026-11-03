@@ -1,5 +1,7 @@
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const { validatePersonName } = require("../domain/personNameValidation");
+const { BRANCHES } = require("../domain/branchRouting");
 const Order = require("../models/Order");
 const Notification = require("../models/Notification");
 const Unit = require("../models/Unit");
@@ -19,9 +21,11 @@ const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
 const { containsProtectedAdminFields } = require("../domain/adminSettingsPolicy");
 const { invalidateAuthCache } = require("../middleware/auth");
 const { validateEmailAddress } = require("../services/emailDomainPolicyService");
+const { signUserAccessToken } = require("../utils/token");
 
 const PROFILE_VISIBILITY_VALUES = ["public", "private", "role_based"];
 const NOTIFICATION_TYPES = ["account", "order", "system"];
+const MAX_SAVED_ADDRESSES = 8;
 
 const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
 const { withIdentityConflict } = require("../utils/optionalIdentity");
@@ -84,9 +88,8 @@ const sanitizeAddressPayload = (payload = {}) => {
 };
 const validateAddress = (address = {}) => {
   const errors = {};
-  if (!address.name || !String(address.name).trim()) {
-    errors.name = "Recipient name is required";
-  }
+  const nameResult = validatePersonName(address.name, "Recipient name");
+  if (nameResult.error) errors.name = nameResult.error;
   if (!address.region || !String(address.region).trim()) {
     errors.region = "Region is required";
   }
@@ -341,28 +344,61 @@ const applyProfileUpdate = async (
   payload = {},
   { allowEmailChange = false } = {},
 ) => {
-  if (payload.name !== undefined) user.name = sanitizeText(payload.name, 120);
-  if (payload.name_first !== undefined)
-    user.name_first = sanitizeText(payload.name_first, 80);
-  if (payload.name_last !== undefined)
-    user.name_last = sanitizeText(payload.name_last, 80);
+  // Validate the editable customer identity before mutating the document.
+  // A rejected field must not leave another field changed in the live session.
+  const firstNameCheck = payload.name_first === undefined ? null : validatePersonName(payload.name_first, "First name");
+  const lastNameCheck = payload.name_last === undefined ? null : validatePersonName(payload.name_last, "Last name");
+  if (firstNameCheck?.error || lastNameCheck?.error) {
+    return { ok: false, status: 400, message: firstNameCheck?.error || lastNameCheck.error };
+  }
+  const proposedAlias = payload.alias === undefined ? null : String(payload.alias || "").trim().toLowerCase();
+  if (proposedAlias !== null) {
+    if (user.role === "customer" && !/^[a-z0-9_.-]{3,30}$/.test(proposedAlias)) {
+      return { ok: false, status: 400, message: "Username must be 3-30 letters, numbers, dots, underscores, or hyphens." };
+    }
+    if (user.role === "technician" && proposedAlias !== String(user.alias || "").trim().toLowerCase() &&
+      !/^[a-z0-9_.-]{3,30}$/.test(proposedAlias)) {
+      return { ok: false, status: 400, message: "Sign-in alias must be 3-30 letters, numbers, dots, underscores, or hyphens." };
+    }
+    if (proposedAlias) {
+      const existing = await User.findOne({ $or: [{ alias: proposedAlias }, { username: proposedAlias }], _id: { $ne: user._id } }).select("_id");
+      if (existing) return { ok: false, status: 409, message: "Alias is already taken." };
+    }
+  }
+  const proposedPhone = payload.phone === undefined ? null : canonicalizePhMobile(payload.phone);
+  if (proposedPhone !== null) {
+    if (!isValidPhMobile(payload.phone)) {
+      return { ok: false, status: 400, message: "Enter a Philippine mobile number such as 09123456789 or +639123456789. Spaces and dashes are allowed." };
+    }
+    const existing = await User.findOne({ phone: proposedPhone, _id: { $ne: user._id } }).select("_id");
+    if (existing) return { ok: false, status: 409, message: "Phone number is already in use." };
+  }
+  if (payload.name !== undefined && payload.name_first === undefined && payload.name_last === undefined) {
+    const parts = String(payload.name || "").trim().split(/\s+/);
+    const first = validatePersonName(parts[0], "First name");
+    const last = validatePersonName(parts.slice(1).join(" "), "Last name");
+    if (first.error || last.error) return { ok: false, status: 400, message: first.error || last.error };
+    user.name_first = first.value;
+    user.name_last = last.value;
+    user.name = `${first.value} ${last.value}`;
+  }
+  if (payload.name_first !== undefined) {
+    const result = validatePersonName(payload.name_first, "First name");
+    if (result.error) return { ok: false, status: 400, message: result.error };
+    user.name_first = result.value;
+  }
+  if (payload.name_last !== undefined) {
+    const result = validatePersonName(payload.name_last, "Last name");
+    if (result.error) return { ok: false, status: 400, message: result.error };
+    user.name_last = result.value;
+  }
   if (payload.name_first !== undefined || payload.name_last !== undefined) {
     const fullName = [user.name_first, user.name_last].filter(Boolean).join(" ").trim();
     if (fullName) user.name = fullName;
   }
   if (payload.alias !== undefined) {
-    const alias = String(payload.alias || "")
-      .trim()
-      .toLowerCase();
-    if (alias) {
-      const existing = await User.findOne({
-        alias,
-        _id: { $ne: user._id },
-      }).select("_id");
-      if (existing) {
-        return { ok: false, status: 409, message: "Alias is already taken." };
-      }
-      user.alias = alias;
+    if (proposedAlias) {
+      user.alias = proposedAlias;
     } else {
       user.alias = undefined;
     }
@@ -397,26 +433,7 @@ const applyProfileUpdate = async (
   }
 
   if (payload.phone !== undefined) {
-    if (!isValidPhMobile(payload.phone)) {
-      return {
-        ok: false,
-        status: 400,
-        message: "Enter a Philippine mobile number such as 09123456789 or +639123456789. Spaces and dashes are allowed.",
-      };
-    }
-    const normalizedPhone = canonicalizePhMobile(payload.phone);
-    const existingPhoneUser = await User.findOne({
-      phone: normalizedPhone,
-      _id: { $ne: user._id },
-    }).select("_id");
-    if (existingPhoneUser) {
-      return {
-        ok: false,
-        status: 409,
-        message: "Phone number is already in use.",
-      };
-    }
-    user.phone = normalizedPhone;
+    user.phone = proposedPhone;
   }
 
   if (payload.avatarUrl !== undefined) {
@@ -590,6 +607,20 @@ const updateProfileById = async (req, res) => {
     });
   }
 
+  if (req.body?.assignedBranch !== undefined || req.body?.activeBranch !== undefined) {
+    if (req.authUser.role !== "superadmin" || target.role !== "admin") {
+      return res.status(403).json({ message: "Only SuperAdmin can assign branch administrators." });
+    }
+    const assignedBranch = String(req.body.assignedBranch || "").trim();
+    if (!BRANCHES.includes(assignedBranch) || (req.body.activeBranch !== undefined && req.body.activeBranch !== assignedBranch)) {
+      return res.status(400).json({ message: "Select one valid branch for this administrator." });
+    }
+    const conflict = await User.exists({ _id: { $ne: target._id }, role: "admin", assignedBranch, isDeleted: { $ne: true }, accountStatus: { $nin: ["disabled", "deleted"] } });
+    if (conflict) return res.status(409).json({ message: `${assignedBranch} already has an active administrator. Reassign that account explicitly before assigning another.` });
+    target.assignedBranch = assignedBranch;
+    target.activeBranch = assignedBranch;
+  }
+
   if (req.body?.serviceQuota !== undefined) {
     if (target.role !== "technician") {
       return res.status(400).json({ message: "Service Quota can only be set for a technician account." });
@@ -643,6 +674,9 @@ const addAddress = async (req, res) => {
   const nextAddresses = Array.isArray(user.addresses)
     ? [...user.addresses]
     : [];
+  if (nextAddresses.length >= MAX_SAVED_ADDRESSES) {
+    return res.status(409).json({ message: `You can save up to ${MAX_SAVED_ADDRESSES} delivery addresses.` });
+  }
   const shouldSetDefault =
     normalizedAddress.isDefault || nextAddresses.length === 0;
   nextAddresses.push({ ...normalizedAddress, isDefault: shouldSetDefault });
@@ -881,8 +915,15 @@ const changePassword = async (req, res) => {
       });
   }
   req.authUser.passwordHash = await bcrypt.hash(String(newPassword), 10);
+  req.authUser.security = req.authUser.security || {};
+  req.authUser.security.sessionVersion = Number(req.authUser.security.sessionVersion || 0) + 1;
   await req.authUser.save();
-  return res.json({ message: "Password changed successfully", user: req.authUser.toJSON() });
+  invalidateAuthCache(req.authUser._id || req.authUser.id);
+  return res.json({
+    message: "Password changed successfully",
+    user: req.authUser.toJSON(),
+    token: signUserAccessToken(req.authUser),
+  });
 };
 
 const anonymizeRelatedData = async (userId) => {
@@ -950,14 +991,24 @@ const anonymizeRelatedData = async (userId) => {
     ),
     ContactMessage.updateMany(
       { customer: userId },
-      {
+      [{
         $set: {
+          hiddenFromOperationalInbox: true,
           customerName: maskedName,
           email: "",
           phone: "",
+          subject: "Deleted account conversation",
           message: "Message removed with deleted account.",
+          adminReply: "",
+          timeline: {
+            $map: {
+              input: { $cond: [{ $isArray: "$timeline" }, "$timeline", []] },
+              as: "event",
+              in: { $mergeObjects: ["$$event", { note: "Conversation removed with deleted account.", actorName: maskedName }] },
+            },
+          },
         },
-      },
+      }],
     ),
     Notification.deleteMany({ user: userId }),
   ]);

@@ -140,6 +140,13 @@ const seedDemoUsers = async () => {
 module.exports = { demoUsers, seedDemoUsers };
 
 if (require.main === module) {
+  const { shouldSeedDemoData } = require('./demoSeedPolicy');
+  try {
+    shouldSeedDemoData({ flag: 'true', mongoUri: process.env.MONGODB_URI, nodeEnv: process.env.NODE_ENV });
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
   connectDb()
     .then(() => seedDemoUsers())
     .then(() => process.exit(0))

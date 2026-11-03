@@ -17,7 +17,7 @@ const {
 } = require("../domain/serviceRequestWorkflow");
 const env = require("../config/env");
 const { servicePaymentSummary } = require("../domain/servicePayment");
-const { getScheduledDateError } = require("../utils/scheduling");
+const { getServiceAppointmentError } = require("../utils/scheduling");
 const { formatServiceAddress } = require("../domain/serviceAddress");
 const { cancelWarrantyForRequest, reconcileCancelledWarranty } = require("../domain/warrantyCancellation");
 const { validateWarrantyAssignmentQuota } = require("../domain/technicianServiceQuota");
@@ -332,10 +332,10 @@ const createServiceRequest = async (req, res) => {
     if (!customer || !issue || !address) {
       return res.status(400).json({ message: "customer, issue, and address are required" });
     }
-    const scheduleError = getScheduledDateError(
-      req.body?.scheduledDate || req.body?.preferredDate,
-      "Service date",
-    );
+    if (String(issue).trim().length > 500) {
+      return res.status(400).json({ message: "Service concern must be 500 characters or fewer." });
+    }
+    const scheduleError = getServiceAppointmentError(req.body?.scheduledDate || req.body?.preferredDate, req.body?.timeSlot || req.body?.preferredSchedule, "Service date");
     if (scheduleError) return res.status(400).json({ message: scheduleError });
     const normalizedStatus = normalizeStatus(status, null);
     if (!normalizedStatus) {
@@ -407,10 +407,13 @@ const createMyServiceRequest = async (req, res) => {
     if (!customerName || !issue || !rawAddress) {
       return res.status(400).json({ message: "customer, issue, and address are required" });
     }
+    if (issue.length > 500) {
+      return res.status(400).json({ message: "Service concern must be 500 characters or fewer." });
+    }
     if (!service) {
       return res.status(400).json({ message: "Choose a valid service type from the current service catalog." });
     }
-    const scheduleError = getScheduledDateError(payload.preferredDate, "Preferred date");
+    const scheduleError = getServiceAppointmentError(payload.preferredDate, payload.preferredSchedule, "Preferred date");
     if (scheduleError) return res.status(400).json({ message: scheduleError });
     if (!payload.preferredDate) {
       return res.status(400).json({ message: "Choose a preferred service date." });
@@ -616,12 +619,18 @@ const updateServiceRequestStatus = async (req, res) => {
     if (['Assigned', 'In Progress'].includes(nextStatus)) {
       const scheduledDate = appointment.date;
       const timeSlot = String(req.body?.timeSlot || request.payload?.timeSlot || request.payload?.preferredSchedule || '').trim();
-      const scheduleError = getScheduledDateError(scheduledDate, 'Appointment date');
+      const scheduleError = getServiceAppointmentError(scheduledDate, timeSlot, 'Appointment date');
       if (!scheduledDate || scheduleError || !timeSlot || timeSlot === 'TBD' || timeSlot.length > 80) return res.status(400).json({ message: scheduleError || 'Choose an appointment date and time slot before assigning the technician.' });
       req.body = { ...req.body, scheduledDate, timeSlot };
     }
     const scheduleChanged = ['scheduledDate', 'timeSlot'].some(key => Object.hasOwn(req.body || {}, key) && String(req.body[key]) !== String(request.payload?.[key] || ''));
     if (scheduleChanged && ['Completed', 'Cancelled'].includes(request.status)) return res.status(409).json({ message: 'Closed service requests cannot be rescheduled.' });
+    if (scheduleChanged) {
+      const date = appointment.date;
+      const slot = String(req.body?.timeSlot || request.payload?.timeSlot || request.payload?.preferredSchedule || '').trim();
+      const scheduleError = getServiceAppointmentError(date, slot, 'Appointment date');
+      if (scheduleError) return res.status(400).json({ message: scheduleError });
+    }
     const linkedTaskId = String(request.payload?.linkedTaskId || "").trim();
     let linkedTask = null;
     if (linkedTaskId) {

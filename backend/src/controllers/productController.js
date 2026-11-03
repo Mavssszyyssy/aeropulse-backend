@@ -4,10 +4,12 @@ const Unit = require("../models/Unit");
 const ReorderRequest = require("../models/ReorderRequest");
 const RestockOrder = require("../models/RestockOrder");
 const InventoryChangeRequest = require("../models/InventoryChangeRequest");
+const AuditLog = require("../models/AuditLog");
 const crypto = require("crypto");
 const { BRANCHES } = require("../domain/branchRouting");
 const { isNonRetailCatalogProduct } = require("../domain/catalogVisibility");
 const { validateProductUniqueness } = require("../utils/productValidation");
+const { parsePositiveWholeQuantity, parseNonnegativeWholeQuantity } = require("../domain/quantityValidation");
 
 // Unknown products retain their uploaded image when one exists. The seeded
 // catalog models below use verified manufacturer/model-family assets hosted by
@@ -905,11 +907,12 @@ const requireInventoryOwner = (req, res) => {
 const listProducts = async (req, res) => {
   res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
-  const products = await Product.find({ isActive: { $ne: false } })
+  const includeArchived = req.authUser?.role === "superadmin" && req.query?.includeArchived === "true";
+  const products = await Product.find(includeArchived ? {} : { isActive: { $ne: false } })
     .select("-imageData")
     .sort({ createdAt: -1 });
-  const visibleProducts = products.filter((product) => !isNonRetailCatalogProduct(product));
-  await ensureSerialUnitsForProducts(visibleProducts);
+  const visibleProducts = products.filter((product) => includeArchived || !isNonRetailCatalogProduct(product));
+  await ensureSerialUnitsForProducts(visibleProducts.filter((product) => product.isActive !== false));
   return res.json({
     products: visibleProducts.map((p) => toRoleAwareProduct(p, req)),
   });
@@ -922,6 +925,11 @@ const listPublicProducts = async (req, res) => {
   res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
   const requestedBranch = String(req.query?.branch || "").trim();
+  // The usual branches need no extra database round trip. On a cold instance,
+  // hydrate newly configured branches only when one is explicitly requested.
+  if (requestedBranch && !BRANCHES.includes(requestedBranch)) {
+    await require("../services/branchCoverageService").getBranchCoverage();
+  }
   const scopedBranch = BRANCHES.includes(requestedBranch) ? requestedBranch : "";
   const products = await Product.find({
     isActive: { $ne: false },
@@ -955,6 +963,26 @@ const listLowStockProducts = async (req, res) => {
     (p) => Number(p.stock || 0) < Number(p.threshold || 0),
   );
   return res.json({ products: lowStock });
+};
+
+const listStockStatus = async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const products = await Product.find({ isActive: { $ne: false } })
+    .select("name sku brand threshold branchThresholds branchStock isActive")
+    .lean();
+  const scopedBranch = req.authUser.role === "admin" ? req.activeBranch : "";
+  return res.json({ products: products.filter((product) => !isNonRetailCatalogProduct(product)).map((product) => {
+    const allStock = product.branchStock instanceof Map ? Object.fromEntries(product.branchStock) : product.branchStock || {};
+    const allThresholds = product.branchThresholds instanceof Map ? Object.fromEntries(product.branchThresholds) : product.branchThresholds || {};
+    const branchStock = scopedBranch ? { [scopedBranch]: getBranchValue(allStock, scopedBranch) } : allStock;
+    const branchThresholds = scopedBranch
+      ? (Object.hasOwn(allThresholds, scopedBranch) ? { [scopedBranch]: getBranchValue(allThresholds, scopedBranch) } : {})
+      : allThresholds;
+    return {
+      id: String(product._id), name: product.name, sku: product.sku,
+      threshold: Number(product.threshold || 0), branchStock, branchThresholds,
+    };
+  }) });
 };
 
 const createProduct = async (req, res) => {
@@ -1003,11 +1031,17 @@ const createProduct = async (req, res) => {
     });
   }
 
-  const normalizedBranchStock = BRANCHES.reduce((acc, branch) => {
-    const value = Number(branchStock?.[branch]) || 0;
-    acc[branch] = Math.max(0, value);
-    return acc;
-  }, {});
+  if (branchStock === null || typeof branchStock !== "object" || Array.isArray(branchStock)) {
+    return res.status(400).json({ message: "Branch stock must contain whole-unit quantities." });
+  }
+  const normalizedBranchStock = {};
+  for (const branch of BRANCHES) {
+    const value = parseNonnegativeWholeQuantity(branchStock[branch] ?? 0);
+    if (value === null) {
+      return res.status(400).json({ message: `Stock for ${branch} must be a nonnegative whole number.`, field: "branchStock" });
+    }
+    normalizedBranchStock[branch] = value;
+  }
 
   if (req.authUser.role !== "superadmin") {
     const scoped = req.activeBranch;
@@ -1019,6 +1053,10 @@ const createProduct = async (req, res) => {
     (sum, value) => sum + value,
     0,
   );
+  const initialStock = parseNonnegativeWholeQuantity(stock);
+  if (initialStock === null || !Number.isSafeInteger(totalStock)) {
+    return res.status(400).json({ message: "Stock must be a nonnegative whole number within the supported range.", field: "stock" });
+  }
 
   try {
     const product = await Product.create({
@@ -1030,7 +1068,7 @@ const createProduct = async (req, res) => {
       specs: String(specs || "").trim(),
       features: Array.isArray(features) ? features.filter(Boolean) : [],
       image: String(image || "").trim(),
-      stock: totalStock || Number(stock) || 0,
+      stock: totalStock || initialStock,
       branchStock: normalizedBranchStock,
       threshold: Number(threshold) || 0,
       price: Number(price) || 0,
@@ -1078,25 +1116,30 @@ const restockProduct = async (req, res) => {
     return res.status(404).json({ message: "Product not found" });
   }
 
-  const qty = Number(quantity);
-  if (!Number.isFinite(qty) || qty <= 0) {
+  const qty = parsePositiveWholeQuantity(quantity);
+  if (qty === null) {
     return res
       .status(400)
-      .json({ message: "quantity must be a positive number" });
+      .json({ message: "Quantity must be a positive whole number within the supported range.", field: "quantity" });
+  }
+
+  if (req.authUser.role === "superadmin" && !BRANCHES.includes(branch)) {
+    return res.status(400).json({ message: "A valid restock branch is required.", field: "branch" });
+  }
+
+  const targetBranch = req.authUser.role === "superadmin" ? branch : req.activeBranch;
+  if (!Number.isSafeInteger(Number(product.stock || 0) + qty) ||
+    !Number.isSafeInteger(Number(product.branchStock?.get(targetBranch) || 0) + qty)) {
+    return res.status(400).json({ message: "The resulting stock exceeds the supported range.", field: "quantity" });
   }
 
   if (req.authUser.role !== "superadmin") {
     const scopedBranch = req.activeBranch;
     const current = Number(product.branchStock?.get(scopedBranch) || 0);
     product.branchStock.set(scopedBranch, current + qty);
-  } else if (branch && BRANCHES.includes(branch)) {
+  } else {
     const current = Number(product.branchStock?.get(branch) || 0);
     product.branchStock.set(branch, current + qty);
-  } else {
-    BRANCHES.forEach((name) => {
-      const current = Number(product.branchStock?.get(name) || 0);
-      product.branchStock.set(name, current + qty);
-    });
   }
 
   if (Array.isArray(features)) {
@@ -1130,11 +1173,11 @@ const updateBranchStock = async (req, res) => {
     return res.status(400).json({ message: "A valid branch is required" });
   }
 
-  const qty = Number(quantity);
-  if (!Number.isFinite(qty) || qty <= 0) {
+  const qty = parsePositiveWholeQuantity(quantity);
+  if (qty === null) {
     return res
       .status(400)
-      .json({ message: "quantity must be a positive number" });
+      .json({ message: "Quantity must be a positive whole number within the supported range.", field: "quantity" });
   }
 
   if (action !== "add") {
@@ -1145,6 +1188,9 @@ const updateBranchStock = async (req, res) => {
 
   const current = Number(product.branchStock?.get(scopedBranch) || 0);
   const next = current + qty;
+  if (!Number.isSafeInteger(next) || !Number.isSafeInteger(Number(product.stock || 0) + qty)) {
+    return res.status(400).json({ message: "The resulting stock exceeds the supported range.", field: "quantity" });
+  }
   product.branchStock.set(scopedBranch, next);
   const summedStock = BRANCHES.reduce(
     (sum, name) => sum + Number(product.branchStock?.get(name) || 0),
@@ -1417,6 +1463,34 @@ const deleteProduct = async (req, res) => {
   return res.json({ message: "Product removed from the catalog and archived safely.", archived: true });
 };
 
+const setProductArchived = async (req, res, archived) => {
+  if (!requireInventoryOwner(req, res)) return null;
+  const productId = String(req.params.productId || "");
+  if (!/^[a-f\d]{24}$/i.test(productId)) return res.status(400).json({ message: "Select a valid product." });
+  const product = await Product.findById(productId);
+  if (!product) return res.status(404).json({ message: "Product not found." });
+  if (product.isActive === !archived) return res.json({ product: product.toJSON(), archived });
+  product.isActive = !archived;
+  await product.save();
+  try {
+    await AuditLog.create({
+      action: "product_updated",
+      user: req.authUser._id,
+      entityType: "product",
+      entityId: product._id,
+      changeDetails: { before: { isActive: archived }, after: { isActive: !archived } },
+      description: archived ? "Product archived from customer catalog" : "Product restored to active catalog",
+    });
+  } catch (auditError) {
+    // The product transition succeeded. Do not invite a repeated mutation.
+    console.error("Unable to record product lifecycle audit:", auditError);
+  }
+  return res.json({ product: product.toJSON(), archived, message: archived ? "Product archived. History and stock were retained." : "Product restored. Normal stock and publication rules apply." });
+};
+
+const archiveProduct = (req, res) => setProductArchived(req, res, true);
+const restoreProduct = (req, res) => setProductArchived(req, res, false);
+
 const getProductImage = async (req, res) => {
   const { productId } = req.params;
   try {
@@ -1440,6 +1514,7 @@ module.exports = {
   listProducts,
   listPublicProducts,
   listLowStockProducts,
+  listStockStatus,
   getProductImage,
   getProductSerialUnit,
   updateProductSerialUnit,
@@ -1448,4 +1523,6 @@ module.exports = {
   updateBranchStock,
   updateProduct,
   deleteProduct,
+  archiveProduct,
+  restoreProduct,
 };

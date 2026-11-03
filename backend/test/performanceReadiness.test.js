@@ -55,7 +55,10 @@ test("commerce dashboard uses one branch-scoped aggregation and keeps its public
   const pipeline = buildCommerceAnalyticsPipeline("Cavite");
   assert.deepEqual(pipeline[0], {
     $match: {
-      $or: [{ customerBranch: "Cavite" }, { stockSourceBranch: "Cavite" }],
+      $or: [
+        { stockSourceBranch: "Cavite" },
+        { stockSourceBranch: { $in: ["", null] }, customerBranch: "Cavite" },
+      ],
     },
   });
   assert.ok(pipeline.some((stage) => stage.$facet));

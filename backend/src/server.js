@@ -8,6 +8,7 @@ const env = require("./config/env");
 const connectDb = require("./config/db");
 const { seedDemoUsers } = require("./seed/seedDemoUsers");
 const { seedDashboardData } = require("./seed/seedDashboardData");
+const { shouldSeedDemoData } = require("./seed/demoSeedPolicy");
 
 // Debug - check if it loaded
 console.log("MONGODB_URI loaded:", process.env.MONGODB_URI ? "YES" : "NO");
@@ -24,9 +25,12 @@ process.on("uncaughtException", (error) => {
 
 const start = async () => {
   try {
+    const seedDemo = shouldSeedDemoData({ flag: process.env.AEROPULSE_SEED_DEMO_DATA, mongoUri: process.env.MONGODB_URI, nodeEnv: process.env.NODE_ENV });
     await connectDb();
-    await seedDemoUsers();
-    await seedDashboardData();
+    if (seedDemo) {
+      await seedDemoUsers();
+      await seedDashboardData();
+    }
 
     const server = app.listen(env.port, env.host, () => {
       const lanAddresses = Object.values(os.networkInterfaces())

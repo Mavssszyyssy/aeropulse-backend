@@ -4,6 +4,7 @@ const AuditLog = require("../models/AuditLog");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { BRANCHES } = require("../domain/branchRouting");
 const { ensureProductSerialUnits } = require("./productController");
+const { parsePositiveWholeQuantity } = require("../domain/quantityValidation");
 
 /**
  * Owner creates a restock order
@@ -17,6 +18,9 @@ const createRestockOrder = async (req, res) => {
 
   if (!supplier?.name || !branches?.length || !products?.length) {
     return res.status(400).json({ message: "Supplier, branches, and products are required" });
+  }
+  if (!Array.isArray(products) || products.some((entry) => parsePositiveWholeQuantity(entry?.quantity) === null)) {
+    return res.status(400).json({ message: "Each restock quantity must be a positive whole number within the supported range." });
   }
 
   if (!expectedDeliveryStart || !expectedDeliveryEnd) {
@@ -151,6 +155,10 @@ const markRestockReceived = async (req, res) => {
     return res.status(400).json({ message: "Only incoming orders can be marked as received" });
   }
 
+  if (Array.isArray(receivedProducts) && receivedProducts.some((entry) => parsePositiveWholeQuantity(entry?.quantity) === null)) {
+    return res.status(400).json({ message: "Each received quantity must be a positive whole number within the supported range." });
+  }
+
   try {
     // Update received quantities
     if (Array.isArray(receivedProducts)) {
@@ -172,12 +180,24 @@ const markRestockReceived = async (req, res) => {
       products.map((product) => [String(product._id), product]),
     );
 
+    // Validate the entire receipt before changing any product. A malformed
+    // later line must not leave earlier lines restocked.
+    for (const productEntry of restockOrder.products) {
+      const product = productsById.get(String(productEntry.product));
+      if (!product) return res.status(400).json({ message: "A restock product no longer exists." });
+      const receivedQty = parsePositiveWholeQuantity(productEntry.receivedQuantity || productEntry.quantity);
+      if (receivedQty === null || !Number.isSafeInteger(Number(product.stock || 0) + receivedQty * restockOrder.branches.length) ||
+        restockOrder.branches.some((branch) => !BRANCHES.includes(branch) ||
+          !Number.isSafeInteger(Number(product.branchStock.get(branch) || 0) + receivedQty))) {
+        return res.status(400).json({ message: "Received stock exceeds the supported whole-unit range." });
+      }
+    }
+
     // Update inventory
     for (const productEntry of restockOrder.products) {
       const product = productsById.get(String(productEntry.product));
       if (product) {
-        const receivedQty = productEntry.receivedQuantity || productEntry.quantity;
-
+        const receivedQty = parsePositiveWholeQuantity(productEntry.receivedQuantity || productEntry.quantity);
         // Add received quantity to each branch
         for (const branch of restockOrder.branches) {
           const current = Number(product.branchStock.get(branch) || 0);

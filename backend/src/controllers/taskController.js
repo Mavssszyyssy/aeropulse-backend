@@ -16,7 +16,7 @@ const Notification = require("../models/Notification");
 const { notifyOperationalStaff, createDedupedNotification } = require("../services/operationalNotificationService");
 const ServiceHistory = require("../models/ServiceHistory");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
-const { BRANCH_PRIORITY, resolvePreferredBranch } = require("../domain/branchRouting");
+const { BRANCHES, BRANCH_PRIORITY, resolvePreferredBranch } = require("../domain/branchRouting");
 const { buildActivatedWarranty, appendWarrantyEvent, effectiveWarrantyStatus, getWarrantyCoverage } = require("../domain/warrantyService");
 const { validateTechnicianTaskCompletion } = require("../domain/technicianTaskCompletion");
 const { completeServiceForUnit } = require("../domain/serviceCompletionService");
@@ -24,7 +24,7 @@ const { assessServiceEvidence, serviceTypeFor } = require("../domain/serviceEvid
 const { formatDateKeyInTimeZone, parseInstallationDateTime } = require("../utils/dateTime");
 const { buildTaskScheduleDetails, normalizeTaskSchedule } = require("../domain/taskSchedule");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
-const { getScheduledDateError } = require("../utils/scheduling");
+const { getScheduledAppointmentError, getServiceAppointmentError } = require("../utils/scheduling");
 const {
   getTaskMutationBlocker,
   hasVerifiedTaskCheckIn,
@@ -994,8 +994,8 @@ const hydrateTaskResponse = (task, { includeProofMedia = true } = {}) => {
     unitType: payload.unitType || task.unitType || "",
     issueType: payload.issueType || task.issueType || "",
     description: payload.description || task.description || "",
-    scheduledDate: payload.scheduledDate || task.scheduledDate || "",
-    timeSlot: payload.timeSlot || task.timeSlot || "",
+    scheduledDate: task.scheduledDate || payload.scheduledDate || "",
+    timeSlot: task.timeSlot || payload.timeSlot || "",
     priority: task.priority,
     assignedTechnicianId: task.assignedTechnicianId,
     assignedTechnicianName: task.assignedTechnicianName,
@@ -1209,7 +1209,8 @@ const createTask = async (req, res) => {
     }
 
     const payload = withoutObsoleteTeamAssignment(req.body || {});
-    const dateError = getScheduledDateError(payload.scheduledDate || payload.preferredDate, "Scheduled date");
+    const appointmentValidator = payload.requestId || payload.serviceRequestId ? getServiceAppointmentError : getScheduledAppointmentError;
+    const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
     const nowIso = new Date().toISOString();
     const taskCode = String(payload.taskCode || `TSK-${Date.now()}`).trim();
@@ -1218,6 +1219,9 @@ const createTask = async (req, res) => {
     const address = String(payload.address || "TBD").trim();
     if (["completed", "cancelled"].includes(normalizeStatus(payload.status))) return res.status(400).json({ message: "Create the work order first, then complete it through the verified technician workflow." });
     const taskBranch = req.authUser.role === "superadmin" ? String(payload.branch || "") : req.activeBranch;
+    if (!taskBranch || !BRANCHES.includes(taskBranch)) {
+      return res.status(400).json({ message: "Choose a valid work-order branch." });
+    }
     const requestedTechnicianId = String(payload.assignedTechnicianId || "").trim();
     if (!requestedTechnicianId) return res.status(400).json({ message: "Select one technician before creating this work order." });
     const technician = await resolveTaskTechnician(requestedTechnicianId, taskBranch);
@@ -1274,7 +1278,8 @@ const updateTask = async (req, res) => {
     }
 
     const payload = withoutObsoleteTeamAssignment(req.body || {});
-    const dateError = getScheduledDateError(payload.scheduledDate || payload.preferredDate, "Scheduled date");
+    const appointmentValidator = payload.requestId || payload.serviceRequestId || task.requestId || task.payload?.requestId ? getServiceAppointmentError : getScheduledAppointmentError;
+    const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
     const requestedStatus = parseTaskStatus(payload.status);
     const costError = validateServiceCosts(payload);

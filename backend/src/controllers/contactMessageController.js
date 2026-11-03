@@ -1,5 +1,7 @@
 const crypto = require("crypto");
 const ContactMessage = require("../models/ContactMessage");
+const User = require("../models/User");
+const { buildOperationalContactFilter } = require("../domain/operationalContactMessages");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 const {
   createDedupedNotification,
@@ -57,14 +59,20 @@ const categoryLabel = (category = "general") => ({
 const createContactMessage = async (req, res) => {
   try {
     const user = req.authUser;
-    const category = VALID_CATEGORIES.has(clean(req.body.category, 30))
-      ? clean(req.body.category, 30)
-      : "general";
-    const subject = clean(req.body.subject, 160);
-    const message = clean(req.body.message, 3000);
+    const payload = req.body || {};
+    const category = clean(payload.category, 30);
+    if (!VALID_CATEGORIES.has(category)) return res.status(400).json({ message: "Choose a valid support topic." });
+    if (typeof payload.subject !== "string" || typeof payload.message !== "string") {
+      return res.status(400).json({ message: "Subject and message are required." });
+    }
+    if (payload.subject.trim().length > 160) return res.status(400).json({ message: "Subject must be 160 characters or fewer." });
+    if (payload.message.trim().length > 3000) return res.status(400).json({ message: "Message must be 3000 characters or fewer." });
+    const subject = clean(payload.subject, 160);
+    const message = clean(payload.message, 3000);
     if (!subject || !message) {
       return res.status(400).json({ message: "Subject and message are required." });
     }
+    if (subject.length < 3) return res.status(400).json({ message: "Subject must be at least 3 characters." });
     if (message.length < 10) {
       return res.status(400).json({ message: "Please add a little more detail so the support team can help." });
     }
@@ -147,18 +155,42 @@ const createContactMessage = async (req, res) => {
 const staffScope = (req) => {
   if (req.authUser.role === "superadmin") return {};
   const branch = clean(req.activeBranch, 80);
-  return branch ? { $or: [{ branch }, { branch: "" }] } : {};
+  return branch ? { $or: [{ branch }, { branch: "" }] } : null;
 };
+
+const deletedCustomerIds = () => User.distinct("_id", {
+  role: "customer",
+  $or: [{ isDeleted: true }, { accountStatus: "deleted" }],
+});
 
 const listContactMessages = async (req, res) => {
   try {
+    const scope = staffScope(req);
+    if (!scope) return res.status(403).json({ message: "A valid branch is required to access customer messages." });
     const status = clean(req.query.status, 30);
-    const filter = { ...staffScope(req) };
-    if (VALID_STATUSES.has(status)) filter.status = status;
+    const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
+    const limit = Math.max(1, Math.min(100, Number.parseInt(req.query.limit, 10) || 20));
+    const base = { scope, deletedCustomerIds: await deletedCustomerIds() };
+    const filter = buildOperationalContactFilter({
+      ...base,
+      status: VALID_STATUSES.has(status) ? status : "",
+      search: req.query.search,
+    });
     const messages = await ContactMessage.find(filter)
       .sort({ createdAt: -1 })
-      .limit(300);
-    return res.json({ messages });
+      .skip((page - 1) * limit)
+      .limit(limit);
+    const [total, all, needsReview, inProgress, resolved, closed] = await Promise.all([
+      ContactMessage.countDocuments(filter),
+      ContactMessage.countDocuments(buildOperationalContactFilter(base)),
+      ...["new", "in_progress", "resolved", "closed"].map((item) =>
+        ContactMessage.countDocuments(buildOperationalContactFilter({ ...base, status: item }))),
+    ]);
+    return res.json({
+      messages,
+      pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
+      counts: { total: all, new: needsReview, active: inProgress, resolved: resolved + closed },
+    });
   } catch (error) {
     console.error("Failed to list contact messages:", error);
     return res.status(500).json({ message: "Unable to load customer messages." });
@@ -167,20 +199,58 @@ const listContactMessages = async (req, res) => {
 
 const listMyContactMessages = async (req, res) => {
   try {
-    const messages = await ContactMessage.find({ customer: req.authUser._id })
+    const limit = Math.max(1, Math.min(50, Number.parseInt(req.query?.limit, 10) || 20));
+    const before = String(req.query?.before || "");
+    let cursor = null;
+    if (before) {
+      const [dateText, id] = before.split("|");
+      const date = new Date(dateText);
+      if (!dateText || Number.isNaN(date.getTime()) || !require("mongoose").isValidObjectId(id)) {
+        return res.status(400).json({ message: "Invalid support history cursor." });
+      }
+      cursor = { date, id };
+    }
+    const filter = { customer: req.authUser._id };
+    if (cursor) filter.$or = [
+      { createdAt: { $lt: cursor.date } },
+      { createdAt: cursor.date, _id: { $lt: cursor.id } },
+    ];
+    const rows = await ContactMessage.find(filter)
       .select("ticketCode category subject message branch status adminReply repliedAt createdAt updatedAt timeline")
-      .sort({ createdAt: -1 })
-      .limit(100);
-    return res.json({ messages });
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1);
+    const messages = rows.slice(0, limit);
+    const last = messages.at(-1);
+    return res.json({ messages, pagination: {
+      hasMore: rows.length > limit,
+      nextCursor: rows.length > limit && last ? `${new Date(last.createdAt).toISOString()}|${last._id}` : "",
+    } });
   } catch (error) {
     console.error("Failed to load customer support history:", error);
     return res.status(500).json({ message: "Unable to load your support messages." });
   }
 };
 
+const getMyContactMessage = async (req, res) => {
+  try {
+    if (!require("mongoose").isValidObjectId(req.params.id)) return res.status(404).json({ message: "Support message not found." });
+    const message = await ContactMessage.findOne({ _id: req.params.id, customer: req.authUser._id })
+      .select("ticketCode category subject message branch status adminReply repliedAt createdAt updatedAt timeline");
+    if (!message) return res.status(404).json({ message: "Support message not found." });
+    return res.json({ message });
+  } catch (_error) {
+    return res.status(500).json({ message: "Unable to load this support message." });
+  }
+};
+
 const updateContactMessage = async (req, res) => {
   try {
-    const item = await ContactMessage.findOne({ _id: req.params.id, ...staffScope(req) });
+    const scope = staffScope(req);
+    if (!scope) return res.status(403).json({ message: "A valid branch is required to access customer messages." });
+    const item = await ContactMessage.findOne(buildOperationalContactFilter({
+      scope: { _id: req.params.id, ...scope },
+      deletedCustomerIds: await deletedCustomerIds(),
+    }));
     if (!item) return res.status(404).json({ message: "Customer message not found." });
 
     const requestedStatus = clean(req.body.status, 30);
@@ -238,4 +308,4 @@ const updateContactMessage = async (req, res) => {
   }
 };
 
-module.exports = { createContactMessage, listContactMessages, listMyContactMessages, updateContactMessage };
+module.exports = { createContactMessage, listContactMessages, listMyContactMessages, getMyContactMessage, updateContactMessage };

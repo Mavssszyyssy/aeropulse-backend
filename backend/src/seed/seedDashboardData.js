@@ -1,5 +1,6 @@
 const Task = require("../models/Task");
 const Order = require("../models/Order");
+const User = require("../models/User");
 
 const taskSeeds = [
   {
@@ -65,9 +66,14 @@ const assignTechnicianToTaskSeeds = (technician) => {
   }));
 };
 
+const findCanonicalDemoTechnician = (UserModel = User) => UserModel.findOne({
+  role: "technician",
+  $or: [{ alias: "tech.main" }, { username: "tech.main" }],
+});
+
 const seedDashboardData = async () => {
-  // Get technician user for assignment
-  const technician = await require("../models/User").findOne({ email: "tech@example.com" });
+  // Seed identity is the account alias; its contact email may have changed.
+  const technician = await findCanonicalDemoTechnician();
   const updatedTaskSeeds = assignTechnicianToTaskSeeds(technician);
 
   for (const seed of updatedTaskSeeds) {
@@ -85,4 +91,4 @@ const seedDashboardData = async () => {
   }
 };
 
-module.exports = { seedDashboardData, assignTechnicianToTaskSeeds };
+module.exports = { seedDashboardData, assignTechnicianToTaskSeeds, findCanonicalDemoTechnician };

@@ -253,15 +253,33 @@ const markAllNotificationsRead = async (req, res) => {
 
 const registerPushToken = async (req, res) => {
   const expoPushToken = String(req.body?.expoPushToken || "").trim();
-  if (!/^(ExponentPushToken|ExpoPushToken)\[.+\]$/.test(expoPushToken)) {
+  if (!/^(ExponentPushToken|ExpoPushToken)\[[^\]\s]{1,200}\]$/.test(expoPushToken)) {
     return res.status(400).json({ message: "A valid Expo push token is required." });
   }
 
+  // A physical device may be used by different accounts. Move its token to
+  // the authenticated account so a later login cannot receive another user's alerts.
+  await User.updateMany(
+    { _id: { $ne: req.authUser._id }, expoPushTokens: expoPushToken },
+    { $pull: { expoPushTokens: expoPushToken } },
+  );
   await User.updateOne(
     { _id: req.authUser._id },
     { $addToSet: { expoPushTokens: expoPushToken } },
   );
   return res.json({ message: "Push notifications enabled for this device." });
+};
+
+const unregisterPushToken = async (req, res) => {
+  const expoPushToken = String(req.body?.expoPushToken || "").trim();
+  if (!/^(ExponentPushToken|ExpoPushToken)\[[^\]\s]{1,200}\]$/.test(expoPushToken)) {
+    return res.status(400).json({ message: "A valid Expo push token is required." });
+  }
+  await User.updateOne(
+    { _id: req.authUser._id },
+    { $pull: { expoPushTokens: expoPushToken } },
+  );
+  return res.json({ message: "Push notifications disabled for this device." });
 };
 
 module.exports = {
@@ -271,5 +289,6 @@ module.exports = {
   archiveNotification,
   restoreNotification,
   registerPushToken,
+  unregisterPushToken,
   applyRoleRelevance,
 };

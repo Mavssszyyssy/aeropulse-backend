@@ -7,6 +7,7 @@ const ADMIN_PROTECTED_KEYS = new Set([
   "branchAddress",
   "company",
   "companyName",
+  "currency",
   "permissions",
   "role",
   "roles",
@@ -21,7 +22,7 @@ const containsProtectedAdminFields = (payload = {}) => {
 
   const general = payload.general;
   if (general && typeof general === "object") {
-    if (["address", "branch", "branchAddress", "companyName", "storeName"]
+    if (["address", "branch", "branchAddress", "companyName", "currency", "storeName"]
       .some((key) => hasOwn(general, key))) return true;
   }
 

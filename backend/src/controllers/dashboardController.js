@@ -3,12 +3,17 @@ const Task = require("../models/Task");
 const Order = require("../models/Order");
 const ServiceRequest = require("../models/ServiceRequest");
 const { DEFAULT_BUSINESS_TIME_ZONE } = require("../utils/dateTime");
+const { resolveReportRange } = require("../domain/operationalReports");
+const { BRANCHES } = require("../domain/branchRouting");
+const { summarizeAcquisitionRows } = require("../domain/acquisitionAttribution");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ORDER_STAGE_LABELS = {
   to_pay: "To pay",
   to_deliver: "To deliver",
+  to_dispatch: "To dispatch",
   to_install: "To install",
+  for_rescheduling: "For rescheduling",
   complete: "Complete",
   cancelled: "Cancelled",
 };
@@ -23,8 +28,11 @@ const getOrderQuery = (branch = "") => {
   const query = {};
   if (branch) {
     query.$or = [
-      { customerBranch: branch },
       { stockSourceBranch: branch },
+      // Match the same effective branch used by the branch-performance facet.
+      // A customer's home branch must not also count an order fulfilled by a
+      // different stock-source branch in the Admin dashboard.
+      { stockSourceBranch: { $in: ["", null] }, customerBranch: branch },
     ];
   }
   return query;
@@ -50,7 +58,7 @@ const trimmedStringExpression = (value, fallback = "") => ({
   },
 });
 
-const buildCommerceAnalyticsPipeline = (branch = "") => {
+const buildCommerceAnalyticsPipeline = (branch = "", range = null) => {
   const timeZone = process.env.APP_TIME_ZONE || DEFAULT_BUSINESS_TIME_ZONE;
   const salesDate = { $ifNull: ["$paymongo.paidAt", "$createdAt"] };
   const year = { $year: { date: salesDate, timezone: timeZone } };
@@ -98,6 +106,7 @@ const buildCommerceAnalyticsPipeline = (branch = "") => {
         },
       },
     },
+    ...(range ? [{ $match: { _analyticsSalesDate: { $gte: range.from, $lte: range.to } } }] : []),
     {
       $set: {
         _analyticsPaid: {
@@ -234,6 +243,16 @@ const buildCommerceAnalyticsPipeline = (branch = "") => {
           },
           { $sort: { revenue: -1, orders: -1 } },
         ],
+        branchProducts: [
+          { $match: { _analyticsPaid: true } },
+          { $unwind: "$items" },
+          { $group: {
+            _id: { branch: "$_analyticsBranch", productId: trimmedStringExpression("$items.productId", ""), product: trimmedStringExpression("$items.name", "Unnamed product") },
+            quantity: { $sum: numericExpression("$items.quantity") },
+            revenue: { $sum: { $multiply: [numericExpression("$items.quantity"), numericExpression("$items.price")] } },
+          } },
+          { $sort: { "_id.branch": 1, revenue: -1 } },
+        ],
       },
     },
   ];
@@ -245,6 +264,12 @@ const normalizeCommerceAnalytics = (facets = {}) => {
   const rawRevenue = Math.max(0, Number(summaryRow.revenue || 0));
   const revenue = roundMoney(rawRevenue);
   const stageRows = new Map((facets.orderStages || []).map((row) => [String(row._id), row]));
+  const productsByBranch = new Map();
+  for (const row of facets.branchProducts || []) {
+    const name = String(row._id?.branch || "Unassigned");
+    if (!productsByBranch.has(name)) productsByBranch.set(name, []);
+    productsByBranch.get(name).push({ productId: String(row._id?.productId || ""), product: String(row._id?.product || "Unnamed product"), quantity: Number(row.quantity || 0), revenue: roundMoney(row.revenue) });
+  }
   const series = (rows = [], key, formatKey = (value) => value) => rows.map((row) => ({
     [key]: formatKey(row._id),
     sales: roundMoney(row.sales),
@@ -289,40 +314,26 @@ const normalizeCommerceAnalytics = (facets = {}) => {
       orders: Number(row.orders || 0),
       paidOrders: Number(row.paidOrders || 0),
       revenue: roundMoney(row.revenue),
+      products: productsByBranch.get(String(row._id || "Unassigned")) || [],
     })),
   };
 };
 
-const getCommerceAnalytics = async (branch = "") => {
-  const [facets = {}] = await Order.aggregate(buildCommerceAnalyticsPipeline(branch));
+const getCommerceAnalytics = async (branch = "", range = null) => {
+  const [facets = {}] = await Order.aggregate(buildCommerceAnalyticsPipeline(branch, range));
   return normalizeCommerceAnalytics(facets);
 };
 
-const getCustomerAcquisitionBySource = async () => {
-  return User.aggregate([
-    { $match: { role: "customer" } },
-    {
-      $project: {
-        source: {
-          $let: {
-            vars: { raw: trimmedStringExpression("$sourceOfAcquisition", "other") },
-            in: {
-              $toUpper: {
-                $replaceAll: {
-                  input: { $cond: [{ $eq: ["$$raw", ""] }, "other", "$$raw"] },
-                  find: "_",
-                  replacement: " ",
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    { $group: { _id: "$source", count: { $sum: 1 } } },
-    { $sort: { count: -1 } },
-    { $project: { _id: 0, source: "$_id", count: 1 } },
-  ]);
+const buildCustomerAcquisitionPipeline = (branch = "", range = null) => [
+  { $match: { role: "customer", ...(branch ? { activeBranch: branch } : {}), ...(range ? { createdAt: { $gte: range.from, $lte: range.to } } : {}) } },
+  // Group by the recorded value on each customer record. Missing values are
+  // unknown; an explicitly recorded "other" remains its own category.
+  { $group: { _id: "$sourceOfAcquisition", count: { $sum: 1 } } },
+];
+
+const getCustomerAcquisitionBySource = async (branch = "", range = null) => {
+  const rows = await User.aggregate(buildCustomerAcquisitionPipeline(branch, range));
+  return summarizeAcquisitionRows(rows);
 };
 
 const activeTechnicianQuery = (activeBranch = "") => {
@@ -408,7 +419,7 @@ const getTechnicianDashboard = async (activeBranch = "") => {
   };
 };
 
-const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = false } = {}) => {
+const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = false, range = null } = {}) => {
   const taskQuery = { status: { $in: ["pending", "accepted", "on-the-way", "arrived", "installing", "in-progress", "on-hold"] } };
   const techQuery = activeTechnicianQuery();
   const customerQuery = { role: "customer" };
@@ -420,7 +431,7 @@ const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = fa
     serviceQuery.$or = [{ branch: activeBranch }, { branch: "" }, { branch: { $exists: false } }];
   }
   const [commerce, pendingTasks, activeTechnicians, totalCustomers, serviceRequests, technicianKPIs] = await Promise.all([
-    getCommerceAnalytics(activeBranch),
+    getCommerceAnalytics(activeBranch, range),
     Task.countDocuments(taskQuery),
     User.countDocuments(techQuery),
     User.countDocuments(customerQuery),
@@ -444,20 +455,21 @@ const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = fa
   };
 };
 
-const getSuperAdminDashboard = async ({ includeAllTechnicians = false } = {}) => {
+const getSuperAdminDashboard = async ({ includeAllTechnicians = false, branch = "", range = null } = {}) => {
   const oneDayAgo = new Date(Date.now() - DAY_MS);
+  const customerScope = branch ? { activeBranch: branch } : {};
   const [totalUsers, admins, technicians, customers, recentlyActiveUsers, commerce, customerAcquisition, technicianKPIs] = await Promise.all([
-    User.countDocuments({}),
-    User.countDocuments({ role: { $in: ["admin", "superadmin"] } }),
-    User.countDocuments({ role: "technician" }),
-    User.countDocuments({ role: "customer" }),
-    User.countDocuments({ lastLogin: { $gte: oneDayAgo } }),
-    getCommerceAnalytics(),
-    getCustomerAcquisitionBySource(),
-    getTechnicianKPIs(),
+    User.countDocuments(customerScope),
+    User.countDocuments({ role: { $in: ["admin", "superadmin"] }, ...(branch ? { assignedBranch: branch } : {}) }),
+    User.countDocuments({ role: "technician", ...(branch ? { assignedBranch: branch } : {}) }),
+    User.countDocuments({ role: "customer", ...customerScope }),
+    User.countDocuments({ lastLogin: { $gte: oneDayAgo }, ...customerScope }),
+    getCommerceAnalytics(branch, range),
+    getCustomerAcquisitionBySource(branch, range),
+    getTechnicianKPIs(branch),
   ]);
   return {
-    stats: { totalUsers, admins, technicians, customers, recentlyActiveUsers, totalSales: commerce.summary.revenue, totalOrders: commerce.summary.totalOrders, paidOrders: commerce.summary.paidOrders, averageOrderValue: commerce.summary.averageOrderValue },
+    stats: { totalUsers, admins, technicians, customers, customerAcquisitionTotal: customerAcquisition.reduce((sum, item) => sum + item.count, 0), recentlyActiveUsers, totalSales: commerce.summary.revenue, totalOrders: commerce.summary.totalOrders, paidOrders: commerce.summary.paidOrders, cancelledOrders: commerce.summary.cancelledOrders, averageOrderValue: commerce.summary.averageOrderValue, branchLabel: branch || "All branches" },
     analytics: { ...commerce, customerAcquisition, technicianKPIs: includeAllTechnicians ? technicianKPIs : technicianKPIs.slice(0, 10) },
   };
 };
@@ -466,11 +478,19 @@ const getMyDashboard = async (req, res) => {
   try {
     const role = req.authUser.role;
     const includeAllTechnicians = String(req.query?.includeAllTechnicians || "").toLowerCase() === "true";
+    const from = String(req.query?.from || "").trim();
+    const to = String(req.query?.to || "").trim();
+    if (Boolean(from) !== Boolean(to)) return res.status(400).json({ message: "Select both From and To dates." });
+    const range = from && to ? resolveReportRange({ from, to }) : null;
+    const requestedBranch = String(req.query?.branch || "").trim();
+    if (role === "superadmin" && requestedBranch && requestedBranch !== "all" && !BRANCHES.includes(requestedBranch)) return res.status(400).json({ message: "Select an active branch." });
+    const branch = role === "superadmin" && requestedBranch !== "all" ? requestedBranch : "";
     if (role === "technician") return res.json({ role, ...(await getTechnicianDashboard(req.activeBranch)) });
-    if (role === "admin") return res.json({ role, ...(await getAdminDashboard(req.activeBranch, { includeAllTechnicians })) });
-    if (role === "superadmin") return res.json({ role, ...(await getSuperAdminDashboard({ includeAllTechnicians })) });
+    if (role === "admin") return res.json({ role, ...(await getAdminDashboard(req.activeBranch, { includeAllTechnicians, range })) });
+    if (role === "superadmin") return res.json({ role, ...(await getSuperAdminDashboard({ includeAllTechnicians, branch, range })) });
     return res.json({ role, stats: { message: "Customer dashboard uses storefront pages." } });
   } catch (error) {
+    if (error?.statusCode === 400) return res.status(400).json({ message: error.message });
     console.error("Failed to load dashboard:", error);
     return res.status(500).json({ message: "Unable to load dashboard right now." });
   }
@@ -478,6 +498,7 @@ const getMyDashboard = async (req, res) => {
 
 module.exports = {
   activeTechnicianQuery,
+  buildCustomerAcquisitionPipeline,
   buildCommerceAnalyticsPipeline,
   getCommerceAnalytics,
   getCustomerAcquisitionBySource,

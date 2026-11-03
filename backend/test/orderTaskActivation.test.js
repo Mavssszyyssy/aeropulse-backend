@@ -117,11 +117,30 @@ test('dispatch checks technician scheduling before saving the dispatched order',
     findLinkedTaskForOrder: async () => ({ _id: 'task-1', status: 'pending', payload: {} }),
     resolveTechnicianAssignment: async () => ({ assignedTechnicianId: 'tech-1', assignedTechnicianName: 'Assigned Technician' }),
     assertNoTaskScheduleConflict: async () => { throw conflict; },
+    getScheduledAppointmentError: () => null,
     HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
   });
   await assert.rejects(applyOrderLifecycleAction(order, 'dispatch', { installationDate: '2099-10-17', timeSlot: '9:00 AM - 12:00 PM' }), error => error === conflict);
   assert.equal(order.workflowStatus, 'to_deliver');
   assert.equal(saved, 0);
+});
+
+test('dispatch rejects a missing time slot without changing order or inventory', async () => {
+  let saved = 0;
+  let reserved = 0;
+  const order = sampleOrder({ workflowStatus: 'to_deliver', installationTimeSlot: '', async save() { saved += 1; } });
+  const applyOrderLifecycleAction = vm.runInNewContext(`${lifecycleSource}\napplyOrderLifecycleAction`, {
+    lifecycleActions: { dispatch: { from: ['to_deliver'], to: 'to_dispatch', deliveryStatus: 'dispatched', status: 'paid' } },
+    isCodOrder: () => false,
+    findLinkedTaskForOrder: async () => null,
+    resolveTechnicianAssignment: async () => ({ assignedTechnicianId: 'tech-1', assignedTechnicianName: 'Assigned Technician' }),
+    reReserveReleasedOrderInventory: async () => { reserved += 1; },
+    HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
+  });
+  await assert.rejects(applyOrderLifecycleAction(order, 'dispatch', { installationDate: '2099-10-17' }), /Choose an installation date and time slot/);
+  assert.equal(order.workflowStatus, 'to_deliver');
+  assert.equal(saved, 0);
+  assert.equal(reserved, 0);
 });
 
 const recoveryStart = controllerSource.indexOf('const recoverOrder =');

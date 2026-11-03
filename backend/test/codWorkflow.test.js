@@ -9,6 +9,7 @@ const actions = vm.runInNewContext(extract("const lifecycleActions =", "const re
 const noop = async () => {};
 const buildAction = (state) => vm.runInNewContext(extract("const applyOrderLifecycleAction =", "const approveOrder") + "; applyOrderLifecycleAction", {
   ...cod, lifecycleActions: actions, HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
+  getScheduledAppointmentError: () => null,
   workflowLabel: s => s, findLinkedTaskForOrder: async () => null,
   resolveTechnicianAssignment: async options => ({ assignedTechnicianId: options.assignedTechnicianId || "", assignedTechnicianName: "Tech" }),
   assertNoTaskScheduleConflict: noop,
@@ -23,7 +24,7 @@ test("legacy pending COD dispatch reserves once and does not record arrival or p
   const order = { orderCode: "COD-1", workflowStatus: "to_pay", paymentMethod: "cod", paymentStatus: "pending", status: "pending", stockReservationStatus: "pending", save: noop };
   await assert.rejects(apply(order, "approve"), /do not require payment approval/);
   await assert.rejects(apply(order, "dispatch"), /Assign a technician/);
-  await apply(order, "dispatch", { assignedTechnicianId: "tech" });
+  await apply(order, "dispatch", { assignedTechnicianId: "tech", installationDate: "2099-10-18", timeSlot: "9:00 AM - 12:00 PM" });
   assert.equal(order.workflowStatus, "to_dispatch");
   assert.equal(order.deliveryStatus, "dispatched");
   assert.equal(order.status, "pending");
@@ -42,7 +43,7 @@ test("new checkout-reserved COD dispatch does not reserve stock again", async ()
   const state = { reservations: 0, events: [] };
   const apply = buildAction(state);
   const order = { orderCode: "COD-2", workflowStatus: "to_deliver", paymentMethod: "cod", paymentStatus: "pending", status: "pending", stockReservationStatus: "reserved", save: noop };
-  await apply(order, "dispatch", { assignedTechnicianId: "tech" });
+  await apply(order, "dispatch", { assignedTechnicianId: "tech", installationDate: "2099-10-18", timeSlot: "9:00 AM - 12:00 PM" });
   assert.equal(order.workflowStatus, "to_dispatch");
   assert.equal(state.reservations, 0);
   assert.equal(state.activated, true);

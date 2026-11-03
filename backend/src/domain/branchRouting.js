@@ -7,6 +7,14 @@ const BRANCHES = [
   "Ilocos",
 ];
 
+// Keep the legacy ordering for existing branches while admitting configured
+// branches loaded from BranchCoverage. Consumers retain the same array object.
+const setConfiguredBranches = (names = []) => {
+  const configured = Array.from(new Set(names.map((name) => String(name || "").trim()).filter(Boolean)));
+  BRANCHES.splice(0, BRANCHES.length, ...configured);
+  return BRANCHES;
+};
+
 // Used only for technician workload balancing. Customer address assignment
 // itself comes from the database-backed coverage service below.
 const BRANCH_PRIORITY = {
@@ -37,6 +45,7 @@ const getBranchSearchOrder = async (preferredBranch) =>
 
 module.exports = {
   BRANCHES,
+  setConfiguredBranches,
   BRANCH_PRIORITY,
   getAddressLookupKeys,
   resolvePreferredBranch,

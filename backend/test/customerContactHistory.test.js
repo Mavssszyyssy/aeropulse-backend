@@ -22,6 +22,7 @@ test("customer support history is scoped to the authenticated customer", async (
     status() { throw new Error("Unexpected error response"); },
   });
   assert.deepEqual(filter, { customer });
-  assert.equal(limit, 100);
+  assert.equal(limit, 21);
   assert.equal(response.messages[0].ticketCode, "MSG-123");
+  assert.deepEqual(response.pagination, { hasMore: false, nextCursor: "" });
 });

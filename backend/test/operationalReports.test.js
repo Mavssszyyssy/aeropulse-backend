@@ -54,6 +54,14 @@ test("report range includes the complete selected end date and rejects a reverse
   assert.throws(() => resolveReportRange({ from: "2026-09-11", to: "2026-09-10" }), /start date must be on or before/i);
 });
 
+test("historical report rejects future and malformed dates without inventing a range", () => {
+  const now = new Date("2026-10-26T04:00:00.000Z");
+  assert.throws(() => resolveReportRange({ from: "2026-10-27" }, now), /future/i);
+  assert.throws(() => resolveReportRange({ to: "2026-10-27" }, now), /future/i);
+  assert.throws(() => resolveReportRange({ from: "2026-02-30" }, now), /valid report start/i);
+  assert.equal(resolveReportRange({ from: "2026-09-01", to: "2026-09-02" }, now).from.toISOString(), "2026-09-01T00:00:00.000Z");
+});
+
 test("sales totals use stored order charges and only confirmed non-cancelled paid transactions", () => {
   const orders = [
     {

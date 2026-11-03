@@ -93,6 +93,24 @@ test('technician profile password change requires current password and persists 
   const valid = response();
   await changePassword({ authUser: user, body: { currentPassword: 'OldPass123!', newPassword: 'NewPass123!' } }, valid);
   assert.equal(valid.statusCode, 200);
+  assert.equal(user.security.sessionVersion, 1);
+  assert.equal(typeof valid.body.token, 'string');
   assert.ok(await bcrypt.compare('NewPass123!', user.passwordHash));
   assert.equal(await bcrypt.compare('OldPass123!', user.passwordHash), false);
+});
+
+test('administrator password change rejects a wrong current password and rotates the session', async (t) => {
+  const user = new User({ name_first: 'Branch', name_last: 'Admin', role: 'admin', isFirstLogin: false });
+  user.passwordHash = await bcrypt.hash('OldPass123!', 4);
+  const save = t.mock.method(user, 'save', async () => user);
+  const wrong = response();
+  await changePassword({ authUser: user, body: { currentPassword: 'invalid', newPassword: 'NewPass123!' } }, wrong);
+  assert.equal(wrong.statusCode, 400);
+  assert.equal(save.mock.callCount(), 0);
+  const valid = response();
+  await changePassword({ authUser: user, body: { currentPassword: 'OldPass123!', newPassword: 'NewPass123!' } }, valid);
+  assert.equal(valid.statusCode, 200);
+  assert.equal(user.security.sessionVersion, 1);
+  assert.ok(valid.body.token);
+  assert.ok(await bcrypt.compare('NewPass123!', user.passwordHash));
 });

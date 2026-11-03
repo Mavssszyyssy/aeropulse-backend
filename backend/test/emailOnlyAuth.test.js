@@ -28,7 +28,7 @@ for (const [name, action] of [['requestOtp', 'register_phone'], ['verifyOtp', 'r
 test('a phone-only session or signed SMS proof cannot register a customer', async () => {
   const token = jwt.sign({ purpose: 'registration_verification', phone: '09123456789' }, env.jwtSecret);
   const res = response();
-  await auth.register({ body: { email: 'customer@gmail.com', phone: '09123456789', password: 'StrongPass1!', registrationVerificationToken: token }, session: { registrationProgress: { formData: { phoneVerified: true, phone: '09123456789' } } } }, res);
+  await auth.register({ body: { name_first: 'Test', name_last: 'Customer', email: 'customer@gmail.com', phone: '09123456789', password: 'StrongPass1!', registrationVerificationToken: token }, session: { registrationProgress: { formData: { phoneVerified: true, phone: '09123456789' } } } }, res);
   assert.equal(res.statusCode, 403);
   assert.match(res.body.message, /Verify your email/);
 });

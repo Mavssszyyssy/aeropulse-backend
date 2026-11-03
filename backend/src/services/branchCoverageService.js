@@ -52,6 +52,9 @@ const getBranchCoverage = async ({ forceRefresh = false } = {}) => {
     coverageAreas: uniqueValues(branch.coverageAreas).map(normalize).filter(Boolean),
     nearbyBranches: uniqueValues(branch.nearbyBranches),
   }));
+  // Refresh the shared branch registry for auth, inventory and reports in this
+  // serverless instance. The cache is refreshed on authenticated requests.
+  require("../domain/branchRouting").setConfiguredBranches(coverageCache.map((branch) => branch.name));
   coverageCacheExpiresAt = Date.now() + 60 * 1000;
   return coverageCache;
 };

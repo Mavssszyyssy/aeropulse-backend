@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const { isCodOrder, hasCodCollection } = require("../utils/codPayment");
 const Order = require("../models/Order");
 const Product = require("../models/Product");
+const { parsePositiveWholeQuantity } = require("../domain/quantityValidation");
 const Task = require("../models/Task");
 const { createDedupedNotification, notifyOperationalStaff } = require("../services/operationalNotificationService");
 const User = require("../models/User");
@@ -14,6 +15,7 @@ const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenance
 const { resolveOrderPaymentStatus } = require("../domain/orderPayment");
 const { shouldActivateOrderTask } = require("../domain/orderTaskActivation");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
+const { getScheduledAppointmentError } = require("../utils/scheduling");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const {
@@ -565,10 +567,12 @@ const decrementProductStockForOrder = async (
   const query = hasBranchSnapshot
     ? {
         _id: productId,
+        isActive: { $ne: false },
         [branchStockPath]: { $gte: quantityNeeded },
       }
     : {
         _id: productId,
+        isActive: { $ne: false },
         stock: { $gte: quantityNeeded },
       };
   const inc = hasBranchSnapshot
@@ -1033,6 +1037,8 @@ const attachPaymongoCheckout = async (order, options = {}) => {
     ...(order.paymongo?.toObject?.() || order.paymongo || {}),
     checkoutSessionId: checkout.id,
     checkoutUrl: checkout.checkoutUrl,
+    paymentIntentId: "",
+    paymentId: "",
     referenceNumber: order.orderCode,
     returnTarget: normalizePaymentReturnTarget(options.returnTarget),
     successUrl,
@@ -1294,6 +1300,19 @@ const applyPaymongoEventToOrder = async (order, event, rawPayload = {}) => {
 
   if (isPaid) {
     assertPaymongoAmountMatchesOrder(order, event);
+  }
+
+  // A failed callback from an earlier attempt can arrive after the customer
+  // has opened a new checkout. Keep the newer pending session and its stock
+  // reservation; a genuine late success is still processed above.
+  if (isFailed && previousPaymongo.checkoutSessionId) {
+    const matchesCurrentAttempt =
+      (event.checkoutSessionId && String(event.checkoutSessionId) === String(previousPaymongo.checkoutSessionId)) ||
+      (event.paymentId && previousPaymongo.paymentId && String(event.paymentId) === String(previousPaymongo.paymentId)) ||
+      (event.paymentIntentId && previousPaymongo.paymentIntentId && String(event.paymentIntentId) === String(previousPaymongo.paymentIntentId));
+    if (!matchesCurrentAttempt && (event.checkoutSessionId || Number(previousPaymongo.retryAttempts || 0) > 1)) {
+      return order;
+    }
   }
 
   order.paymentProvider = "paymongo";
@@ -2271,6 +2290,24 @@ const createOrder = async (req, res) => {
       idempotencyKey,
     });
     if (existingOrder) {
+      if (isOnlinePaymentMethod(existingOrder.paymentMethod)) {
+        if (!existingOrder.paymongo?.checkoutUrl) {
+          const failedCheckout = existingOrder.workflowStatus === "cancelled" && existingOrder.paymentStatus === "failed";
+          return res.status(409).json({
+            message: failedCheckout
+              ? "The previous payment checkout could not be started. You can submit the order again."
+              : "This order is still being prepared. Check My Orders or try again shortly.",
+            code: failedCheckout ? "ORDER_CHECKOUT_FAILED" : "ORDER_CHECKOUT_IN_PROGRESS",
+          });
+        }
+        if (String(existingOrder.paymentStatus || "").toLowerCase() !== "pending") {
+          return res.status(409).json({
+            message: "This order already exists. Review its payment status before paying again.",
+            code: "ORDER_PAYMENT_RETRY_REQUIRED",
+            orderId: String(existingOrder._id),
+          });
+        }
+      }
       const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([existingOrder]);
       return res.status(200).json({
         order: {
@@ -2400,12 +2437,28 @@ const createOrder = async (req, res) => {
   const createOrderDocument = async (session = null) => {
     const resolvedItems = [];
     const completedReservations = [];
+    const releaseCompletedReservations = async () => {
+      await Promise.allSettled(
+        completedReservations.reverse().map(async (reservation) => {
+          await restoreReservedProductStock(
+            reservation.productId,
+            reservation.branch,
+            reservation.quantity,
+            reservation.hasBranchSnapshot,
+          );
+          await releaseReservedSerialUnits(
+            reservation.productId,
+            reservation.serialNumbers,
+          );
+        }),
+      );
+    };
     let lastSourceBranch = null;
     try {
       for (const item of items) {
-        const quantityNeeded = Number(item.quantity) || 0;
-        if (quantityNeeded < 1) {
-          throw new HttpError(400, "Invalid cart item payload.");
+        const quantityNeeded = parsePositiveWholeQuantity(item?.quantity);
+        if (quantityNeeded === null) {
+          throw new HttpError(400, "Each cart quantity must be a positive whole number.");
         }
 
         const product = await resolveProductForOrderItem(item, session);
@@ -2415,6 +2468,7 @@ const createOrder = async (req, res) => {
             `Product not found: ${item.name || item.productId || item.id || item.model || item.sku}`,
           );
         }
+        if (product.isActive === false) throw new HttpError(409, `${product.name} is archived and cannot be purchased.`);
 
         // The delivery branch is part of the customer's order. Never fulfil
         // it from a nearby branch merely because that branch has stock: doing
@@ -2480,20 +2534,7 @@ const createOrder = async (req, res) => {
       // Mongo deployment may not support transactions, so compensate every
       // earlier reservation before reporting a failed order.
       if (!session) {
-        await Promise.allSettled(
-          completedReservations.reverse().map(async (reservation) => {
-            await restoreReservedProductStock(
-              reservation.productId,
-              reservation.branch,
-              reservation.quantity,
-              reservation.hasBranchSnapshot,
-            );
-            await releaseReservedSerialUnits(
-              reservation.productId,
-              reservation.serialNumbers,
-            );
-          }),
-        );
+        await releaseCompletedReservations();
       }
       throw error;
     }
@@ -2563,7 +2604,14 @@ const createOrder = async (req, res) => {
       ],
     };
 
-    if (!session) return Order.create(orderPayload);
+    if (!session) {
+      try {
+        return await Order.create(orderPayload);
+      } catch (error) {
+        await releaseCompletedReservations();
+        throw error;
+      }
+    }
     const created = await Order.create([orderPayload], { session });
     return Array.isArray(created) ? created[0] : created;
   };
@@ -2668,11 +2716,15 @@ const createOrder = async (req, res) => {
           await rollbackUnpaidOnlineOrder(order);
         }
         if (error instanceof HttpError) {
-          return res.status(error.status).json({ message: error.message });
+          return res.status(error.status).json({
+            message: error.message,
+            ...(order && usesOnlinePayment && !checkout ? { code: "ORDER_CHECKOUT_FAILED" } : {}),
+          });
         }
         if (error instanceof PaymongoError) {
           return res.status(error.status || 502).json({
             message: `Unable to start PayMongo checkout: ${error.message}`,
+            ...(order && !checkout ? { code: "ORDER_CHECKOUT_FAILED" } : {}),
           });
         }
         lastError = error;
@@ -2680,6 +2732,9 @@ const createOrder = async (req, res) => {
       }
     }
     console.error("Failed to create order:", lastError);
+    if (lastError?.code === 11000 && idempotencyKey) {
+      return res.status(409).json({ message: "This order is already being processed. Check My Orders or try again shortly.", code: "ORDER_CHECKOUT_IN_PROGRESS" });
+    }
     return res
       .status(500)
       .json({
@@ -2793,6 +2848,17 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
     throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is in technician fulfillment.`);
   }
   if (action === "dispatch") {
+    if (!String(options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || "").trim() ||
+        !String(options.timeSlot || order.installationTimeSlot || "").trim() ||
+        String(options.timeSlot || order.installationTimeSlot).trim().toLowerCase() === "tbd") {
+      throw new HttpError(400, "Choose an installation date and time slot before dispatching this order.");
+    }
+    const appointmentError = getScheduledAppointmentError(
+      options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || new Date().toISOString().split("T")[0],
+      options.timeSlot || order.installationTimeSlot,
+      "Installation date",
+    );
+    if (appointmentError) throw new HttpError(400, appointmentError);
     await assertNoTaskScheduleConflict({
       scheduledDate: options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || new Date().toISOString().split("T")[0],
       timeSlot: options.timeSlot || order.installationTimeSlot || "TBD",
@@ -3623,8 +3689,31 @@ const retryPaymongoCheckout = async (req, res) => {
     if (order.paymentStatus === "paid" || order.status === "paid") {
       return res.status(409).json({ message: "This order is already paid." });
     }
+    if (String(order.workflowStatus || "").toLowerCase() !== "to_pay") {
+      return res.status(409).json({ message: "This order is no longer awaiting payment." });
+    }
 
     const isGcash = String(order.paymentMethod || "").toLowerCase() === "gcash";
+    if (String(order.paymentStatus || "").toLowerCase() === "pending") {
+      if (isGcash && !order.paymongo?.retryInProgress && order.paymongo?.checkoutSessionId && order.paymongo?.checkoutUrl) {
+        // Resume the current checkout rather than charging a new attempt while
+        // the previous session may still accept payment.
+        const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
+        return res.json({
+          order: { ...hydratedOrder, paymentUrl: order.paymongo.checkoutUrl },
+          payment: {
+            provider: "paymongo",
+            checkoutSessionId: order.paymongo.checkoutSessionId,
+            checkoutUrl: order.paymongo.checkoutUrl,
+            status: order.paymongo.status || "active",
+          },
+          paymentRetryCount: gcashPaymentAttemptCount(order),
+          paymentRetriesRemaining: gcashPaymentAttemptsRemaining(order),
+          resumedCheckout: true,
+        });
+      }
+      return res.status(409).json({ message: "Payment is still pending. Wait for the payment result before trying again." });
+    }
     const retryableStatus = isGcash
       ? gcashRetryableStatus(order.paymentStatus)
       : ["failed", "cancelled", "expired"].includes(
@@ -3658,10 +3747,10 @@ const retryPaymongoCheckout = async (req, res) => {
       }
     }
 
-    // Claim the retry atomically before touching stock or the payment
-    // provider. Two nearly simultaneous taps must not create two GCash
-    // sessions or bypass the three-attempt ceiling.
-    if (isGcash) {
+    // Claim every retry atomically before touching stock or the provider.
+    // Only GCash has a bounded attempt counter, but card/Maya retries must
+    // also prevent two simultaneous checkout sessions.
+    {
       const previousPaymentStatus = order.paymentStatus;
       const inventoryWasReleased = order.stockReservationStatus === "released";
       const retryStartedAt = new Date();
@@ -3670,14 +3759,15 @@ const retryPaymongoCheckout = async (req, res) => {
         {
           _id: order._id,
           customer: req.authUser._id,
-          paymentStatus: { $in: ["pending", "failed", "cancelled", "expired"] },
+          workflowStatus: "to_pay",
+          paymentStatus: { $in: ["failed", "cancelled", "expired"] },
           $and: [
-            {
+            ...(isGcash ? [{
               $or: [
                 { "paymongo.retryAttempts": { $lt: MAX_GCASH_PAYMENT_ATTEMPTS } },
                 { "paymongo.retryAttempts": { $exists: false } },
               ],
-            },
+            }] : []),
             {
               $or: [
                 { "paymongo.retryInProgress": { $ne: true } },
@@ -3687,7 +3777,7 @@ const retryPaymongoCheckout = async (req, res) => {
           ],
         },
         {
-          $inc: { "paymongo.retryAttempts": 1 },
+          ...(isGcash ? { $inc: { "paymongo.retryAttempts": 1 } } : {}),
           $set: {
             paymentStatus: "pending",
             "paymongo.retryInProgress": true,
@@ -3704,6 +3794,7 @@ const retryPaymongoCheckout = async (req, res) => {
       }
       retryClaim = {
         orderId: order._id,
+        isGcash,
         previousPaymentStatus,
         retryAttempts: Number(order.paymongo?.retryAttempts || 0),
         inventoryWasReleased,
@@ -3750,7 +3841,9 @@ const retryPaymongoCheckout = async (req, res) => {
           claimedOrder.paymentStatus = retryClaim.previousPaymentStatus;
           claimedOrder.paymongo = {
             ...(claimedOrder.paymongo?.toObject?.() || claimedOrder.paymongo || {}),
-            retryAttempts: Math.max(0, Number(retryClaim.retryAttempts || 1) - 1),
+            retryAttempts: retryClaim.isGcash
+              ? Math.max(0, Number(retryClaim.retryAttempts || 1) - 1)
+              : Number(retryClaim.retryAttempts || 0),
             retryInProgress: false,
             retryStartedAt: null,
           };

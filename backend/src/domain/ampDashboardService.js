@@ -4,7 +4,7 @@ const { summarizeMajorComponentUse } = require("./ampComponentCategories");
 const { normalizeServiceType } = require("./ampMaintenanceService");
 const { assessServiceEvidence } = require("./serviceEvidence");
 const { effectiveWarrantyStatus } = require("./warrantyService");
-const { businessDay } = require("../utils/dateTime");
+const { businessDay, formatDateKeyInTimeZone, DEFAULT_BUSINESS_TIME_ZONE } = require("../utils/dateTime");
 const { BRANCHES } = require("./branchRouting");
 const { enrichVisitPrescription } = require("./ampVisitAnalysis");
 
@@ -27,7 +27,7 @@ const startOfMonth = (date) => new Date(Date.UTC(date.getUTCFullYear(), date.get
 const addMonths = (date, months) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
 const monthKey = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 const monthLabel = (date) => date.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-const daysBetween = (from, to) => Math.ceil((to.getTime() - from.getTime()) / MS_PER_DAY);
+const daysBetween = (from, to) => Math.round((businessDay(to).getTime() - businessDay(from).getTime()) / MS_PER_DAY);
 const PIPELINE_SERVICE_TYPES = new Set(["regular_cleaning", "deep_cleaning", "inspection", "repair"]);
 const concise = (value) => String(value || "").trim();
 const summarizePriorityUnit = (unit) => {
@@ -145,14 +145,18 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
   const currentPage = boundedNumber(page, { fallback: 1, min: 1, max: 1000000, integer: true, label: "Pipeline page" });
   const currentPageSize = boundedNumber(pageSize, { fallback: 50, min: 10, max: 200, integer: true, label: "Pipeline page size" });
   const now = businessDay();
+  const todayKey = formatDateKeyInTimeZone(new Date());
+  const dueDay = { $dateToString: { date: "$amp.bestServicedBy", format: "%Y-%m-%d", timezone: process.env.APP_TIME_ZONE || DEFAULT_BUSINESS_TIME_ZONE } };
   // Dashboard requests are read-only. Recommendation persistence belongs to
   // installation/service completion and the scheduled AMP monitor; rewriting
   // every active unit here made both Admin and Superadmin page loads exceed the
   // web request timeout as inventory grew.
   const windowEnd = addDays(now, windowDays);
+  const windowEndKey = formatDateKeyInTimeZone(windowEnd);
   const baseMatch = {
     status: { $in: ["active", "service_due"] },
-    "amp.bestServicedBy": { $ne: null, $lte: windowEnd },
+    "amp.bestServicedBy": { $ne: null, $lte: addDays(windowEnd, 1) },
+    $expr: { $lte: [dueDay, windowEndKey] },
   };
   const unitMatch = { ...baseMatch, ...branchFilterMatch(branch) };
   const summaryMatch = {
@@ -174,7 +178,7 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         { $group: {
           _id: { $ifNull: ["$amp.recommendedService", "inspection"] },
           count: { $sum: 1 },
-          overdue: { $sum: { $cond: [{ $lt: ["$amp.bestServicedBy", now] }, 1, 0] } },
+          overdue: { $sum: { $cond: [{ $lt: [dueDay, todayKey] }, 1, 0] } },
         } },
         { $sort: { overdue: -1, count: -1, _id: 1 } },
       ],
@@ -197,8 +201,8 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         },
       },
       total: { $sum: 1 },
-      overdue: { $sum: { $cond: [{ $lt: ["$amp.bestServicedBy", now] }, 1, 0] } },
-      upcoming: { $sum: { $cond: [{ $gte: ["$amp.bestServicedBy", now] }, 1, 0] } },
+      overdue: { $sum: { $cond: [{ $lt: [dueDay, todayKey] }, 1, 0] } },
+      upcoming: { $sum: { $cond: [{ $gte: [dueDay, todayKey] }, 1, 0] } },
     } },
     { $sort: { _id: 1 } },
   ])]);
@@ -240,7 +244,7 @@ const getManagerServicePipeline = async ({ days = 30, branch = "", includeAllBra
         bestServicedBy: dueDate.toISOString(), recommendedService: unit.amp.recommendedService || "regular_cleaning",
         recommendationBasis: unit.amp.recommendationBasis || "", daysUntilDue: daysBetween(now, dueDate),
         whyThisDate: unit.amp.whyThisDate || unit.amp.recommendationBasis || "",
-        overdue: dueDate < now, lastServiceDate: unit.amp.lastServiceDate || null,
+        overdue: daysBetween(now, dueDate) < 0, lastServiceDate: unit.amp.lastServiceDate || null,
         warrantyStatus: effectiveWarrantyStatus(unit.warranty || {}),
         capacityAssessment: unit.amp.capacityAssessment || null,
         patternAnalysis: unit.amp.patternAnalysis || null,
@@ -320,4 +324,4 @@ const getOwnerServiceForecast = async ({ months = 12, averageRevenue, includeHis
   };
 };
 
-module.exports = { boundedNumber, branchFilterMatch, buildPipelineActionSummary, getManagerServicePipeline, getOwnerServiceForecast, UNASSIGNED_BRANCH };
+module.exports = { boundedNumber, branchFilterMatch, buildPipelineActionSummary, daysBetween, getManagerServicePipeline, getOwnerServiceForecast, UNASSIGNED_BRANCH };

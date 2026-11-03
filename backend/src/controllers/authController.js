@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { validatePersonName } = require("../domain/personNameValidation");
 const OtpRequest = require("../models/OtpRequest");
 const AuditLog = require("../models/AuditLog");
 const { signUserAccessToken } = require("../utils/token");
@@ -254,6 +255,7 @@ const checkAliasAvailability = async (req, res) => {
 };
 
 const { validateRegistrationConsent, registrationConsentRecord } = require("../domain/registrationConsent");
+const { acquisitionFromTracking } = require("../domain/acquisitionAttribution");
 const register = async (req, res) => {
   const {
     name_first,
@@ -279,6 +281,11 @@ const register = async (req, res) => {
     registrationVerificationToken,
   } = req.body;
   try {
+    const firstName = validatePersonName(name_first, "First name");
+    const lastName = validatePersonName(name_last, "Last name");
+    if (firstName.error || lastName.error) {
+      return res.status(400).json({ message: firstName.error || lastName.error, fields: { ...(firstName.error ? { name_first: firstName.error } : {}), ...(lastName.error ? { name_last: lastName.error } : {}) } });
+    }
     if (typeof password !== "string" || password.length < 8 || password.length > 25) {
       return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
     }
@@ -356,9 +363,9 @@ const register = async (req, res) => {
 
     const newUser = await User.create({
       legalConsent: registrationConsentRecord(req.body.legalConsent),
-      name: `${name_first} ${name_last}`,
-      name_first,
-      name_last,
+      name: `${firstName.value} ${lastName.value}`,
+      name_first: firstName.value,
+      name_last: lastName.value,
       alias: finalAlias,
       ...(normalizedEmail ? { email: normalizedEmail } : {}),
       ...(normalizedPhone ? { phone: normalizedPhone } : {}),
@@ -367,6 +374,7 @@ const register = async (req, res) => {
       // Public registration must never be allowed to provision a privileged
       // account or choose its own branch. Staff are created by Super Admin.
       role: "customer",
+      sourceOfAcquisition: acquisitionFromTracking(req.body.registrationAttribution),
       assignedBranch,
       activeBranch: assignedBranch,
       address: addressString,
@@ -387,7 +395,7 @@ const register = async (req, res) => {
         ...loc.address,
         label: `Location ${idx + 1}`,
         type: "home",
-        name: `${name_first} ${name_last}`.trim(),
+        name: `${firstName.value} ${lastName.value}`,
         phone: normalizedPhone,
         isDefault: idx === 0,
       })),

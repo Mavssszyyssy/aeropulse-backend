@@ -50,7 +50,7 @@ const createReorderRequest = async (req, res) => {
 
   const { productId, quantity, notes = "" } = req.body || {};
   const requestedQuantity = Number(quantity);
-  if (!productId || !Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+  if (!productId || !Number.isSafeInteger(requestedQuantity) || requestedQuantity <= 0) {
     return res.status(400).json({ message: "Quantity must be a whole number greater than zero." });
   }
 

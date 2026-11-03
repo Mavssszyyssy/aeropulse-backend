@@ -15,6 +15,8 @@ const contactMessageSchema = new mongoose.Schema(
   {
     ticketCode: { type: String, required: true, unique: true, index: true, trim: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    // Retained for restricted audit purposes, never shown in the staff inbox.
+    hiddenFromOperationalInbox: { type: Boolean, default: false, index: true },
     customerName: { type: String, required: true, trim: true, maxlength: 120 },
     email: { type: String, default: "", trim: true, lowercase: true, maxlength: 180 },
     phone: { type: String, default: "", trim: true, maxlength: 30 },

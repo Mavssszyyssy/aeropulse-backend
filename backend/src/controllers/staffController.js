@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const User = require("../models/User");
+const { validatePersonName } = require("../domain/personNameValidation");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const { BRANCHES } = require("../domain/branchRouting");
 const { withIdentityConflict } = require("../utils/optionalIdentity");
@@ -32,9 +33,14 @@ const createStaff = async (req, res) => {
     return res.status(403).json({ message: "Only Super Admin can create staff accounts." });
   }
   const { email, name_first, name_last, role, branch, loginName, serviceQuota } = req.body;
-  const firstName = String(name_first || "").trim();
-  const lastName = String(name_last || "").trim();
-  if (!firstName || !lastName || !role) {
+  const firstNameResult = validatePersonName(name_first, "First name");
+  const lastNameResult = validatePersonName(name_last, "Last name");
+  if (firstNameResult.error || lastNameResult.error) {
+    return res.status(400).json({ message: firstNameResult.error || lastNameResult.error });
+  }
+  const firstName = firstNameResult.value;
+  const lastName = lastNameResult.value;
+  if (!role) {
     return res.status(400).json({ message: "Missing required fields." });
   }
   if (!['admin', 'technician'].includes(role)) {
@@ -42,6 +48,13 @@ const createStaff = async (req, res) => {
   }
   if (!branch || !BRANCHES.includes(branch)) {
     return res.status(400).json({ message: "A valid branch is required." });
+  }
+
+  if (role === "admin") {
+    const existingBranchAdmin = await User.exists({ role: "admin", assignedBranch: branch, isDeleted: { $ne: true }, accountStatus: { $nin: ["disabled", "deleted"] } });
+    if (existingBranchAdmin) {
+      return res.status(409).json({ message: `${branch} already has an active administrator. Reassign or disable that account first.` });
+    }
   }
 
   if (role === "technician") {

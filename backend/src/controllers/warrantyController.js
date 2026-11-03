@@ -120,6 +120,7 @@ const createWarrantyClaim = async (req, res) => {
     if (!unit) return res.status(404).json({ message: "AC unit not found." });
     const issue = String(req.body?.issue || req.body?.description || "").trim();
     if (!issue) return res.status(400).json({ message: "Describe the warranty issue before submitting a claim." });
+    if (issue.length > 500) return res.status(400).json({ message: "Service concern must be 500 characters or fewer." });
 
     const warranty = warrantySnapshot(unit);
     if (warranty.status !== "active") {

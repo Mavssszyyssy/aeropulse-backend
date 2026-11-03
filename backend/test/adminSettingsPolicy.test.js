@@ -26,6 +26,8 @@ test("admin settings policy rejects protected company, branch, role and permissi
     { roles: { adminMode: "full" } },
     { general: { storeName: "Changed" } },
     { general: { address: "Another branch" } },
+    { general: { currency: "USD" } },
+    { currency: "USD" },
   ].forEach((payload) => assert.equal(containsProtectedAdminFields(payload), true));
 });
 
@@ -67,4 +69,32 @@ test("admin profile endpoint also rejects branch and authority escalation fields
   assert.equal(response.result().statusCode, 403);
   assert.equal(saved, false);
   assert.match(response.result().body.message, /SuperAdmin/i);
+});
+
+test("customer display preferences persist while admin preferences retain branch authority", async () => {
+  for (const role of ["customer", "admin"]) {
+    let saved;
+    const user = {
+      role,
+      assignedBranch: "Cavite",
+      preferences: { language: "English", theme: "light", currency: "PHP" },
+      notifications: { push: true },
+      privacy: {},
+      async save() { saved = JSON.parse(JSON.stringify(this.toJSON())); },
+      toJSON() { return { role: this.role, assignedBranch: this.assignedBranch, preferences: this.preferences, notifications: this.notifications }; },
+    };
+    const response = responseRecorder();
+    await updateSettings({ authUser: user, body: {
+      preferences: { language: "Filipino", theme: "dark", currency: "USD", timezone: "Asia/Manila", autoBook: false },
+      notifications: { push: false },
+    } }, response.res);
+    assert.equal(response.result().statusCode, 200);
+    assert.equal(saved.preferences.language, "Filipino");
+    assert.equal(saved.preferences.theme, "dark");
+    assert.equal(saved.preferences.darkMode, true);
+    assert.equal(saved.preferences.currency, "USD");
+    assert.equal(saved.preferences.autoBook, false);
+    assert.equal(saved.notifications.push, false);
+    assert.equal(saved.assignedBranch, "Cavite");
+  }
 });
