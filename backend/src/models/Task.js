@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { TASK_PRIORITIES } = require("../domain/taskPriority");
 
 const taskSchema = new mongoose.Schema(
   {
@@ -44,7 +45,7 @@ const taskSchema = new mongoose.Schema(
     },
     priority: {
       type: String,
-      enum: ["low", "medium", "high"],
+      enum: TASK_PRIORITIES,
       default: "medium",
     },
     scheduledDate: { type: String, required: true },

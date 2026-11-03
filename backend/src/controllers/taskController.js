@@ -25,6 +25,7 @@ const { formatDateKeyInTimeZone, parseInstallationDateTime } = require("../utils
 const { buildTaskScheduleDetails, normalizeTaskSchedule } = require("../domain/taskSchedule");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
 const { getScheduledAppointmentError, getServiceAppointmentError } = require("../utils/scheduling");
+const { parseTaskPriority } = require("../domain/taskPriority");
 const {
   getTaskMutationBlocker,
   hasVerifiedTaskCheckIn,
@@ -1209,6 +1210,8 @@ const createTask = async (req, res) => {
     }
 
     const payload = withoutObsoleteTeamAssignment(req.body || {});
+    const priority = payload.priority == null ? "medium" : parseTaskPriority(payload.priority);
+    if (!priority) return res.status(400).json({ message: "Choose a valid work-order priority." });
     const appointmentValidator = payload.requestId || payload.serviceRequestId ? getServiceAppointmentError : getScheduledAppointmentError;
     const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
@@ -1242,7 +1245,7 @@ const createTask = async (req, res) => {
       assignedTechnicianId: requestedTechnicianId,
       assignedTechnicianName: technician ? getTechnicianDisplayName(technician) : "",
       status: normalizeStatus(payload.status),
-      priority: String(payload.priority || "medium").toLowerCase(),
+      priority,
       scheduledDate: String(payload.scheduledDate || payload.preferredDate || "TBD"),
       timeSlot: String(payload.timeSlot || payload.preferredSchedule || "TBD"),
       assignedRole: String(payload.assignedRole || "technician"),
@@ -1278,6 +1281,9 @@ const updateTask = async (req, res) => {
     }
 
     const payload = withoutObsoleteTeamAssignment(req.body || {});
+    if (req.authUser.role !== "technician" && payload.priority != null && !parseTaskPriority(payload.priority)) {
+      return res.status(400).json({ message: "Choose a valid work-order priority." });
+    }
     const appointmentValidator = payload.requestId || payload.serviceRequestId || task.requestId || task.payload?.requestId ? getServiceAppointmentError : getScheduledAppointmentError;
     const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
@@ -1393,7 +1399,7 @@ const updateTask = async (req, res) => {
       task.description = String(payload.description || payload.concern || task.description || "");
       task.assignedTechnicianId = String(payload.assignedTechnicianId || task.assignedTechnicianId || "");
       task.assignedTechnicianName = String(payload.assignedTechnicianName || task.assignedTechnicianName || "");
-      task.priority = String(payload.priority || task.priority || "medium").toLowerCase();
+      task.priority = payload.priority == null ? (task.priority || "medium") : parseTaskPriority(payload.priority);
       task.scheduledDate = String(payload.scheduledDate || payload.preferredDate || task.scheduledDate || "TBD");
       task.timeSlot = String(payload.timeSlot || payload.preferredSchedule || task.timeSlot || "TBD");
       if (normalizedSchedule) task.schedule = normalizedSchedule;

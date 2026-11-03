@@ -74,6 +74,7 @@ test("superadmin work orders require a valid branch before any account is assign
   let saved = 0;
   const createTask = vm.runInNewContext(`${source}\ncreateTask`, {
     withoutObsoleteTeamAssignment: (value) => value,
+    parseTaskPriority: (value) => ["urgent", "high", "medium", "normal", "low"].includes(String(value).trim().toLowerCase()) ? String(value).trim().toLowerCase() : null,
     getScheduledAppointmentError: () => "",
     getServiceAppointmentError: () => "",
     normalizeStatus: (status) => status || "pending",
@@ -95,9 +96,26 @@ test("superadmin work orders require a valid branch before any account is assign
   await createTask({ authUser: { role: "superadmin" }, body }, invalid);
   assert.equal(invalid.statusCode, 400);
   assert.equal(saved, 0);
+  const invalidPriority = response();
+  await createTask({ authUser: { role: "superadmin" }, body: { ...body, branch: "Bulacan", priority: "critical" } }, invalidPriority);
+  assert.equal(invalidPriority.statusCode, 400);
+  assert.equal(saved, 0);
   const valid = response();
   await createTask({ authUser: { role: "superadmin" }, body: { ...body, branch: "Bulacan" } }, valid);
   assert.equal(valid.statusCode, 201);
   assert.equal(valid.body.task.branch, "Bulacan");
   assert.equal(saved, 1);
+});
+
+test("work-order priorities include technician mobile values and reject invalid assignments", async () => {
+  const { TASK_PRIORITIES, parseTaskPriority } = require("../src/domain/taskPriority");
+  const Task = require("../src/models/Task");
+  assert.deepEqual(TASK_PRIORITIES, ["urgent", "high", "medium", "normal", "low"]);
+  assert.deepEqual(Task.schema.path("priority").enumValues, TASK_PRIORITIES);
+  assert.equal(parseTaskPriority(" Urgent "), "urgent");
+  assert.equal(parseTaskPriority("critical"), null);
+  for (const priority of TASK_PRIORITIES) {
+    const task = new Task({ taskCode: `test-${priority}`, title: "Service", customer: "Customer", address: "Address", assignedTechnicianId: "tech", scheduledDate: "2099-01-01", timeSlot: "9:00 AM - 12:00 PM", priority });
+    await task.validate();
+  }
 });
