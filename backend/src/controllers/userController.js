@@ -14,6 +14,7 @@ const env = require("../config/env");
 const { validatePostalCodeForAddress } = require("../utils/postalCodeValidation");
 const {
   SHARED_DEMO_EMAIL,
+  MAX_SHARED_DEMO_ACCOUNTS,
   canUseSharedDemoEmail,
   isProtectedDemoStaff,
 } = require("../domain/demoStaffPolicy");
@@ -500,9 +501,15 @@ const applyProfileUpdate = async (
       return { ok: false, status: 400, message: emailValidation.message };
     }
     if (email === SHARED_DEMO_EMAIL && !canUseSharedDemoEmail(user, email)) {
-      return { ok: false, status: 403, message: "The shared demo email is limited to the five approved demo accounts." };
+      return { ok: false, status: 403, message: "This account is not approved to use the shared demo email." };
     }
     if (email !== normalizeEmail(user.email)) {
+      if (email === SHARED_DEMO_EMAIL) {
+        const sharedAccountCount = await User.countDocuments({ email, isDeleted: { $ne: true }, accountStatus: { $ne: "deleted" } });
+        if (sharedAccountCount >= MAX_SHARED_DEMO_ACCOUNTS) {
+          return { ok: false, status: 409, message: "The shared demo email has reached its 10-account limit." };
+        }
+      }
       const existing = await User.findOne({ email, _id: { $ne: user._id } });
       if (existing && !(canUseSharedDemoEmail(user, email) && canUseSharedDemoEmail(existing, email))) {
         return { ok: false, status: 409, message: "An account with this email address already exists." };

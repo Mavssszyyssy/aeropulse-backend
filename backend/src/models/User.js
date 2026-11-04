@@ -75,6 +75,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
       select: false,
     },
+    sharedDemoEmailApproved: { type: Boolean, default: false },
     username: {
       type: String,
       unique: true,
@@ -242,6 +243,7 @@ userSchema.set("toJSON", {
     delete ret.passwordHash;
     delete ret.expoPushTokens;
     delete ret.emailIdentityKey;
+    delete ret.sharedDemoEmailApproved;
     delete ret.failedLoginAttempts;
     delete ret.lockoutUntil;
     return ret;

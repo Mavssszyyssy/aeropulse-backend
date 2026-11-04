@@ -7,6 +7,7 @@ const { BRANCHES } = require("../domain/branchRouting");
 const { withIdentityConflict } = require("../utils/optionalIdentity");
 const { normalizeServiceQuota } = require("../domain/technicianServiceQuota");
 const { validateEmailAddress } = require("../services/emailDomainPolicyService");
+const { MAX_SHARED_DEMO_ACCOUNTS, SHARED_DEMO_EMAIL } = require("../domain/demoStaffPolicy");
 
 const credentialPart = (value = "") => String(value)
   .normalize("NFD")
@@ -25,6 +26,16 @@ const buildTechnicianCredentials = ({ branch, loginName, nameFirst }) => {
     loginIdentifier: branchPart && namePart ? `tech.${branchPart}.${namePart}` : "",
     defaultPassword: branchPart && namePart ? `${branchPart}.${namePart}` : "",
   };
+};
+
+const buildSharedDemoAdminLoginId = (branch) => {
+  const branchPart = credentialPart(branch);
+  if (!branchPart) {
+    return `admin.branch-${crypto.createHash("sha256").update(branch).digest("hex").slice(0, 6)}`;
+  }
+  if (branchPart.length <= 24) return `admin.${branchPart}`;
+  const suffix = crypto.createHash("sha256").update(branch).digest("hex").slice(0, 6);
+  return `admin.${branchPart.slice(0, 17)}-${suffix}`;
 };
 
 // Only Super Admin can create staff
@@ -128,14 +139,28 @@ const createStaff = async (req, res) => {
   if (!emailValidation.ok) {
     return res.status(400).json({ message: emailValidation.message });
   }
-  const existing = await User.findOne({ email: normalizedEmail });
-  if (existing) return res.status(409).json({ message: "Email already exists." });
+  const sharedDemoEmail = normalizedEmail === SHARED_DEMO_EMAIL;
+  const loginIdentifier = sharedDemoEmail ? buildSharedDemoAdminLoginId(branch) : "";
+  if (sharedDemoEmail) {
+    const sharedAccountCount = await User.countDocuments({ email: SHARED_DEMO_EMAIL, isDeleted: { $ne: true }, accountStatus: { $ne: "deleted" } });
+    if (sharedAccountCount >= MAX_SHARED_DEMO_ACCOUNTS) {
+      return res.status(409).json({ message: "The shared demo email has reached its 10-account limit." });
+    }
+    const existingLogin = await User.findOne({ $or: [{ alias: loginIdentifier }, { username: loginIdentifier }] });
+    if (existingLogin) {
+      return res.status(409).json({ message: `Login ID ${loginIdentifier} already exists.` });
+    }
+  } else {
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) return res.status(409).json({ message: "Email already exists." });
+  }
 
   // Generate temp password
   const tempPassword = crypto.randomBytes(6).toString("base64");
   const passwordHash = await bcrypt.hash(tempPassword, 10);
   const user = await User.create({
     email: normalizedEmail,
+    ...(sharedDemoEmail ? { alias: loginIdentifier, username: loginIdentifier, sharedDemoEmailApproved: true } : {}),
     name_first: firstName,
     name_last: lastName,
     name: `${firstName} ${lastName}`.trim(),
@@ -153,8 +178,8 @@ const createStaff = async (req, res) => {
       await sendEmail({
         to: user.email,
         subject: "Your Staff Account (AeroPulse)",
-        text: `Your staff account has been created.\n\nEmail: ${user.email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.`,
-        html: `<p>Your staff account has been created.</p><p><b>Email:</b> ${user.email}<br/><b>Temporary Password:</b> ${tempPassword}</p><p>You must change your password on first login.</p>`,
+        text: `Your staff account has been created.\n\n${sharedDemoEmail ? `Login ID: ${loginIdentifier}\n` : ""}Email: ${user.email}\nTemporary Password: ${tempPassword}\n\nYou must change your password on first login.`,
+        html: `<p>Your staff account has been created.</p><p>${sharedDemoEmail ? `<b>Login ID:</b> ${loginIdentifier}<br/>` : ""}<b>Email:</b> ${user.email}<br/><b>Temporary Password:</b> ${tempPassword}</p><p>You must change your password on first login.</p>`,
       });
       emailDelivered = true;
     } catch (error) {
@@ -166,6 +191,7 @@ const createStaff = async (req, res) => {
   }
   return res.status(201).json({
     user: user.toJSON(),
+    ...(sharedDemoEmail ? { loginIdentifier } : {}),
     tempPassword: emailDelivered ? undefined : tempPassword,
     deliveryWarning,
   });

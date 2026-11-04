@@ -18,6 +18,7 @@ const { hashVerificationCode } = require("../src/services/emailVerificationServi
 const {
   SHARED_DEMO_ACCOUNTS,
   SHARED_DEMO_EMAIL,
+  MAX_SHARED_DEMO_ACCOUNTS,
   buildEmailIdentityKey,
   canUseSharedDemoEmail,
 } = require("../src/domain/demoStaffPolicy");
@@ -40,6 +41,7 @@ const fixture = (account, extra = {}) => new User({
 });
 
 test("the shared email exception is limited to the six exact demo accounts", async () => {
+  assert.equal(MAX_SHARED_DEMO_ACCOUNTS, 10);
   assert.equal(SHARED_DEMO_ACCOUNTS.length, 6);
   assert.deepEqual(
     new Set(SHARED_DEMO_ACCOUNTS.map(({ accountKey }) => accountKey)),
@@ -70,6 +72,59 @@ test("the shared email exception is limited to the six exact demo accounts", asy
   const ordinaryA = new User({ name_first: "A", name_last: "Customer", email: "normal@example.com" });
   const ordinaryB = new User({ name_first: "B", name_last: "Customer", email: "normal@example.com" });
   assert.equal(buildEmailIdentityKey(ordinaryA), buildEmailIdentityKey(ordinaryB));
+});
+
+test("a separately approved branch admin has an account-bound shared email identity", async () => {
+  const admin = new User({
+    name_first: "New",
+    name_last: "Admin",
+    alias: "admin.newbranch",
+    username: "admin.newbranch",
+    role: "admin",
+    assignedBranch: "New Branch",
+    email: SHARED_DEMO_EMAIL,
+    sharedDemoEmailApproved: true,
+  });
+  await admin.validate();
+  assert.equal(canUseSharedDemoEmail(admin, SHARED_DEMO_EMAIL), true);
+  assert.equal(admin.emailIdentityKey, "shared-demo:admin.newbranch");
+  admin.sharedDemoEmailApproved = false;
+  assert.equal(canUseSharedDemoEmail(admin, SHARED_DEMO_EMAIL), false);
+});
+
+test("Super Admin can create a shared-email branch admin below the cap, with a distinct login ID", async (t) => {
+  const emailPolicy = require("../src/services/emailDomainPolicyService");
+  t.mock.method(emailPolicy, "validateEmailAddress", async () => ({ ok: true }));
+  t.mock.method(emailService, "canSendEmail", () => false);
+  const staffPath = require.resolve("../src/controllers/staffController");
+  delete require.cache[staffPath];
+  const { createStaff } = require("../src/controllers/staffController");
+  t.after(() => { delete require.cache[staffPath]; });
+  t.mock.method(User, "exists", async () => false);
+  t.mock.method(User, "findOne", async () => null);
+  let occupied = 9;
+  t.mock.method(User, "countDocuments", async () => occupied);
+  let created;
+  t.mock.method(User, "create", async (data) => {
+    created = data;
+    return { ...data, toJSON() { return { name: data.name, email: data.email, assignedBranch: data.assignedBranch }; } };
+  });
+  const request = { authUser: { role: "superadmin" }, body: { role: "admin", branch: "Laguna", name_first: "New", name_last: "Admin", email: SHARED_DEMO_EMAIL } };
+  const success = response();
+  await createStaff(request, success);
+  assert.equal(success.statusCode, 201);
+  assert.equal(success.body.loginIdentifier, "admin.laguna");
+  assert.equal(created.sharedDemoEmailApproved, true);
+  assert.equal(created.alias, "admin.laguna");
+  assert.equal(created.username, "admin.laguna");
+  assert.ok(success.body.tempPassword);
+
+  occupied = 10;
+  const full = response();
+  await createStaff(request, full);
+  assert.equal(full.statusCode, 409);
+  assert.match(full.body.message, /10-account limit/);
+  assert.equal(User.create.mock.callCount(), 1);
 });
 
 test("all staff demo accounts and customers receive separate account-bound email challenges", async (t) => {
@@ -251,6 +306,7 @@ test("superadmin email editing preserves the target account session and permissi
   const permissionsBefore = [...target.permissions];
   t.mock.method(User, "findById", async () => target);
   t.mock.method(User, "findOne", async () => existingSharedEmailAccount);
+  t.mock.method(User, "countDocuments", async () => 9);
   t.mock.method(target, "save", async () => target);
 
   const res = response();
@@ -265,4 +321,20 @@ test("superadmin email editing preserves the target account session and permissi
   assert.deepEqual(target.security.toObject(), securityBefore);
   assert.equal(target.passwordHash, passwordBefore);
   assert.deepEqual(target.permissions, permissionsBefore);
+});
+
+test("Super Admin email editing cannot exceed the shared inbox capacity", async (t) => {
+  const target = fixture(SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.carl"), { email: "before@example.com" });
+  t.mock.method(User, "findById", async () => target);
+  t.mock.method(User, "countDocuments", async () => 10);
+  const save = t.mock.method(target, "save", async () => target);
+  const res = response();
+  await updateProfileById({
+    authUser: fixture(SHARED_DEMO_ACCOUNTS[0]),
+    params: { id: target.id },
+    body: { email: SHARED_DEMO_EMAIL },
+  }, res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(target.email, "before@example.com");
+  assert.equal(save.mock.callCount(), 0);
 });

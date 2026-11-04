@@ -4,6 +4,7 @@ const Module = require("node:module");
 
 const loadController = ({ items = null, anyStored = true, role = "admin" } = {}) => {
   const findQueries = [];
+  const queryLimits = [];
   const updates = [];
   const item = {
     _id: "notification-1",
@@ -21,11 +22,12 @@ const loadController = ({ items = null, anyStored = true, role = "admin" } = {})
     "../models/Notification": {
       find: (query) => {
         findQueries.push(query);
+        let queryLimit;
         return {
           select() { return this; },
           sort() { return this; },
-          limit() { return this; },
-          lean: async () => visibleItems,
+          limit(value) { queryLimit = value; queryLimits.push(value); return this; },
+          lean: async () => queryLimit ? visibleItems.slice(0, queryLimit) : visibleItems,
         };
       },
       exists: async () => anyStored,
@@ -49,7 +51,7 @@ const loadController = ({ items = null, anyStored = true, role = "admin" } = {})
   };
   let controller;
   try { controller = require(path); } finally { Module._load = original; delete require.cache[path]; }
-  return { controller, findQueries, updates };
+  return { controller, findQueries, queryLimits, updates };
 };
 
 const response = () => ({
@@ -108,6 +110,35 @@ test("customer alerts expose an id that can be used by the read endpoint", async
   assert.equal(res.data.notifications[0].id, "notification-customer-1");
   assert.equal(res.data.notifications[0]._id, undefined);
   assert.equal(res.data.notifications[0].unread, true);
+});
+
+test("Superadmin operations inbox includes older alerts while compact drawers stay limited", async () => {
+  const items = Array.from({ length: 120 }, (_, index) => ({
+    _id: `notification-${index}`,
+    type: "system",
+    title: `Distinct alert ${index}`,
+    message: `Detail ${index}`,
+    createdAt: new Date("2026-10-04T01:00:00.000Z"),
+  }));
+  const fixture = loadController({ items, role: "superadmin" });
+  const full = response();
+  await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: { scope: "operations" } }, full);
+  assert.equal(full.data.notifications.length, 120);
+  assert.equal(fixture.queryLimits.length, 0);
+
+  const compact = response();
+  await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, compact);
+  assert.equal(compact.data.notifications.length, 30);
+  assert.deepEqual(fixture.queryLimits, [100]);
+});
+
+test("operations scope cannot expand another role's notification drawer", async () => {
+  const items = Array.from({ length: 40 }, (_, index) => ({ _id: `n-${index}`, type: "system", title: `Alert ${index}` }));
+  const fixture = loadController({ items, role: "admin" });
+  const res = response();
+  await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: { scope: "operations" } }, res);
+  assert.equal(res.data.notifications.length, 30);
+  assert.deepEqual(fixture.queryLimits, [100]);
 });
 
 test("technicians do not receive obsolete unassigned-order alerts", () => {

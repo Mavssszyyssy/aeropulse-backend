@@ -124,6 +124,11 @@ const listMyNotifications = async (req, res) => {
   // applying preferences. Otherwise, suppressed alerts in the newest 30 can
   // hide older unread alerts that the user is still meant to see.
   const archivedView = String(req.query?.view || "active").toLowerCase() === "archived";
+  // The full Superadmin operations inbox paginates its filtered results in the
+  // client. The compact notification drawers retain their 30-item response.
+  const operationsView = req.query?.scope === "operations"
+    && String(user?.role || "").toLowerCase() === "superadmin"
+    && !archivedView;
   if (!archivedView) {
     try {
       await reconcileRequiredActionsForUser(user);
@@ -136,11 +141,11 @@ const listMyNotifications = async (req, res) => {
     ? { archivedAt: { $ne: null } }
     : { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] };
   const notificationFields = "type branch category severity title message route targetId targetType dedupeKey status unread archivedAt createdAt updatedAt";
-  let notifications = await Notification.find({ user: userId, ...archiveScope })
+  const notificationsQuery = Notification.find({ user: userId, ...archiveScope })
     .select(notificationFields)
-    .sort({ createdAt: -1 })
-    .limit(100)
-    .lean();
+    .sort({ createdAt: -1 });
+  if (!operationsView) notificationsQuery.limit(100);
+  let notifications = await notificationsQuery.lean();
 
   const hasAnyStoredNotification = notifications.length > 0
     || Boolean(await Notification.exists({ user: userId }));
@@ -168,11 +173,11 @@ const listMyNotifications = async (req, res) => {
         message: statusMessage,
       },
     ]);
-    notifications = await Notification.find({ user: userId, ...archiveScope })
+    const welcomeQuery = Notification.find({ user: userId, ...archiveScope })
       .select(notificationFields)
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .lean();
+      .sort({ createdAt: -1 });
+    if (!operationsView) welcomeQuery.limit(100);
+    notifications = await welcomeQuery.lean();
   }
 
   const activeNotifications = archivedView
@@ -189,7 +194,8 @@ const listMyNotifications = async (req, res) => {
   notifications = applyNotificationPreferences(
     applyRoleRelevance(notifications, user?.role),
     userNotifications,
-  ).slice(0, 30);
+  );
+  if (!operationsView) notifications = notifications.slice(0, 30);
 
   return res.json({
     notifications: sanitizeLegacyNotifications(notifications, user?.role),

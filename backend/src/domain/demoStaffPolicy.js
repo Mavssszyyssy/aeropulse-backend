@@ -10,6 +10,7 @@ const PROTECTED_DEMO_STAFF = [
 ];
 
 const SHARED_DEMO_EMAIL = "lanlords2025@gmail.com";
+const MAX_SHARED_DEMO_ACCOUNTS = 10;
 const SHARED_DEMO_ACCOUNTS = Object.freeze([
   { accountKey: "superadmin.main", role: "superadmin", branch: "" },
   { accountKey: "admin.cavite", role: "admin", branch: "Cavite" },
@@ -36,11 +37,17 @@ const sharedDemoAccount = (user = {}) => {
   const key = normalizeAccountKey(user);
   const role = String(user.role || "").trim().toLowerCase();
   const branch = accountBranch(user);
-  return SHARED_DEMO_ACCOUNTS.find((account) => (
+  const legacyAccount = SHARED_DEMO_ACCOUNTS.find((account) => (
     account.accountKey === key &&
     account.role === role &&
     (!account.branch || account.branch === branch)
-  )) || null;
+  ));
+  if (legacyAccount) return legacyAccount;
+  // Only the Super Admin staff-creation path grants this persisted exception.
+  if (role === "admin" && user.sharedDemoEmailApproved === true && key && branch) {
+    return { accountKey: key, role, branch };
+  }
+  return null;
 };
 
 const canUseSharedDemoEmail = (user = {}, email = user.email) => (
@@ -58,6 +65,7 @@ const buildEmailIdentityKey = (user = {}, email = user.email) => {
 };
 
 module.exports = {
+  MAX_SHARED_DEMO_ACCOUNTS,
   PROTECTED_DEMO_STAFF,
   SHARED_DEMO_ACCOUNTS,
   SHARED_DEMO_EMAIL,
