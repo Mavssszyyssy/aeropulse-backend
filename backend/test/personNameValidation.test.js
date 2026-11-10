@@ -10,7 +10,10 @@ test("names preserve legitimate Filipino and international spelling", () => {
 });
 
 test("names reject empty, unrealistic, malformed and overly long values", () => {
-  for (const value of ["", "   ", "A", "hhhhhhhhhhhhhhhhhhhhhhhh", "John123", "-Maria", "a".repeat(61)]) {
+  for (const value of ["", "   ", "A", "hhhhhhhhhhhhhhhhhhhhhhhh", "Patrickjhhhhjhhhhhgggsa", "John123", "-Maria", "Alexandra".repeat(4).slice(0, 31)]) {
     assert.ok(validatePersonName(value, "First name").error, value);
   }
+  assert.equal(validatePersonName("Alexandra".repeat(4).slice(0, 30), "First name").error, "");
+  assert.match(validatePersonName("Alexandra".repeat(4).slice(0, 31), "Last name").error, /2–30/);
+  assert.equal(validatePersonName("Alexandra".repeat(7).slice(0, 60), "Recipient name", { maxLength: 60 }).error, "");
 });

@@ -89,7 +89,7 @@ const sanitizeAddressPayload = (payload = {}) => {
 };
 const validateAddress = (address = {}) => {
   const errors = {};
-  const nameResult = validatePersonName(address.name, "Recipient name");
+  const nameResult = validatePersonName(address.name, "Recipient name", { maxLength: 60 });
   if (nameResult.error) errors.name = nameResult.error;
   if (!address.region || !String(address.region).trim()) {
     errors.region = "Region is required";
