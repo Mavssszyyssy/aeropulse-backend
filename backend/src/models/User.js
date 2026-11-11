@@ -56,6 +56,7 @@ const userSchema = new mongoose.Schema(
     name: { type: String, trim: true },
     name_first: { type: String, required: true, trim: true },
     name_last: { type: String, required: true, trim: true },
+    suffix: { type: String, default: "", trim: true, maxlength: 12 },
     email: {
       type: String,
       // Staff and legacy accounts may not have an email; public signup requires email verification.
@@ -167,7 +168,7 @@ const userSchema = new mongoose.Schema(
     },
     expoPushTokens: { type: [{ type: String, trim: true }], select: false, default: [] },
     skills: [{ type: String }],
-    serviceQuota: { type: Number, min: 1, default: null },
+    serviceQuota: { type: Number, min: 1, max: 50, default: null },
     permissions: [{ type: String }],
     department: { type: String },
     assignedBranch: { type: String, default: "" },

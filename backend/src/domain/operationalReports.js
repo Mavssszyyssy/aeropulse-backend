@@ -1,7 +1,9 @@
 const { BRANCHES } = require("./branchRouting");
 const { orderIsPaid } = require("./orderPayment");
+const { parseTimeSlot } = require("./taskScheduleConflict");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MANILA_UTC_OFFSET = "+08:00";
 const SALES_STATUSES = ["all", "paid", "complete", "to_pay", "to_deliver", "to_dispatch", "to_install", "for_rescheduling", "cancelled"];
 const SALES_PAYMENT_METHODS = ["all", "cod", "gcash", "card"];
 
@@ -17,11 +19,11 @@ const validDate = (value) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
-const parseReportDate = (value, { endOfDay = false } = {}) => {
+const parseReportDate = (value, { endOfDay = false, dateOffset = "Z" } = {}) => {
   if (!value) return null;
   const normalized = String(value).trim();
   const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
-    ? new Date(`${normalized}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`)
+    ? new Date(`${normalized}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}${dateOffset}`)
     : new Date(normalized);
   if (Number.isNaN(parsed.getTime())) return null;
   if (endOfDay && !/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
@@ -30,7 +32,7 @@ const parseReportDate = (value, { endOfDay = false } = {}) => {
   return parsed;
 };
 
-const resolveReportRange = ({ from, to } = {}, now = new Date()) => {
+const resolveReportRange = ({ from, to } = {}, now = new Date(), { useManilaDates = false } = {}) => {
   const businessToday = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Manila", year: "numeric", month: "2-digit", day: "2-digit",
   }).format(now);
@@ -49,9 +51,9 @@ const resolveReportRange = ({ from, to } = {}, now = new Date()) => {
       throw error;
     }
   }
-  const fallbackTo = new Date(now);
-  const resolvedTo = parseReportDate(to, { endOfDay: true }) || fallbackTo;
-  const resolvedFrom = parseReportDate(from) || new Date(resolvedTo.getTime() - 30 * DAY_MS);
+  const dateOffset = useManilaDates ? MANILA_UTC_OFFSET : "Z";
+  const resolvedTo = parseReportDate(to, { endOfDay: true, dateOffset }) || new Date(now);
+  const resolvedFrom = parseReportDate(from, { dateOffset }) || new Date(resolvedTo.getTime() - 30 * DAY_MS);
   if (resolvedFrom > resolvedTo) {
     const error = new Error("The report start date must be on or before the end date.");
     error.statusCode = 400;
@@ -123,18 +125,47 @@ const filterInventoryRows = (rows = [], { category = "all", brand = "", sku = ""
   ));
 };
 
+const scheduledEnd = (task) => {
+  const date = String(task.scheduledDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const midnightUtc = validDate(`${date}T00:00:00Z`);
+  const slot = parseTimeSlot(task.timeSlot);
+  if (!midnightUtc || midnightUtc.toISOString().slice(0, 10) !== date || !slot) return null;
+  return new Date(`${date}T00:00:00${MANILA_UTC_OFFSET}`).getTime() + slot.end * 60_000;
+};
+
 const buildTechnicianPerformanceReport = (technicians = [], completedTasks = [], { search = "" } = {}) => {
   const needle = String(search || "").trim().toLowerCase();
   const completions = new Map();
   (completedTasks || []).forEach((task) => {
     const technicianId = String(task.assignedTechnicianId || "");
-    if (technicianId) completions.set(technicianId, (completions.get(technicianId) || 0) + 1);
+    if (!technicianId) return;
+    const metrics = completions.get(technicianId) || { count: 0, durationCount: 0, durationMs: 0, scheduledCount: 0, onTimeCount: 0 };
+    completions.set(technicianId, metrics);
+    metrics.count += 1;
+    const completedAt = validDate(task.completedAt);
+    if (!completedAt) return;
+    const assignedAt = validDate(task.assignedAt);
+    if (assignedAt && assignedAt <= completedAt) {
+      metrics.durationCount += 1;
+      metrics.durationMs += completedAt - assignedAt;
+    }
+    const deadline = scheduledEnd(task);
+    if (deadline !== null) {
+      metrics.scheduledCount += 1;
+      if (completedAt.getTime() <= deadline) metrics.onTimeCount += 1;
+    }
   });
-  const rows = (technicians || []).map((technician) => ({
-    technician: technician.name || [technician.name_first, technician.name_last].filter(Boolean).join(" ") || technician.email || "Technician",
-    branch: technician.activeBranch || technician.assignedBranch || "Unassigned",
-    completedWorkOrders: completions.get(String(technician._id || technician.id || "")) || 0,
-  })).filter((row) => !needle || [row.technician, row.branch]
+  const rows = (technicians || []).map((technician) => {
+    const metrics = completions.get(String(technician._id || technician.id || ""));
+    return {
+      technician: technician.name || [technician.name_first, technician.name_last].filter(Boolean).join(" ") || technician.email || "Technician",
+      branch: technician.activeBranch || technician.assignedBranch || "Unassigned",
+      completedWorkOrders: metrics?.count || 0,
+      averageCompletionHours: metrics?.durationCount ? roundMoney(metrics.durationMs / metrics.durationCount / 3_600_000) : null,
+      onTimeRate: metrics?.scheduledCount ? roundMoney(100 * metrics.onTimeCount / metrics.scheduledCount) : null,
+    };
+  }).filter((row) => !needle || [row.technician, row.branch]
     .some((value) => String(value || "").toLowerCase().includes(needle)))
     .sort((left, right) => right.completedWorkOrders - left.completedWorkOrders || left.technician.localeCompare(right.technician));
   return {

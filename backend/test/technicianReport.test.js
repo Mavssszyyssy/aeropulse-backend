@@ -14,6 +14,7 @@ test("technician reports include only active, non-deleted technician accounts", 
 
 test("technician report applies the selected date and branch to completed work", async () => {
   let taskQuery;
+  let selectedFields;
   const originalLoad = Module._load;
   const mocks = {
     "../models/User": {
@@ -26,7 +27,10 @@ test("technician report applies the selected date and branch to completed work",
     "../models/Task": {
       find: (query) => {
         taskQuery = query;
-        return { select() { return this; }, lean: async () => [{ assignedTechnicianId: "tech-1", branch: "Cavite" }] };
+        return { select(fields) { selectedFields = fields; return this; }, lean: async () => [{
+          assignedTechnicianId: "tech-1", assignedAt: "2026-09-10T05:00:00Z",
+          completedAt: "2026-09-10T07:00:00Z", scheduledDate: "2026-09-10", timeSlot: "1:00 PM - 3:00 PM",
+        }] };
       },
     },
     "../models/Order": {},
@@ -57,7 +61,10 @@ test("technician report applies the selected date and branch to completed work",
   await controller.getTechnicianReport(req, res);
   assert.equal(res.statusCode, 200);
   assert.equal(taskQuery.branch, "Cavite");
-  assert.equal(taskQuery.completedAt.$gte.toISOString(), "2026-09-01T00:00:00.000Z");
-  assert.equal(taskQuery.completedAt.$lte.toISOString(), "2026-09-10T23:59:59.999Z");
+  assert.equal(taskQuery.completedAt.$gte.toISOString(), "2026-08-31T16:00:00.000Z");
+  assert.equal(taskQuery.completedAt.$lte.toISOString(), "2026-09-10T15:59:59.999Z");
   assert.deepEqual(res.data.summary, { technicianCount: 1, completedInPeriod: 1 });
+  for (const field of ["assignedAt", "completedAt", "scheduledDate", "timeSlot"]) assert.ok(selectedFields.split(" ").includes(field));
+  assert.equal(res.data.rows[0].averageCompletionHours, 2);
+  assert.equal(res.data.rows[0].onTimeRate, 100);
 });

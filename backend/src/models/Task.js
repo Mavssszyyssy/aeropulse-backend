@@ -26,6 +26,7 @@ const taskSchema = new mongoose.Schema(
       index: true,
     },
     assignedTechnicianName: { type: String, default: "" },
+    assignedAt: { type: Date, default: null },
     status: {
       type: String,
       enum: [
@@ -77,6 +78,12 @@ const taskSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+taskSchema.pre("save", function recordTechnicianAssignment() {
+  if (this.isNew || this.isModified("assignedTechnicianId")) {
+    this.assignedAt = this.assignedTechnicianId ? new Date() : null;
+  }
+});
 
 taskSchema.set("toJSON", {
   transform: (_doc, ret) => {

@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const { validatePersonName } = require("../domain/personNameValidation");
+const { validateAccountSuffix } = require("../domain/accountSuffix");
 const { BRANCHES } = require("../domain/branchRouting");
 const Order = require("../models/Order");
 const Notification = require("../models/Notification");
@@ -349,9 +350,11 @@ const applyProfileUpdate = async (
   // A rejected field must not leave another field changed in the live session.
   const firstNameCheck = payload.name_first === undefined ? null : validatePersonName(payload.name_first, "First name");
   const lastNameCheck = payload.name_last === undefined ? null : validatePersonName(payload.name_last, "Last name");
+  const suffixCheck = payload.suffix === undefined ? null : validateAccountSuffix(payload.suffix);
   if (firstNameCheck?.error || lastNameCheck?.error) {
     return { ok: false, status: 400, message: firstNameCheck?.error || lastNameCheck.error };
   }
+  if (suffixCheck?.error) return { ok: false, status: 400, message: suffixCheck.error };
   const proposedAlias = payload.alias === undefined ? null : String(payload.alias || "").trim().toLowerCase();
   if (proposedAlias !== null) {
     if (user.role === "customer" && !/^[a-z0-9_.-]{3,30}$/.test(proposedAlias)) {
@@ -397,6 +400,7 @@ const applyProfileUpdate = async (
     const fullName = [user.name_first, user.name_last].filter(Boolean).join(" ").trim();
     if (fullName) user.name = fullName;
   }
+  if (suffixCheck) user.suffix = suffixCheck.value;
   if (payload.alias !== undefined) {
     if (proposedAlias) {
       user.alias = proposedAlias;
@@ -634,7 +638,7 @@ const updateProfileById = async (req, res) => {
     }
     const serviceQuota = normalizeServiceQuota(req.body.serviceQuota);
     if (!serviceQuota) {
-      return res.status(400).json({ message: "Service Quota must be a whole number greater than 0." });
+      return res.status(400).json({ message: "Service Quota must be a whole number from 1 to 50." });
     }
     target.serviceQuota = serviceQuota;
   }

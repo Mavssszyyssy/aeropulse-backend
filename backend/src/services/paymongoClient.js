@@ -235,9 +235,20 @@ const getCheckoutSession = async (checkoutSessionId) => {
   return requestPaymongo(`/v1/checkout_sessions/${encodeURIComponent(sessionId)}`);
 };
 
+const expireCheckoutSession = async (checkoutSessionId) => {
+  const sessionId = String(checkoutSessionId || "").trim();
+  if (!sessionId) {
+    throw new PaymongoError("PayMongo checkout session ID is required.", { status: 400 });
+  }
+  return requestPaymongo(`/v1/checkout_sessions/${encodeURIComponent(sessionId)}/expire`, {
+    method: "POST",
+  });
+};
+
 module.exports = {
   PaymongoError,
   createCheckoutSession,
+  expireCheckoutSession,
   getCheckoutSession,
   isConfigured,
   getConfigurationError: configurationError,

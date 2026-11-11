@@ -44,7 +44,19 @@ test("technician report counts completed work in the selected dataset and suppor
   ];
   const report = buildTechnicianPerformanceReport(technicians, completedTasks, { search: "cavite" });
   assert.deepEqual(report.summary, { technicianCount: 1, completedInPeriod: 2 });
-  assert.deepEqual(report.rows, [{ technician: "Alex Tech", branch: "Cavite", completedWorkOrders: 2 }]);
+  assert.deepEqual(report.rows, [{ technician: "Alex Tech", branch: "Cavite", completedWorkOrders: 2, averageCompletionHours: null, onTimeRate: null }]);
+});
+
+test("technician metrics use recorded assignment times and inclusive Manila slot deadlines", () => {
+  const slot = { assignedTechnicianId: "t1", scheduledDate: "2026-09-10", timeSlot: "1:00 PM – 3:00 PM" };
+  const { rows } = buildTechnicianPerformanceReport([{ _id: "t1", name: "Alex" }], [
+    { ...slot, assignedAt: "2026-09-10T05:00:00Z", completedAt: "2026-09-10T07:00:00Z" },
+    { ...slot, assignedAt: "2026-09-10T03:00:00Z", completedAt: "2026-09-10T08:00:00Z" },
+    { ...slot, scheduledDate: "2026-09-31", completedAt: "2026-09-10T08:00:00Z" },
+  ]);
+  assert.equal(rows[0].completedWorkOrders, 3);
+  assert.equal(rows[0].averageCompletionHours, 3.5);
+  assert.equal(rows[0].onTimeRate, 50);
 });
 
 test("report range includes the complete selected end date and rejects a reversed range", () => {
@@ -52,6 +64,15 @@ test("report range includes the complete selected end date and rejects a reverse
   assert.equal(range.from.toISOString(), "2026-09-01T00:00:00.000Z");
   assert.equal(range.to.toISOString(), "2026-09-10T23:59:59.999Z");
   assert.throws(() => resolveReportRange({ from: "2026-09-11", to: "2026-09-10" }), /start date must be on or before/i);
+});
+
+test("technician date filters include exactly the selected Manila calendar day", () => {
+  const range = resolveReportRange({ from: "2026-09-10", to: "2026-09-10" },
+    new Date("2026-09-10T00:00:00Z"), { useManilaDates: true });
+  assert.equal(range.from.toISOString(), "2026-09-09T16:00:00.000Z");
+  assert.equal(range.to.toISOString(), "2026-09-10T15:59:59.999Z");
+  assert.throws(() => resolveReportRange({ from: "2026-09-31" }, new Date("2026-10-01T00:00:00Z"),
+    { useManilaDates: true }), /valid report start/i);
 });
 
 test("historical report rejects future and malformed dates without inventing a range", () => {

@@ -4,6 +4,18 @@ const { reconcileRequiredActionsForUser } = require("../services/requiredActionR
 
 const STAFF_ROLES = ["admin", "superadmin", "manager", "owner"];
 
+const technicianDuplicateScope = (notification) => {
+  if (notification.dedupeKey) return { dedupeKey: notification.dedupeKey };
+  return {
+    dedupeKey: { $in: [null, ""] },
+    type: (notification.type || "system") === "system" ? { $in: [null, "", "system"] } : notification.type,
+    targetType: notification.targetType || { $in: [null, ""] },
+    targetId: notification.targetId || { $in: [null, ""] },
+    title: notification.title,
+    message: notification.message,
+  };
+};
+
 const collapseDuplicateNotifications = (notifications = []) => {
   const seen = new Set();
   return notifications.filter((item) => {
@@ -117,7 +129,7 @@ const listMyNotifications = async (req, res) => {
     .lean();
   const userNotifications = user?.notifications?.toObject?.() || user?.notifications || {};
   if (userNotifications.inApp === false) {
-    return res.json({ notifications: [], unreadCount: 0 });
+    return res.json({ notifications: [], unreadCount: 0, hasMore: false });
   }
 
   // Fetch beyond the drawer's display size before collapsing duplicates and
@@ -129,6 +141,10 @@ const listMyNotifications = async (req, res) => {
   const operationsView = req.query?.scope === "operations"
     && String(user?.role || "").toLowerCase() === "superadmin"
     && !archivedView;
+  const mobileView = req.query?.scope === "mobile"
+    && ["customer", "technician"].includes(String(user?.role || "").toLowerCase())
+    && !archivedView;
+  const mobileLimit = mobileView ? Math.min(200, Math.max(30, Math.floor(Number(req.query?.limit) || 30))) : 30;
   if (!archivedView) {
     try {
       await reconcileRequiredActionsForUser(user);
@@ -144,7 +160,7 @@ const listMyNotifications = async (req, res) => {
   const notificationsQuery = Notification.find({ user: userId, ...archiveScope })
     .select(notificationFields)
     .sort({ createdAt: -1 });
-  if (!operationsView) notificationsQuery.limit(100);
+  if (!operationsView && !mobileView) notificationsQuery.limit(100);
   let notifications = await notificationsQuery.lean();
 
   const hasAnyStoredNotification = notifications.length > 0
@@ -176,7 +192,7 @@ const listMyNotifications = async (req, res) => {
     const welcomeQuery = Notification.find({ user: userId, ...archiveScope })
       .select(notificationFields)
       .sort({ createdAt: -1 });
-    if (!operationsView) welcomeQuery.limit(100);
+    if (!operationsView && !mobileView) welcomeQuery.limit(100);
     notifications = await welcomeQuery.lean();
   }
 
@@ -195,21 +211,32 @@ const listMyNotifications = async (req, res) => {
     applyRoleRelevance(notifications, user?.role),
     userNotifications,
   );
-  if (!operationsView) notifications = notifications.slice(0, 30);
+  const hasMore = mobileView && notifications.length > mobileLimit;
+  if (mobileView) notifications = notifications.slice(0, mobileLimit);
+  else if (!operationsView) notifications = notifications.slice(0, 30);
 
   return res.json({
     notifications: sanitizeLegacyNotifications(notifications, user?.role),
     unreadCount,
+    hasMore,
   });
 };
 
 const archiveNotification = async (req, res) => {
+  const archive = { $set: { archivedAt: new Date(), unread: false, status: "read" } };
   const notification = await Notification.findOneAndUpdate(
     { _id: req.params.id, user: req.authUser._id },
-    { $set: { archivedAt: new Date(), unread: false, status: "read" } },
+    archive,
     { new: true },
   );
   if (!notification) return res.status(404).json({ message: "Notification not found" });
+  if (req.authUser.role === "technician") {
+    // The technician inbox renders these duplicate records as one alert.
+    await Notification.updateMany(
+      { user: req.authUser._id, archivedAt: null, ...technicianDuplicateScope(notification) },
+      archive,
+    );
+  }
   return res.json({ notification: notification.toJSON() });
 };
 

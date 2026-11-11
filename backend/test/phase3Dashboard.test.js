@@ -48,6 +48,52 @@ test('pipeline includes dispatch and rescheduling stages so every valid order ca
   assert.equal(data.orderStages.find((row) => row.key === 'for_rescheduling').count, 5);
 });
 
+test('branch totals reconcile with pipeline, including cancelled and legacy stage records', () => {
+  const branchFacet = buildCommerceAnalyticsPipeline().at(-1).$facet.branches;
+  assert.equal(branchFacet.some((stage) => stage.$match), false);
+  assert.deepEqual(branchFacet[0].$group.allOrders, { $sum: 1 });
+  assert.deepEqual(branchFacet[0].$group.cancelledOrders, { $sum: { $cond: ['$_analyticsCancelled', 1, 0] } });
+  const data = normalizeCommerceAnalytics({
+    summary: [{ totalOrders: 92, cancelledOrders: 48, paidOrders: 60, revenue: 2500 }],
+    orderStages: [
+      { _id: 'to_pay', count: 24 }, { _id: 'to_deliver', count: 13 },
+      { _id: 'to_dispatch', count: 3 }, { _id: 'to_install', count: 9 },
+      { _id: 'for_rescheduling', count: 3 }, { _id: 'complete', count: 39 },
+      { _id: 'legacy_stage', count: 1 }, { _id: 'cancelled', count: 48 },
+    ],
+    branches: [
+      { _id: 'Bulacan', orders: 48, allOrders: 76, cancelledOrders: 28, paidOrders: 35, revenue: 1400 },
+      { _id: 'Cavite', orders: 44, allOrders: 64, cancelledOrders: 20, paidOrders: 25, revenue: 1100 },
+    ],
+  });
+  assert.equal(data.orderStages.find((stage) => stage.key === 'other_status').count, 1);
+  assert.equal(data.orderStages.reduce((sum, stage) => sum + stage.count, 0), 140);
+  assert.equal(data.branches.reduce((sum, branch) => sum + branch.allOrders, 0), 140);
+  assert.equal(data.branches.reduce((sum, branch) => sum + branch.orders, 0), data.summary.totalOrders);
+  assert.equal(data.branches.reduce((sum, branch) => sum + branch.cancelledOrders, 0), data.summary.cancelledOrders);
+});
+
+test('paid revenue and payment-method breakdown use the same order amounts and reconcile in cents', () => {
+  const facet = buildCommerceAnalyticsPipeline().at(-1).$facet;
+  assert.deepEqual(facet.summary[0].$group.revenue, {
+    $sum: { $cond: ['$_analyticsPaid', '$_analyticsAmount', 0] },
+  });
+  assert.deepEqual(facet.paymentMethods[0], { $match: { _analyticsPaid: true } });
+  assert.deepEqual(facet.paymentMethods[1].$group.revenue, { $sum: '$_analyticsAmount' });
+
+  const data = normalizeCommerceAnalytics({
+    summary: [{ paidOrders: 4, revenue: 2388762.75 }],
+    paymentMethods: [
+      { _id: 'GCASH', count: 1, revenue: 1000000.25 },
+      { _id: 'COD', count: 1, revenue: 500000.25 },
+      { _id: 'CREDIT', count: 1, revenue: 400000.25 },
+      { _id: 'CARD', count: 1, revenue: 488762 },
+    ],
+  });
+  assert.equal(data.paymentMethods.reduce((cents, row) => cents + Math.round(row.revenue * 100), 0), Math.round(data.summary.revenue * 100));
+  assert.equal(data.paymentMethods.reduce((count, row) => count + row.count, 0), data.summary.paidOrders);
+});
+
 test('dashboard rejects invalid branches and dates without running database work', async () => {
   for (const query of [{ branch: 'Not a branch' }, { from: '2026-10-01' }, { from: '2026-10-20', to: '2026-10-01' }, { from: '2099-01-01', to: '2099-01-02' }]) {
     const res = response();

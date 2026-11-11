@@ -17,6 +17,15 @@ Express + MongoDB backend API for web and mobile clients. It is ready to deploy 
 
 - `http://localhost:5000/api`
 
+## Local sign-in email
+
+Sign-in requires a code sent to the account's email address. Set `RESEND_API_KEY` and
+`RESEND_FROM_EMAIL` in `backend/.env.local`. The sender must be on a domain verified
+in your Resend account to deliver to other recipients. For SMTP, set `SMTP_HOST`,
+`SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` instead.
+Restart the backend after changing these settings. Keep the credentials in the backend
+environment. Shell variables take precedence over `.env.local` and `.env`.
+
 ## Deploy to Vercel
 
 Deploy the `backend` folder as the repository root. Vercel uses `api/index.js` as the serverless entry and rewrites every request to the Express app.

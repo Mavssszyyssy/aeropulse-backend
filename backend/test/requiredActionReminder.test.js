@@ -51,7 +51,35 @@ test("technicians receive a deduplicated reminder for an unfinished due work ord
   assert.equal(fixture.created.length, 1);
   assert.equal(fixture.created[0].payload.targetType, "task");
   assert.match(fixture.created[0].payload.message, /service notes, unit verification, and proof/);
-  assert.equal(fixture.created[0].options.dedupeMinutes, 720);
+  assert.deepEqual(fixture.created[0].options, { dedupeMinutes: 0, refreshExisting: false });
+  const next = { _id: "tech-1", role: "technician", notifications: {} };
+  await fixture.service.reconcileRequiredActionsForUser(next, { now: new Date("2026-09-24T15:50:00.000Z"), force: true });
+  await fixture.service.reconcileRequiredActionsForUser(next, { now: new Date("2026-09-24T16:10:00.000Z"), force: true });
+  assert.equal(fixture.created[0].payload.dedupeKey, fixture.created[1].payload.dedupeKey);
+  assert.notEqual(fixture.created[0].payload.dedupeKey, fixture.created[2].payload.dedupeKey);
+});
+
+test("a repeated reminder keeps the archived record even when its wording changes", async (t) => {
+  const Notification = require("../src/models/Notification");
+  const { createDedupedNotification } = require("../src/services/operationalNotificationService");
+  const user = "507f1f77bcf86cd799439011";
+  const dedupeKey = "required-action:technician:task-1:arrived:2026-09-24";
+  const archived = {
+    title: "Original reminder", archivedAt: new Date(), unread: false, $locals: {},
+    save: async () => assert.fail("An archived reminder should not be saved again"),
+  };
+  t.mock.method(Notification, "findOne", (query) => {
+    assert.deepEqual(query, { user, dedupeKey });
+    return { sort: async () => archived };
+  });
+  const create = t.mock.method(Notification, "create", async () => assert.fail("The reminder already exists"));
+  const result = await createDedupedNotification({ user, dedupeKey, title: "Updated reminder" }, {
+    dedupeMinutes: 0, refreshExisting: false,
+  });
+  assert.equal(result, archived);
+  assert.equal(result.unread, false);
+  assert.ok(result.archivedAt);
+  assert.equal(create.mock.callCount(), 0);
 });
 
 test("staff reminders are role and branch scoped summaries", async () => {

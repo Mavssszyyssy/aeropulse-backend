@@ -127,6 +127,30 @@ test("Super Admin can create a shared-email branch admin below the cap, with a d
   assert.equal(User.create.mock.callCount(), 1);
 });
 
+test("an unconfigured local mail provider explains how to fix sign-in and still requires verification", async (t) => {
+  const user = fixture({ accountKey: "tech.main", role: "technician", branch: "Bulacan" }, {
+    passwordHash: bcrypt.hashSync("DemoPass123!", 4),
+  });
+  t.mock.method(User, "findOne", async () => user);
+  t.mock.method(emailService, "canSendEmail", () => false);
+  const createOtp = t.mock.method(OtpRequest, "create", async () => assert.fail("No OTP should be stored without a mail provider"));
+  const originalEnvironment = env.nodeEnv;
+  t.after(() => { env.nodeEnv = originalEnvironment; });
+  env.nodeEnv = "development";
+  const req = { body: { identifier: "tech.main", password: "DemoPass123!" } };
+  const local = response();
+  await login(req, local);
+  assert.equal(local.statusCode, 503);
+  assert.match(local.body.message, /Set up Resend or SMTP/);
+  assert.equal(local.body.token, undefined);
+  env.nodeEnv = "production";
+  const production = response();
+  await login(req, production);
+  assert.equal(production.statusCode, 503);
+  assert.match(production.body.message, /Unable to send the sign-in verification code/);
+  assert.equal(createOtp.mock.callCount(), 0);
+});
+
 test("all staff demo accounts and customers receive separate account-bound email challenges", async (t) => {
   const demoUsers = SHARED_DEMO_ACCOUNTS.map((account, index) => fixture(account, {
     passwordHash: bcrypt.hashSync(`DemoPass${index + 1}!`, 4),
@@ -280,6 +304,42 @@ test("shared demo email password reset remains bound to the selected account ID"
   assert.equal(res.body.message, "Success");
   assert.notEqual(carl.passwordHash, previousPasswordHash);
   assert.equal(carl.security.sessionVersion, 4);
+});
+
+test("password recovery rejects a weak password and reuse without changing the account", async (t) => {
+  const code = "654321";
+  const account = fixture(SHARED_DEMO_ACCOUNTS.find(({ accountKey }) => accountKey === "tech.cavite.carl"), {
+    passwordHash: await bcrypt.hash("OldPass123!", 4),
+    security: { sessionVersion: 2 },
+  });
+  const originalHash = account.passwordHash;
+  const recoveryOtp = {
+    _id: "reuse-recovery-code",
+    codeHash: hashVerificationCode({ accountId: account.id, email: SHARED_DEMO_EMAIL, action: "password_reset", code }),
+    expiresAt: new Date(Date.now() + 60_000),
+    attempts: 0,
+    lockedAt: null,
+    verifiedAt: null,
+    save: async () => {},
+  };
+  t.mock.method(User, "findOne", async () => account);
+  t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => recoveryOtp }));
+  t.mock.method(OtpRequest, "findOneAndUpdate", async (_query, update) => ({ ...recoveryOtp, verifiedAt: update.$set.verifiedAt }));
+  t.mock.method(account, "save", async () => account);
+
+  const body = { identifier: SHARED_DEMO_EMAIL, accountLoginId: "tech.cavite.carl", code, channel: "email" };
+  const weak = response();
+  await resetPasswordWithCode({ body: { ...body, newPassword: "NewPassword123" } }, weak);
+  assert.equal(weak.statusCode, 400);
+  assert.match(weak.body.message, /symbol/i);
+
+  const reused = response();
+  await resetPasswordWithCode({ body: { ...body, newPassword: "OldPass123!" } }, reused);
+  assert.equal(reused.statusCode, 400);
+  assert.match(reused.body.message, /different from your current password/i);
+  assert.equal(account.passwordHash, originalHash);
+  assert.equal(account.security.sessionVersion, 2);
+  assert.equal(account.save.mock.callCount(), 0);
 });
 
 test("public customer registration cannot claim the reserved shared demo email", async () => {

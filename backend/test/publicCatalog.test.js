@@ -74,13 +74,26 @@ test("known seeded models use their verified storefront image", () => {
   });
   assert.equal(
     result.image,
-    "https://www.coldair-act.online/catalog/ac/carrier-opus-53cnv.jpg",
+    "https://www.coldair-act.online/catalog/ac/carrier-opus-53cnv.png",
   );
+});
+
+test("existing Samsung catalog records use matching transparent model images", () => {
+  for (const [sku, filename] of [
+    ["12345678", "samsung-windfree-wallmount.png"],
+    ["123456789", "samsung-windfree-wallmount.png"],
+    ["WA70F13E4LTC", "samsung-bespoke-ai.png"],
+  ]) {
+    const result = toPublicProduct({ ...product, sku, image: "https://example.invalid/old.jpg" });
+    assert.equal(result.image, `https://www.coldair-act.online/catalog/ac/${filename}`);
+  }
 });
 
 test("unknown products keep their uploaded catalog image", () => {
   const result = toPublicProduct(product);
   assert.equal(result.image, "https://example.invalid/ac.jpg");
+  const similarSku = toPublicProduct({ ...product, sku: "1234567890" });
+  assert.equal(similarSku.image, "https://example.invalid/ac.jpg");
 });
 
 test("customer catalog excludes test, demo, QA, and E2E inventory", () => {

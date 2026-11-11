@@ -1,6 +1,12 @@
 const dotenv = require("dotenv");
+const path = require("node:path");
 
-dotenv.config();
+const backendDirectory = path.resolve(__dirname, "../..");
+const envFiles = [path.join(backendDirectory, ".env")];
+if (!process.env.VERCEL && !["production", "test"].includes(process.env.NODE_ENV)) {
+  envFiles.unshift(path.join(backendDirectory, ".env.local"));
+}
+dotenv.config({ path: envFiles });
 
 const DEFAULT_CORS_ORIGINS = [
   "http://localhost:3000",

@@ -53,6 +53,7 @@ const createEmailVerification = async ({ accountId = "", challengeId = "", email
   if (!emailService.canSendEmail()) {
     const error = new Error("Email verification is temporarily unavailable.");
     error.status = 503;
+    error.code = "VERIFICATION_EMAIL_UNCONFIGURED";
     throw error;
   }
 

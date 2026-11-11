@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
 
-const loadController = ({ items = null, anyStored = true, role = "admin" } = {}) => {
+const loadController = ({ items = null, anyStored = true, role = "admin", archiveDedupeKey } = {}) => {
   const findQueries = [];
   const queryLimits = [];
   const updates = [];
@@ -10,6 +10,7 @@ const loadController = ({ items = null, anyStored = true, role = "admin" } = {})
     _id: "notification-1",
     type: "order",
     unread: true,
+    dedupeKey: archiveDedupeKey,
     title: "Order update",
     message: "Your order changed.",
     createdAt: new Date("2026-09-11T01:00:00.000Z"),
@@ -36,6 +37,7 @@ const loadController = ({ items = null, anyStored = true, role = "admin" } = {})
         updates.push({ query, update });
         return item;
       },
+      updateMany: async (query, update) => { updates.push({ query, update }); },
     },
     "../models/User": {
       findById: () => ({ select() { return this; }, lean: async () => user }),
@@ -92,6 +94,22 @@ test("archiving every notification does not recreate welcome notices", async () 
   const res = response();
   await fixture.controller.listMyNotifications({ authUser: { _id: "user-1" }, query: {} }, res);
   assert.deepEqual(res.data.notifications, []);
+});
+
+test("technician archive also hides active duplicates owned by that technician", async () => {
+  const req = { authUser: { _id: "tech-1", role: "technician" }, params: { id: "notification-1" } };
+  const fixture = loadController({ archiveDedupeKey: "assignment-1" });
+  await fixture.controller.archiveNotification(req, response());
+  assert.deepEqual(fixture.updates[1].query, { user: "tech-1", archivedAt: null, dedupeKey: "assignment-1" });
+  assert.deepEqual(fixture.updates[1].update, fixture.updates[0].update);
+
+  const legacy = loadController();
+  await legacy.controller.archiveNotification(req, response());
+  assert.deepEqual(legacy.updates[1].query, {
+    user: "tech-1", archivedAt: null, dedupeKey: { $in: [null, ""] },
+    type: "order", targetType: { $in: [null, ""] }, targetId: { $in: [null, ""] },
+    title: "Order update", message: "Your order changed.",
+  });
 });
 
 test("customer alerts expose an id that can be used by the read endpoint", async () => {

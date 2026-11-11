@@ -72,7 +72,7 @@ const createStaff = async (req, res) => {
     const normalizedServiceQuota = normalizeServiceQuota(serviceQuota);
     if (!normalizedServiceQuota) {
       return res.status(400).json({
-        message: "Service Quota is required for a technician account and must be a whole number greater than 0.",
+        message: "Service Quota is required for a technician account and must be a whole number from 1 to 50.",
       });
     }
     const credentials = buildTechnicianCredentials({

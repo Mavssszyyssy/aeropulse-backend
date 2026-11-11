@@ -18,6 +18,7 @@ const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict
 const { getScheduledAppointmentError } = require("../utils/scheduling");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
+const { orderEmail } = require("../services/orderEmailTemplates");
 const {
   getBranchSearchOrder,
   resolvePreferredBranch,
@@ -25,6 +26,7 @@ const {
 const {
   PaymongoError,
   createCheckoutSession,
+  expireCheckoutSession,
   getCheckoutSession,
   isConfigured: isPaymongoConfigured,
   getConfigurationError: getPaymongoConfigurationError,
@@ -38,6 +40,9 @@ const {
   gcashRetryLimitReached,
   gcashRetryableStatus,
 } = require("../domain/gcashPaymentAttempts");
+
+const PAYMONGO_CHECKOUT_TIMEOUT_MS = 30 * 60 * 1000;
+const PAYMONGO_EXPIRY_RECHECK_MS = 5 * 60 * 1000;
 
 const workflowLabel = (status, deliveryStatus = "") => {
   switch (status) {
@@ -1037,6 +1042,12 @@ const attachPaymongoCheckout = async (order, options = {}) => {
     ...(order.paymongo?.toObject?.() || order.paymongo || {}),
     checkoutSessionId: checkout.id,
     checkoutUrl: checkout.checkoutUrl,
+    checkoutExpiresAt: (() => {
+      const createdAt = Number(checkout.raw?.data?.attributes?.created_at);
+      const createdAtMs = Number.isFinite(createdAt) && createdAt > 0 ? createdAt * 1000 : Date.now();
+      return new Date(createdAtMs + PAYMONGO_CHECKOUT_TIMEOUT_MS);
+    })(),
+    lastExpirationCheckAt: null,
     paymentIntentId: "",
     paymentId: "",
     referenceNumber: order.orderCode,
@@ -1258,11 +1269,11 @@ const sendConfirmedOnlinePaymentEmail = async (order) => {
     const customer = await User.findById(order.customer).select("email").lean();
     if (!customer?.email) return;
     const orderName = orderDisplayName(order);
+    const content = orderEmail({ order, title: "Payment confirmed", introduction: `Your payment for ${orderName} has been confirmed.`, paymentLine: "Paid online. Your branch will continue preparing the order and delivery.", isPaid: true });
     await sendEmail({
       to: customer.email,
       subject: `Payment Confirmed - ${order.orderCode}`,
-      text: `${orderName}\nPayment for ${order.orderCode} is confirmed. Total paid: PHP ${Number(order.totalAmount || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
-      html: `<h1>${escapeHtml(orderName)}</h1><p>Your payment for order <strong>${escapeHtml(order.orderCode)}</strong> is confirmed.</p><p>Total paid: <strong>PHP ${Number(order.totalAmount || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></p>`,
+      ...content,
     });
   } catch (emailError) {
     console.error("Failed to send confirmed payment email:", emailError);
@@ -1471,6 +1482,8 @@ const checkoutSessionLooksClosed = (session = {}) => {
   const attributes = session?.data?.attributes || session?.attributes || {};
   const status = String(attributes.status || "").toLowerCase();
   const paymentStatus = String(attributes.payment_status || "").toLowerCase();
+  // A failed payment attempt does not close an active Checkout Session.
+  if (status === "active") return false;
   return ["failed", "expired", "cancelled", "canceled"].includes(status) ||
     ["failed", "expired", "cancelled", "canceled"].includes(paymentStatus);
 };
@@ -1496,6 +1509,98 @@ const buildEventFromCheckoutSession = (session = {}) => {
     orderId: String(metadata.order_id || ""),
     orderCode: String(metadata.order_code || attributes.reference_number || ""),
   };
+};
+
+const checkoutHasPaymentInFlight = (session = {}) => {
+  const attributes = session?.data?.attributes || session?.attributes || {};
+  const statuses = [
+    attributes.payment_intent?.attributes?.status || attributes.payment_intent?.status,
+    ...(Array.isArray(attributes.payments)
+      ? attributes.payments.map((payment) => payment?.attributes?.status || payment?.status)
+      : []),
+  ].map((status) => String(status || "").toLowerCase());
+  return statuses.some((status) => ["pending", "processing"].includes(status));
+};
+
+const checkoutExpiryAt = (order = {}) => {
+  const storedExpiry = order.paymongo?.checkoutExpiresAt;
+  if (storedExpiry && Number.isFinite(new Date(storedExpiry).getTime())) return new Date(storedExpiry);
+  const providerCreatedAt = Number(order.paymongo?.raw?.data?.attributes?.created_at);
+  return Number.isFinite(providerCreatedAt) && providerCreatedAt > 0
+    ? new Date(providerCreatedAt * 1000 + PAYMONGO_CHECKOUT_TIMEOUT_MS)
+    : null;
+};
+
+const expireAbandonedCheckoutIfDue = async (order, now = new Date()) => {
+  if (
+    !order ||
+    String(order.paymentProvider || "").toLowerCase() !== "paymongo" ||
+    String(order.paymentStatus || "").toLowerCase() !== "pending" ||
+    String(order.workflowStatus || "").toLowerCase() !== "to_pay" ||
+    order.paymongo?.retryInProgress ||
+    !order.paymongo?.checkoutSessionId
+  ) return order;
+
+  const expiryAt = checkoutExpiryAt(order);
+  if (!expiryAt || expiryAt > now) return order;
+
+  const sessionId = String(order.paymongo.checkoutSessionId);
+  const canCheckAgainAt = new Date(now.getTime() - PAYMONGO_EXPIRY_RECHECK_MS);
+  const claimedOrder = await Order.findOneAndUpdate({
+    _id: order._id,
+    customer: order.customer,
+    workflowStatus: "to_pay",
+    paymentStatus: "pending",
+    "paymongo.checkoutSessionId": sessionId,
+    $and: [
+      { $or: [{ "paymongo.lastExpirationCheckAt": null }, { "paymongo.lastExpirationCheckAt": { $lte: canCheckAgainAt } }] },
+      { $or: [
+        { "paymongo.checkoutExpiresAt": { $lte: now } },
+        { "paymongo.checkoutExpiresAt": null, "paymongo.raw.data.attributes.created_at": { $lte: Math.floor((now.getTime() - PAYMONGO_CHECKOUT_TIMEOUT_MS) / 1000) } },
+      ] },
+    ],
+  }, {
+    $set: {
+      "paymongo.checkoutExpiresAt": expiryAt,
+      "paymongo.lastExpirationCheckAt": now,
+    },
+  }, { new: true });
+  if (!claimedOrder) return order;
+
+  try {
+    let session = await getCheckoutSession(sessionId);
+    if (checkoutSessionLooksPaid(session) || checkoutSessionLooksClosed(session)) {
+      if (checkoutSessionLooksPaid(session)) assertPaymongoAmountMatchesOrder(claimedOrder, session);
+      return applyPaymongoEventToOrder(claimedOrder, buildEventFromCheckoutSession(session), session);
+    }
+    if (checkoutHasPaymentInFlight(session)) return claimedOrder;
+
+    try {
+      session = await expireCheckoutSession(sessionId);
+    } catch (expireError) {
+      // A payment can enter processing between retrieval and expiry. Re-read
+      // provider truth before deciding whether the order may be retried.
+      session = await getCheckoutSession(sessionId);
+      if (!checkoutSessionLooksPaid(session) && !checkoutSessionLooksClosed(session)) {
+        console.warn("PayMongo checkout timeout could not expire the active session:", expireError.message);
+        return claimedOrder;
+      }
+    }
+
+    if (!checkoutSessionLooksPaid(session) && !checkoutSessionLooksClosed(session)) {
+      session = await getCheckoutSession(sessionId);
+    }
+    if (checkoutSessionLooksPaid(session)) assertPaymongoAmountMatchesOrder(claimedOrder, session);
+    if (checkoutSessionLooksPaid(session) || checkoutSessionLooksClosed(session)) {
+      return applyPaymongoEventToOrder(claimedOrder, buildEventFromCheckoutSession(session), session);
+    }
+    return claimedOrder;
+  } catch (error) {
+    // Keep the order pending if PayMongo cannot confirm expiry; a replacement
+    // checkout must never be created while the old session may still accept pay.
+    console.warn("PayMongo checkout timeout check deferred:", error.message);
+    return claimedOrder;
+  }
 };
 
 const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
@@ -2681,11 +2786,11 @@ const createOrder = async (req, res) => {
         // COD keeps its existing order-received email at order creation.
         if (!usesOnlinePayment && canSendEmail()) {
           try {
+            const content = orderEmail({ order, title: "Order received", introduction: "Thank you for your order. Your branch will review it and arrange delivery.", paymentLine: "Cash on delivery · To be paid when your order arrives." });
             await sendEmail({
               to: user.email,
               subject: `Order Confirmation - ${order.orderCode}`,
-              text: `Thank you for your order! Your order code is ${order.orderCode}. Total: ₱${Number(order.totalAmount || 0).toLocaleString()}`,
-              html: `<h1>Thank you for your order!</h1><p>Your order code is <strong>${order.orderCode}</strong>.</p><p>Total Amount: ₱${Number(order.totalAmount || 0).toLocaleString()}</p>`,
+              ...content,
             });
           } catch (emailErr) {
             console.error("Failed to send order email:", emailErr);
@@ -3039,6 +3144,39 @@ const approveOrder = async (req, res) => {
 
 const listMyOrders = async (req, res) => {
   res.set("Cache-Control", "no-store");
+  // Enforce checkout expiry when the customer returns to Orders. This is lazy
+  // expiry: Vercel Hobby has no frequent scheduler, so the provider session is
+  // closed on the next order refresh after its 30-minute deadline.
+  const now = new Date();
+  const expiryRetryBefore = new Date(now.getTime() - PAYMONGO_EXPIRY_RECHECK_MS);
+  const legacyExpiryCutoff = Math.floor((now.getTime() - PAYMONGO_CHECKOUT_TIMEOUT_MS) / 1000);
+  const dueCheckouts = await Order.find({
+    customer: req.authUser._id,
+    paymentProvider: "paymongo",
+    paymentStatus: "pending",
+    workflowStatus: "to_pay",
+    "paymongo.checkoutSessionId": { $type: "string", $ne: "" },
+    "paymongo.retryInProgress": { $ne: true },
+    $and: [
+      { $or: [
+        { "paymongo.lastExpirationCheckAt": null },
+        { "paymongo.lastExpirationCheckAt": { $lte: expiryRetryBefore } },
+      ] },
+      { $or: [
+        { "paymongo.checkoutExpiresAt": { $lte: now } },
+        {
+          "paymongo.checkoutExpiresAt": null,
+          "paymongo.raw.data.attributes.created_at": { $lte: legacyExpiryCutoff },
+        },
+      ] },
+    ],
+  })
+    .select("_id customer paymentProvider paymentStatus workflowStatus paymongo.checkoutSessionId paymongo.checkoutUrl paymongo.checkoutExpiresAt paymongo.lastExpirationCheckAt paymongo.retryInProgress paymongo.raw")
+    .sort({ "paymongo.checkoutExpiresAt": 1, createdAt: 1 })
+    .limit(8)
+    .lean();
+  await Promise.all(dueCheckouts.map((order) => expireAbandonedCheckoutIfDue(order, now)));
+
   const requestedPage = Number(req.query?.page);
   const page = Number.isFinite(requestedPage) ? Math.max(1, Math.floor(requestedPage)) : 1;
   const requestedLimit = Number(req.query?.limit);
@@ -3049,7 +3187,7 @@ const listMyOrders = async (req, res) => {
   // payment-proof image bytes. Loading those fields and every linked Task made
   // /orders/me exceed Vercel's 30-second runtime while the other customer
   // endpoints remained healthy.
-  const filter = { customer: req.authUser._id };
+  const filter = require("../domain/customerOrderFilters").buildCustomerOrderFilter(req.authUser._id, req.query);
   const sort = req.query?.sort === "updated" ? { updatedAt: -1, createdAt: -1 } : { createdAt: -1 };
   const [orders, total] = await Promise.all([Order.find(filter)
     .select("-paymongo.raw -proofOfPayment.imageUrl")
@@ -3060,8 +3198,19 @@ const listMyOrders = async (req, res) => {
   const hydratedOrders = await hydrateOrdersWithInventoryQrCodes(orders, {
     includeTaskDetails: false,
   });
+  // Keep list responses consistent with order details and payment verification.
+  // A cancelled, unpaid order is terminal even if its historical provider
+  // attempt remains stored as pending for reconciliation.
+  const customerOrders = hydratedOrders.map((order) => {
+    const paymentStatus = resolveOrderPaymentStatus(order);
+    return {
+      ...order,
+      paymentStatus,
+      ...(order.receipt ? { receipt: { ...order.receipt, paymentStatus } } : {}),
+    };
+  });
 
-  return res.json({ orders: hydratedOrders, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } });
+  return res.json({ orders: customerOrders, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } });
 };
 
 const getMyOrderById = async (req, res) => {
@@ -3675,6 +3824,7 @@ const handlePaymongoReturn = async (req, res) => {
 const retryPaymongoCheckout = async (req, res) => {
   let retryClaim = null;
   let checkoutStarted = false;
+  let reusableCheckout = null;
   try {
     let order = await Order.findOne({
       $or: [{ _id: req.params.orderId }, { orderCode: req.params.orderId }],
@@ -3693,22 +3843,46 @@ const retryPaymongoCheckout = async (req, res) => {
       return res.status(409).json({ message: "This order is no longer awaiting payment." });
     }
 
+    order = await expireAbandonedCheckoutIfDue(order);
+    if (!order || order.paymentStatus === "paid" || order.status === "paid") {
+      return res.status(409).json({ message: "Payment status changed. Refresh your order before trying again.", code: "PAYMENT_RETRY_CHANGED" });
+    }
+    if (String(order.workflowStatus || "").toLowerCase() !== "to_pay") {
+      return res.status(409).json({ message: "This order is no longer awaiting payment." });
+    }
+
     const isGcash = String(order.paymentMethod || "").toLowerCase() === "gcash";
     if (String(order.paymentStatus || "").toLowerCase() === "pending") {
-      if (isGcash && !order.paymongo?.retryInProgress && order.paymongo?.checkoutSessionId && order.paymongo?.checkoutUrl) {
-        // Resume the current checkout rather than charging a new attempt while
-        // the previous session may still accept payment.
-        const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
+      if (!order.paymongo?.retryInProgress && order.paymongo?.checkoutSessionId && order.paymongo?.checkoutUrl) {
+        // Confirm provider state before returning the reusable URL. Expired
+        // sessions are reconciled by the timeout check above.
+        const session = await getCheckoutSession(order.paymongo.checkoutSessionId);
+        if (checkoutSessionLooksPaid(session) || checkoutSessionLooksClosed(session)) {
+          if (checkoutSessionLooksPaid(session)) assertPaymongoAmountMatchesOrder(order, session);
+          await applyPaymongoEventToOrder(order, buildEventFromCheckoutSession(session), session);
+          return res.status(409).json({ message: "Payment status changed. Refresh your order before trying again.", code: "PAYMENT_RETRY_CHANGED" });
+        }
+        if (checkoutHasPaymentInFlight(session)) {
+          return res.status(409).json({ message: "A payment is still processing. Refresh the order and wait for its result before retrying.", code: "PAYMENT_RETRY_PROCESSING" });
+        }
+        const latestOrder = await Order.findOne({ _id: order._id, customer: req.authUser._id });
+        if (!latestOrder || String(latestOrder.workflowStatus || "").toLowerCase() !== "to_pay" ||
+            String(latestOrder.paymentStatus || "").toLowerCase() !== "pending" ||
+            String(latestOrder.paymongo?.checkoutSessionId || "") !== String(order.paymongo.checkoutSessionId) ||
+            !latestOrder.paymongo?.checkoutUrl) {
+          return res.status(409).json({ message: "Payment status changed. Refresh your order before trying again.", code: "PAYMENT_RETRY_CHANGED" });
+        }
+        const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([latestOrder]);
         return res.json({
-          order: { ...hydratedOrder, paymentUrl: order.paymongo.checkoutUrl },
+          order: { ...hydratedOrder, paymentUrl: latestOrder.paymongo.checkoutUrl },
           payment: {
             provider: "paymongo",
-            checkoutSessionId: order.paymongo.checkoutSessionId,
-            checkoutUrl: order.paymongo.checkoutUrl,
-            status: order.paymongo.status || "active",
+            checkoutSessionId: latestOrder.paymongo.checkoutSessionId,
+            checkoutUrl: latestOrder.paymongo.checkoutUrl,
+            status: session?.data?.attributes?.status || "active",
           },
-          paymentRetryCount: gcashPaymentAttemptCount(order),
-          paymentRetriesRemaining: gcashPaymentAttemptsRemaining(order),
+          paymentRetryCount: isGcash ? gcashPaymentAttemptCount(latestOrder) : 0,
+          paymentRetriesRemaining: isGcash ? gcashPaymentAttemptsRemaining(latestOrder) : null,
           resumedCheckout: true,
         });
       }
@@ -3723,7 +3897,25 @@ const retryPaymongoCheckout = async (req, res) => {
       return res.status(409).json({ message: "Payment is still pending. Wait for the payment result before trying again." });
     }
 
-    if (isGcash && gcashRetryLimitReached(order)) {
+    // A failed local payment attempt may still belong to an active PayMongo
+    // Checkout Session. PayMongo supports further attempts inside that same
+    // session, so reuse it instead of opening a second payable session.
+    if (order.paymongo?.checkoutSessionId && order.paymongo?.checkoutUrl) {
+      const priorSession = await getCheckoutSession(order.paymongo.checkoutSessionId);
+      if (checkoutSessionLooksPaid(priorSession)) {
+        assertPaymongoAmountMatchesOrder(order, priorSession);
+        await applyPaymongoEventToOrder(order, buildEventFromCheckoutSession(priorSession), priorSession);
+        return res.status(409).json({ message: "Payment status changed. Refresh your order before trying again.", code: "PAYMENT_RETRY_CHANGED" });
+      }
+      if (!checkoutSessionLooksClosed(priorSession)) {
+        if (checkoutHasPaymentInFlight(priorSession)) {
+          return res.status(409).json({ message: "A payment is still processing. Refresh the order and wait for its result before retrying.", code: "PAYMENT_RETRY_PROCESSING" });
+        }
+        reusableCheckout = priorSession;
+      }
+    }
+
+    if (isGcash && !reusableCheckout && gcashRetryLimitReached(order)) {
       return res.status(409).json({
         message: GCASH_PAYMENT_LIMIT_MESSAGE,
         code: "PAYMENT_RETRY_LIMIT_REACHED",
@@ -3762,7 +3954,7 @@ const retryPaymongoCheckout = async (req, res) => {
           workflowStatus: "to_pay",
           paymentStatus: { $in: ["failed", "cancelled", "expired"] },
           $and: [
-            ...(isGcash ? [{
+            ...(isGcash && !reusableCheckout ? [{
               $or: [
                 { "paymongo.retryAttempts": { $lt: MAX_GCASH_PAYMENT_ATTEMPTS } },
                 { "paymongo.retryAttempts": { $exists: false } },
@@ -3777,7 +3969,7 @@ const retryPaymongoCheckout = async (req, res) => {
           ],
         },
         {
-          ...(isGcash ? { $inc: { "paymongo.retryAttempts": 1 } } : {}),
+          ...(isGcash && !reusableCheckout ? { $inc: { "paymongo.retryAttempts": 1 } } : {}),
           $set: {
             paymentStatus: "pending",
             "paymongo.retryInProgress": true,
@@ -3794,7 +3986,7 @@ const retryPaymongoCheckout = async (req, res) => {
       }
       retryClaim = {
         orderId: order._id,
-        isGcash,
+        isGcash: isGcash && !reusableCheckout,
         previousPaymentStatus,
         retryAttempts: Number(order.paymongo?.retryAttempts || 0),
         inventoryWasReleased,
@@ -3802,6 +3994,30 @@ const retryPaymongoCheckout = async (req, res) => {
     }
 
     await reReserveReleasedOrderInventory(order);
+
+    if (reusableCheckout) {
+      order.paymentStatus = "pending";
+      order.paymongo = {
+        ...(order.paymongo?.toObject?.() || order.paymongo || {}),
+        status: reusableCheckout?.data?.attributes?.status || "active",
+        retryInProgress: false,
+        retryStartedAt: null,
+      };
+      await order.save();
+      const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);
+      return res.json({
+        order: { ...hydratedOrder, paymentUrl: order.paymongo.checkoutUrl },
+        payment: {
+          provider: "paymongo",
+          checkoutSessionId: order.paymongo.checkoutSessionId,
+          checkoutUrl: order.paymongo.checkoutUrl,
+          status: order.paymongo.status,
+        },
+        paymentRetryCount: isGcash ? gcashPaymentAttemptCount(order) : 0,
+        paymentRetriesRemaining: isGcash ? gcashPaymentAttemptsRemaining(order) : null,
+        resumedCheckout: true,
+      });
+    }
 
     const checkout = await attachPaymongoCheckout(order, {
       req,
@@ -3862,7 +4078,7 @@ const retryPaymongoCheckout = async (req, res) => {
 
 const verifyPaymongoCheckout = async (req, res) => {
   try {
-    const order = await Order.findOne({
+    let order = await Order.findOne({
       $or: [{ _id: req.params.orderId }, { orderCode: req.params.orderId }],
     });
     if (!order) {
@@ -3882,6 +4098,7 @@ const verifyPaymongoCheckout = async (req, res) => {
     if (String(order.paymentProvider || "").toLowerCase() !== "paymongo") {
       return res.status(400).json({ message: "This order does not use PayMongo checkout." });
     }
+    order = await expireAbandonedCheckoutIfDue(order);
     const checkoutSessionId = String(order.paymongo?.checkoutSessionId || "").trim();
     if (!checkoutSessionId) {
       return res.status(400).json({ message: "PayMongo checkout session is not linked to this order." });

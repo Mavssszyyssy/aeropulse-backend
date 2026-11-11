@@ -72,3 +72,13 @@ test("invalid profile edits leave existing names unchanged", async () => {
   assert.equal(user.name_first, "Maria");
   assert.equal(user.name_last, "Santos");
 });
+
+test("repeated-word profile names are rejected without saving other edits", async () => {
+  const user = { role: "customer", name_first: "Maria", name_last: "Santos", addresses: [], save: async () => { throw new Error("must not save"); } };
+  const res = response();
+  await users.updateProfile({ authUser: user, body: { name_first: "Limit Testing Limit Testing", name_last: "Reyes" } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /repeated words/);
+  assert.equal(user.name_first, "Maria");
+  assert.equal(user.name_last, "Santos");
+});

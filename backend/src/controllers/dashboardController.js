@@ -232,11 +232,12 @@ const buildCommerceAnalyticsPipeline = (branch = "", range = null) => {
           { $sort: { revenue: -1 } },
         ],
         branches: [
-          { $match: { _analyticsCancelled: false } },
           {
             $group: {
               _id: "$_analyticsBranch",
-              orders: { $sum: 1 },
+              orders: { $sum: { $cond: ["$_analyticsCancelled", 0, 1] } },
+              allOrders: { $sum: 1 },
+              cancelledOrders: { $sum: { $cond: ["$_analyticsCancelled", 1, 0] } },
               paidOrders: { $sum: { $cond: ["$_analyticsPaid", 1, 0] } },
               revenue: { $sum: { $cond: ["$_analyticsPaid", "$_analyticsAmount", 0] } },
             },
@@ -264,6 +265,7 @@ const normalizeCommerceAnalytics = (facets = {}) => {
   const rawRevenue = Math.max(0, Number(summaryRow.revenue || 0));
   const revenue = roundMoney(rawRevenue);
   const stageRows = new Map((facets.orderStages || []).map((row) => [String(row._id), row]));
+  const otherStageRows = (facets.orderStages || []).filter((row) => !Object.hasOwn(ORDER_STAGE_LABELS, String(row._id)));
   const productsByBranch = new Map();
   for (const row of facets.branchProducts || []) {
     const name = String(row._id?.branch || "Unassigned");
@@ -298,12 +300,17 @@ const normalizeCommerceAnalytics = (facets = {}) => {
       sales: roundMoney(row.sales),
       unitsSold: Number(row.unitsSold || 0),
     })),
-    orderStages: Object.entries(ORDER_STAGE_LABELS).map(([key, label]) => ({
+    orderStages: [...Object.entries(ORDER_STAGE_LABELS).map(([key, label]) => ({
       key,
       label,
       count: Number(stageRows.get(key)?.count || 0),
       revenue: roundMoney(stageRows.get(key)?.revenue),
-    })),
+    })), ...(otherStageRows.length ? [{
+      key: "other_status",
+      label: "Other status",
+      count: otherStageRows.reduce((sum, row) => sum + Number(row.count || 0), 0),
+      revenue: roundMoney(otherStageRows.reduce((sum, row) => sum + Number(row.revenue || 0), 0)),
+    }] : [])],
     paymentMethods: (facets.paymentMethods || []).map((row) => ({
       label: String(row._id || "OTHER"),
       count: Number(row.count || 0),
@@ -312,6 +319,8 @@ const normalizeCommerceAnalytics = (facets = {}) => {
     branches: (facets.branches || []).map((row) => ({
       branch: String(row._id || "Unassigned"),
       orders: Number(row.orders || 0),
+      allOrders: Number(row.allOrders ?? row.orders ?? 0),
+      cancelledOrders: Number(row.cancelledOrders || 0),
       paidOrders: Number(row.paidOrders || 0),
       revenue: roundMoney(row.revenue),
       products: productsByBranch.get(String(row._id || "Unassigned")) || [],
@@ -443,6 +452,7 @@ const getAdminDashboard = async (activeBranch = "", { includeAllTechnicians = fa
       totalSales: commerce.summary.revenue,
       totalOrders: commerce.summary.totalOrders,
       paidOrders: commerce.summary.paidOrders,
+      cancelledOrders: commerce.summary.cancelledOrders,
       averageOrderValue: commerce.summary.averageOrderValue,
       lowStockItems: 0,
       activeTechnicians,

@@ -223,7 +223,7 @@ const getInventoryReport = async (req, res) => {
 
 const getTechnicianReport = async (req, res) => {
   try {
-    const { from, to } = resolveReportRange(req.query);
+    const { from, to } = resolveReportRange(req.query, new Date(), { useManilaDates: true });
     const activeBranch = reportBranch(req);
     const search = reportTextFilter(req.query.search, { label: "Technician search" });
     const technician = reportTextFilter(req.query.technician, { label: "Technician filter", maxLength: 50 });
@@ -244,7 +244,7 @@ const getTechnicianReport = async (req, res) => {
     };
     if (activeBranch) completedTaskQuery.branch = activeBranch;
     const completedTasks = technicianIds.length
-      ? await Task.find(completedTaskQuery).select("assignedTechnicianId completedAt branch").lean()
+      ? await Task.find(completedTaskQuery).select("assignedTechnicianId assignedAt completedAt scheduledDate timeSlot").lean()
       : [];
     const report = buildTechnicianPerformanceReport(technicians, completedTasks, { search });
     return res.json({
@@ -254,7 +254,7 @@ const getTechnicianReport = async (req, res) => {
       search,
       technician,
       updatedAt: new Date().toISOString(),
-      basis: "Completed work orders within the selected reporting period for active technician accounts only.",
+      basis: "Completed work orders within the selected reporting period for active technicians. Average completion time runs from the recorded assignment to completion. On-time rate uses the end of the scheduled slot in Manila time. Jobs missing the required timestamps or schedule are excluded from the corresponding metric.",
       summary: report.summary,
       rows: report.rows,
     });

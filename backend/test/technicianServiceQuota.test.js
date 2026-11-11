@@ -6,10 +6,11 @@ const {
   validateWarrantyAssignmentQuota,
 } = require("../src/domain/technicianServiceQuota");
 
-test("service quota accepts only positive whole numbers", () => {
+test("service quota accepts only whole numbers from 1 to 50", () => {
   assert.equal(normalizeServiceQuota(4), 4);
   assert.equal(normalizeServiceQuota("2"), 2);
-  for (const value of [undefined, null, "", 0, -1, 1.5, "not-a-number"]) {
+  assert.equal(normalizeServiceQuota(50), 50);
+  for (const value of [undefined, null, "", false, true, 0, -1, 1.5, 51, 10000000000, "not-a-number"]) {
     assert.equal(normalizeServiceQuota(value), null);
   }
 });

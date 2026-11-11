@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const { validatePersonName } = require("../domain/personNameValidation");
+const { validateAccountSuffix } = require("../domain/accountSuffix");
 const OtpRequest = require("../models/OtpRequest");
 const AuditLog = require("../models/AuditLog");
 const { signUserAccessToken } = require("../utils/token");
@@ -260,6 +261,7 @@ const register = async (req, res) => {
   const {
     name_first,
     name_last,
+    suffix,
     alias,
     email,
     phone,
@@ -283,9 +285,11 @@ const register = async (req, res) => {
   try {
     const firstName = validatePersonName(name_first, "First name");
     const lastName = validatePersonName(name_last, "Last name");
+    const checkedSuffix = validateAccountSuffix(suffix);
     if (firstName.error || lastName.error) {
       return res.status(400).json({ message: firstName.error || lastName.error, fields: { ...(firstName.error ? { name_first: firstName.error } : {}), ...(lastName.error ? { name_last: lastName.error } : {}) } });
     }
+    if (checkedSuffix.error) return res.status(400).json({ message: checkedSuffix.error, fields: { suffix: checkedSuffix.error } });
     if (typeof password !== "string" || password.length < 8 || password.length > 25) {
       return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
     }
@@ -366,6 +370,7 @@ const register = async (req, res) => {
       name: `${firstName.value} ${lastName.value}`,
       name_first: firstName.value,
       name_last: lastName.value,
+      suffix: checkedSuffix.value,
       alias: finalAlias,
       ...(normalizedEmail ? { email: normalizedEmail } : {}),
       ...(normalizedPhone ? { phone: normalizedPhone } : {}),
@@ -421,6 +426,14 @@ const register = async (req, res) => {
       message: "Unable to create your account right now. Please try again.",
     });
   }
+};
+
+const loginEmailErrorMessage = (error, fallback) => {
+  if (Number(error?.status) === 429) return error.message;
+  if (error?.code === "VERIFICATION_EMAIL_UNCONFIGURED" && env.nodeEnv === "development" && !process.env.VERCEL) {
+    return "Sign-in email is not configured on the local server. Set up Resend or SMTP and restart the backend.";
+  }
+  return fallback;
 };
 
 const login = async (req, res) => {
@@ -492,7 +505,7 @@ const login = async (req, res) => {
   } catch (err) {
     const status = Number(err?.status) || 500;
     return res.status(status).json({
-      message: status === 429 ? err.message : "Unable to send the sign-in verification code. Please try again.",
+      message: loginEmailErrorMessage(err, "Unable to send the sign-in verification code. Please try again."),
       retryAfterSeconds: err?.retryAfterSeconds || undefined,
     });
   }
@@ -598,7 +611,7 @@ const resendLoginEmail = async (req, res) => {
     });
   } catch (error) {
     return res.status(error.status || 502).json({
-      message: error.message || "Unable to send a new sign-in code.",
+      message: loginEmailErrorMessage(error, "Unable to send a new sign-in code."),
       retryAfterSeconds: error.retryAfterSeconds || undefined,
     });
   }
@@ -717,6 +730,9 @@ const resetPasswordWithCode = async (req, res) => {
   if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 25) {
     return res.status(400).json({ message: "Password must be between 8 and 25 characters." });
   }
+  if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!-/:-@\[-`{-~])/.test(newPassword) || /[\s\u0000-\u001f\u007f]/.test(newPassword)) {
+    return res.status(400).json({ message: "Password needs uppercase and lowercase letters, a number, a symbol, and no spaces." });
+  }
   const accountIdentifier = normalizeIdentifier(identifier || requestedEmail);
   if (!accountIdentifier) return res.status(400).json({ message: "Enter your email address or unique account login ID." });
   const accountLoginId = normalizeIdentifier(req.body.accountLoginId || "");
@@ -746,6 +762,9 @@ const resetPasswordWithCode = async (req, res) => {
         ? "Too many incorrect codes. Request a new verification code."
         : "The verification code is incorrect or expired.",
     });
+  }
+  if (await bcrypt.compare(newPassword, user.passwordHash || "")) {
+    return res.status(400).json({ message: "New password must be different from your current password. Request a new reset code to try again." });
   }
   const salt = await bcrypt.genSalt(10);
   user.passwordHash = await bcrypt.hash(newPassword, salt);

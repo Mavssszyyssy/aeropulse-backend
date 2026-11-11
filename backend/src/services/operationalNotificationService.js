@@ -14,7 +14,7 @@ const canReceive = (user, type = "system") => {
   return true;
 };
 
-const createDedupedNotification = async (payload = {}, { dedupeMinutes = 60 } = {}) => {
+const createDedupedNotification = async (payload = {}, { dedupeMinutes = 60, refreshExisting = true } = {}) => {
   if (!payload.user || !mongoose.Types.ObjectId.isValid(String(payload.user))) return null;
   const dedupeKey = String(payload.dedupeKey || "").trim();
   const notificationPayload = {
@@ -47,7 +47,7 @@ const createDedupedNotification = async (payload = {}, { dedupeMinutes = 60 } = 
       const contentChanged = refreshFields.some((field) => (
         String(existing[field] || "") !== String(notificationPayload[field] || "")
       ));
-      if (contentChanged) {
+      if (refreshExisting && contentChanged) {
         for (const field of refreshFields) existing[field] = notificationPayload[field] || "";
         existing.unread = true;
         existing.status = "unread";

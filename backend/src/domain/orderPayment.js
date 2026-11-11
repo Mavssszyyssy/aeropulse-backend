@@ -15,6 +15,10 @@ const resolveOrderPaymentStatus = (order = {}) => {
     || order.codCollection?.collectedAt
   ) return "paid";
 
+  // Retain the provider attempt for reconciliation, but expose cancellation as
+  // terminal so customer surfaces do not label a cancelled order payable.
+  if (normalizePaymentStatus(order.workflowStatus) === "cancelled") return "cancelled";
+
   return paymentStatus || receiptStatus || orderStatus || "pending";
 };
 

@@ -65,6 +65,8 @@ const orderSchema = new mongoose.Schema(
       retryStartedAt: { type: Date, default: null },
       checkoutSessionId: { type: String, default: "", index: true },
       checkoutUrl: { type: String, default: "" },
+      checkoutExpiresAt: { type: Date, default: null },
+      lastExpirationCheckAt: { type: Date, default: null },
       paymentIntentId: { type: String, default: "", index: true },
       paymentId: { type: String, default: "", index: true },
       referenceNumber: { type: String, default: "" },

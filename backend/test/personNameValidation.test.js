@@ -17,3 +17,10 @@ test("names reject empty, unrealistic, malformed and overly long values", () => 
   assert.match(validatePersonName("Alexandra".repeat(4).slice(0, 31), "Last name").error, /2–30/);
   assert.equal(validatePersonName("Alexandra".repeat(7).slice(0, 60), "Recipient name", { maxLength: 60 }).error, "");
 });
+
+test("names reject repeated-word and repeated-phrase stuffing within the character limit", () => {
+  for (const value of ["Test Test Test", "Limit Testing Limit Testing", "Juan Juan Juan"]) {
+    assert.match(validatePersonName(value, "First name").error, /repeated words/, value);
+  }
+  assert.equal(validatePersonName("Maria Clara", "First name").error, "");
+});

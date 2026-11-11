@@ -16,14 +16,14 @@ const lastReconciledByUser = new Map();
 const branchForUser = (user = {}) => String(user.activeBranch || user.assignedBranch || "").trim();
 const routePrefix = (role) => role === "superadmin" ? "/superadmin" : "/admin";
 
-const createReminder = (user, payload) => createDedupedNotification({
+const createReminder = (user, payload, options = { dedupeMinutes: REMINDER_WINDOW_MINUTES }) => createDedupedNotification({
   user: user._id || user.id,
   type: "system",
   category: "required_action",
   severity: "warning",
   targetType: "required_action",
   ...payload,
-}, { dedupeMinutes: REMINDER_WINDOW_MINUTES });
+}, options);
 
 const remindCustomer = async (user, now) => {
   const customerId = user._id || user.id;
@@ -74,7 +74,7 @@ const remindTechnician = async (user, now) => {
       targetType: "task",
       route: "/technician/tasks",
       dedupeKey: `required-action:technician:${task._id}:${status}:${dateKey}`,
-    });
+    }, { dedupeMinutes: 0, refreshExisting: false });
   }));
 };
 

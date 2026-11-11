@@ -77,6 +77,13 @@ test('new technician accounts require a defined Service Quota', async () => {
   assert.match(res.body.message, /Service Quota is required/);
 });
 
+test('new technician accounts reject an oversized Service Quota', async () => {
+  const res = response();
+  await createStaff({ authUser: { role: 'superadmin' }, body: { name_first: 'Fixture', name_last: 'Tech', loginName: 'fixture', role: 'technician', branch: 'Cavite', serviceQuota: 51 } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /from 1 to 50/);
+});
+
 test('valid technician creation assigns one branch and returns first-use credentials', async (t) => {
   t.mock.method(User, 'findOne', async () => null);
   let created;

@@ -8,6 +8,7 @@ const AuditLog = require("../models/AuditLog");
 const crypto = require("crypto");
 const { BRANCHES } = require("../domain/branchRouting");
 const { isNonRetailCatalogProduct } = require("../domain/catalogVisibility");
+const { normalizeCatalogImageUrl } = require("../domain/catalogImageUrl");
 const { validateProductUniqueness } = require("../utils/productValidation");
 const { parsePositiveWholeQuantity, parseNonnegativeWholeQuantity } = require("../domain/quantityValidation");
 
@@ -20,28 +21,36 @@ const CATALOG_ASSET_BASE_URL = String(
 ).replace(/\/+$/, "");
 const DEFAULT_CATALOG_IMAGE_URL = `${CATALOG_ASSET_BASE_URL}/generic-ac.jpg`;
 
+const CATALOG_IMAGE_BY_EXACT_SKU = {
+  "12345678": "samsung-windfree-wallmount.png",
+  "123456789": "samsung-windfree-wallmount.png",
+  WA70F13E4LTC: "samsung-bespoke-ai.png",
+};
+
 // Seed items are model families, so each family gets a matching product photo
 // instead of every card showing the same generic air-conditioner image.
 const CATALOG_IMAGE_BY_SKU_PREFIX = [
-  ["AHAC-MINV", "american-home-ahac-minv.jpg"],
-  ["TAC09-CWI", "tcl-uje-window.jpg"],
-  ["TAC12-CWI", "tcl-uje-window.jpg"],
-  ["TAC18-CWI", "tcl-uje-window.jpg"],
-  ["TAC24-CWI", "tcl-uje-window.jpg"],
-  ["TAC-", "tcl-breezein-kei2.jpg"],
-  ["MSCE-", "midea-celest-msce.jpg"],
+  ["AHAC-MINV", "american-home-ahac-minv.png"],
+  ["TAC09-CWI", "tcl-uje-window.png"],
+  ["TAC12-CWI", "tcl-uje-window.png"],
+  ["TAC18-CWI", "tcl-uje-window.png"],
+  ["TAC24-CWI", "tcl-uje-window.png"],
+  ["TAC-", "tcl-breezein-kei2.png"],
+  ["MSCE-", "midea-celest-msce.png"],
   ["AR09TY", "samsung-ar9500t.png"],
   ["AR12TY", "samsung-ar9500t.png"],
   ["AR18TY", "samsung-ar9500t.png"],
   ["AR24TY", "samsung-ar9500t.png"],
-  ["HSN30", "lg-hsn30ipc.jpg"],
-  ["HSN", "lg-hsn-ipx.jpg"],
-  ["53CNV", "carrier-opus-53cnv.jpg"],
-  ["53CLV", "carrier-slim-53clv.jpg"],
+  ["HSN30", "lg-hsn30ipc.png"],
+  ["HSN", "lg-hsn-ipx.png"],
+  ["53CNV", "carrier-opus-53cnv.png"],
+  ["53CLV", "carrier-slim-53clv.png"],
 ];
 
 const getVerifiedCatalogImage = (item = {}) => {
   const sku = String(item.sku || "").toUpperCase();
+  const exactImage = CATALOG_IMAGE_BY_EXACT_SKU[sku];
+  if (exactImage) return `${CATALOG_ASSET_BASE_URL}/${exactImage}`;
   const match = CATALOG_IMAGE_BY_SKU_PREFIX.find(([prefix]) =>
     sku.startsWith(prefix),
   );
@@ -846,6 +855,10 @@ const toBranchStockObject = (product) =>
 const toPublicProduct = (product, scopedBranch = "") => {
   const branchStock = toBranchStockObject(product);
   const totalStock = Number(product.stock || 0);
+  const visibleStock = scopedBranch ? Number(branchStock[scopedBranch] || 0) : totalStock;
+  const branchThreshold = product.branchThresholds?.get?.(scopedBranch);
+  const threshold = Number.isFinite(Number(branchThreshold)) && branchThreshold !== undefined
+    ? Number(branchThreshold) : Number(product.threshold || 0);
   return {
     id: String(product._id || product.id || ""),
     name: product.name,
@@ -857,7 +870,8 @@ const toPublicProduct = (product, scopedBranch = "") => {
     features: Array.isArray(product.features) ? product.features : [],
     image: getCatalogImage(product),
     price: Number(product.price || 0),
-    stock: scopedBranch ? Number(branchStock[scopedBranch] || 0) : totalStock,
+    stock: visibleStock,
+    availability: visibleStock <= 0 ? "out_of_stock" : visibleStock <= threshold ? "low_stock" : "in_stock",
     totalStock,
     inventoryBranch: scopedBranch || null,
     stockScope: scopedBranch ? "branch" : "all_branches",
@@ -934,7 +948,7 @@ const listPublicProducts = async (req, res) => {
   const products = await Product.find({
     isActive: { $ne: false },
   })
-    .select("name sku brand category description specs features image stock branchStock price isActive")
+    .select("name sku brand category description specs features image stock branchStock threshold branchThresholds price isActive")
     .sort({
       createdAt: -1,
     });
@@ -1010,6 +1024,14 @@ const createProduct = async (req, res) => {
     });
   }
 
+  const normalizedImage = normalizeCatalogImageUrl(image);
+  if (normalizedImage === null) {
+    return res.status(400).json({
+      message: "Use an HTTPS image URL. Advertising redirect links are not allowed.",
+      field: "image",
+    });
+  }
+
   // Validate uniqueness before processing
   const uniquenessCheck = await validateProductUniqueness({
     name: name.trim(),
@@ -1067,7 +1089,7 @@ const createProduct = async (req, res) => {
       description: String(description || "").trim(),
       specs: String(specs || "").trim(),
       features: Array.isArray(features) ? features.filter(Boolean) : [],
-      image: String(image || "").trim(),
+      image: normalizedImage,
       stock: totalStock || initialStock,
       branchStock: normalizedBranchStock,
       threshold: Number(threshold) || 0,
