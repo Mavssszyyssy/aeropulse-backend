@@ -76,9 +76,19 @@ test("invalid profile edits leave existing names unchanged", async () => {
 test("repeated-word profile names are rejected without saving other edits", async () => {
   const user = { role: "customer", name_first: "Maria", name_last: "Santos", addresses: [], save: async () => { throw new Error("must not save"); } };
   const res = response();
-  await users.updateProfile({ authUser: user, body: { name_first: "Limit Testing Limit Testing", name_last: "Reyes" } }, res);
+  await users.updateProfile({ authUser: user, body: { name_first: "Test Name Test Name", name_last: "Reyes" } }, res);
   assert.equal(res.statusCode, 400);
   assert.match(res.body.message, /repeated words/);
+  assert.equal(user.name_first, "Maria");
+  assert.equal(user.name_last, "Santos");
+});
+
+test("oversized profile names are rejected before any profile changes are saved", async () => {
+  const user = { role: "customer", name_first: "Maria", name_last: "Santos", addresses: [], save: async () => { throw new Error("must not save"); } };
+  const res = response();
+  await users.updateProfile({ authUser: user, body: { name_first: "Anna", name_last: "Alexandra-Maria-Lynne" } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.message, "Last name must be 2–20 characters.");
   assert.equal(user.name_first, "Maria");
   assert.equal(user.name_last, "Santos");
 });

@@ -1,4 +1,6 @@
-const validatePersonName = (value, label = "Name", { maxLength = 30 } = {}) => {
+const PERSON_NAME_MAX_LENGTH = 20;
+
+const validatePersonName = (value, label = "Name", { maxLength = PERSON_NAME_MAX_LENGTH } = {}) => {
   const text = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!text) return { value: "", error: `${label} is required.` };
   if (text.length < 2 || text.length > maxLength) return { value: text, error: `${label} must be 2–${maxLength} characters.` };
