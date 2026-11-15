@@ -6,4 +6,6 @@ const isNonRetailCatalogProduct = (product = {}) =>
     NON_RETAIL_CATALOG_MARKER.test(String(value || "")),
   );
 
-module.exports = { NON_RETAIL_CATALOG_MARKER, isNonRetailCatalogProduct };
+const isCustomerCatalogProduct = (product = {}) => product.isActive !== false && !isNonRetailCatalogProduct(product);
+
+module.exports = { NON_RETAIL_CATALOG_MARKER, isNonRetailCatalogProduct, isCustomerCatalogProduct };

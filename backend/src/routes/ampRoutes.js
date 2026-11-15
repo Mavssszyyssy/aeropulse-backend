@@ -10,6 +10,9 @@ const {
   getOwnerForecast,
 } = require("../controllers/ampController");
 
+const { limitTextFields } = require("../middleware/limitTextFields");
+const { serviceReportText } = require("../middleware/workOrderText");
+
 const router = express.Router();
 const {
   getUnitDecisionSupport, generateRequestPreAssessment, generateTaskPreAssessment, getTaskDecisionSupport,
@@ -23,7 +26,7 @@ router.get("/units/:unitId/decision-support", allowRoles("admin", "superadmin"),
 router.get("/tasks/:taskId/decision-support", allowRoles("technician", "admin", "superadmin"), getTaskDecisionSupport);
 router.post("/tasks/:taskId/pre-assessment", allowRoles("technician", "admin", "superadmin"), generateTaskPreAssessment);
 router.post("/tasks/:taskId/future-prediction", allowRoles("technician", "admin", "superadmin"), generateFuturePrediction);
-router.patch("/tasks/:taskId/:phase/review", allowRoles("technician"), reviewDecisionSupport);
+router.patch("/tasks/:taskId/:phase/review", allowRoles("technician"), limitTextFields({ note: [500, "Review note"] }), reviewDecisionSupport);
 
 router.get(
   "/customer/units",
@@ -64,6 +67,7 @@ router.patch(
 router.post(
   "/units/:unitId/complete-service",
   allowRoles("technician", "admin", "superadmin"),
+  serviceReportText,
   completeService,
 );
 

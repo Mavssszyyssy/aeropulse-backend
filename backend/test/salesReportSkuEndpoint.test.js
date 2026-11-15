@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
 
-test("sales report endpoint restores the catalog SKU for legacy order items", async () => {
+test("sales report restores legacy SKUs and interprets only the authorized filtered totals", async () => {
   const productId = "000000000000000000000101";
   const orders = [{
     _id: "000000000000000000000201",
@@ -18,9 +18,14 @@ test("sales report endpoint restores the catalog SKU for legacy order items", as
     totalAmount: 20000,
   }];
   const originalLoad = Module._load;
+  const aiInputs = [];
+  let queriedOrders;
   const mocks = {
     "../models/Order": {
-      find: () => ({ lean: async () => orders }),
+      find: (conditions) => {
+        queriedOrders = conditions;
+        return { lean: async () => orders };
+      },
     },
     "../models/Product": {
       find: () => ({
@@ -29,6 +34,12 @@ test("sales report endpoint restores the catalog SKU for legacy order items", as
       }),
     },
     "../models/AuditLog": {},
+    "../services/openAiAmpService": {
+      callStructuredAmpAnalysis: async (input) => {
+        aiInputs.push(input);
+        return { insight: { summary: "Recorded payments appear in this selection.", review_action: "Check the transaction register." } };
+      },
+    },
   };
   const controllerPath = require.resolve("../src/controllers/reportController");
   delete require.cache[controllerPath];
@@ -58,4 +69,37 @@ test("sales report endpoint restores the catalog SKU for legacy order items", as
   assert.equal(res.data.products[0].sku, "CATALOG-SKU-1");
   assert.equal(res.data.sku, "CATALOG-SKU");
   assert.equal(res.data.customer, "Customer");
+  assert.equal(res.data.summary.paidRevenue, 20000);
+  assert.equal(aiInputs.length, 0);
+
+  req.authUser = { role: "admin", _id: "admin-fixture" };
+  req.activeBranch = "Cavite";
+  Object.assign(req.query, { branch: "Laguna", interpretation: "1", language: "filipino" });
+  await controller.getSalesReport(req, res);
+  assert.deepEqual(queriedOrders.$and[1].$or, [
+    { stockSourceBranch: "Cavite" },
+    { stockSourceBranch: "", customerBranch: "Cavite" },
+  ]);
+  assert.equal(res.data.branch, "Cavite");
+  assert.deepEqual(res.data.interpretation, {
+    status: "ready", summary: "Recorded payments appear in this selection.", reviewAction: "Check the transaction register.",
+  });
+  const { reportInterpretation } = aiInputs[0];
+  assert.equal(reportInterpretation.language, "Filipino");
+  assert.equal(reportInterpretation.scope.branch, "Cavite");
+  assert.equal(reportInterpretation.statistics.paidRevenue, 20000);
+  assert.doesNotMatch(JSON.stringify(reportInterpretation), /ORD-SKU-REPORT|Legacy AC|Customer/);
+
+  orders[0].workflowStatus = "cancelled";
+  req.query.status = "cancelled";
+  await controller.getSalesReport(req, res);
+  assert.equal(res.data.summary.transactionCount, 1);
+  assert.equal(res.data.summary.amountCollected, 20000);
+  assert.equal(res.data.summary.paidRevenue, 0);
+
+  req.query.status = "paid";
+  await controller.getSalesReport(req, res);
+  assert.equal(res.data.summary.transactionCount, 0);
+  assert.deepEqual(res.data.interpretation, { status: "empty" });
+  assert.equal(aiInputs.length, 2);
 });

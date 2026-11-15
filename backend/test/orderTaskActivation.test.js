@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { shouldActivateOrderTask } = require('../src/domain/orderTaskActivation');
+const { getWorkOrderAppointmentError, getWorkOrderMaxDateKey } = require('../src/utils/scheduling');
 
 test('dispatch and recovery activate the single linked technician task', () => {
   assert.equal(shouldActivateOrderTask({ workflowStatus: 'to_deliver', deliveryStatus: 'preparing' }), false);
@@ -117,10 +118,10 @@ test('dispatch checks technician scheduling before saving the dispatched order',
     findLinkedTaskForOrder: async () => ({ _id: 'task-1', status: 'pending', payload: {} }),
     resolveTechnicianAssignment: async () => ({ assignedTechnicianId: 'tech-1', assignedTechnicianName: 'Assigned Technician' }),
     assertNoTaskScheduleConflict: async () => { throw conflict; },
-    getScheduledAppointmentError: () => null,
+    getWorkOrderAppointmentError,
     HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
   });
-  await assert.rejects(applyOrderLifecycleAction(order, 'dispatch', { installationDate: '2099-10-17', timeSlot: '9:00 AM - 12:00 PM' }), error => error === conflict);
+  await assert.rejects(applyOrderLifecycleAction(order, 'dispatch', { installationDate: getWorkOrderMaxDateKey(), timeSlot: '9:00 AM - 12:00 PM' }), error => error === conflict);
   assert.equal(order.workflowStatus, 'to_deliver');
   assert.equal(saved, 0);
 });
@@ -143,6 +144,21 @@ test('dispatch rejects a missing time slot without changing order or inventory',
   assert.equal(reserved, 0);
 });
 
+test('dispatch rejects a date outside the work-order window before reserving stock or saving', async () => {
+  const order = sampleOrder({ workflowStatus: 'to_deliver', stockReservationStatus: 'pending' });
+  const applyOrderLifecycleAction = vm.runInNewContext(`${lifecycleSource}\napplyOrderLifecycleAction`, {
+    lifecycleActions: { dispatch: { from: ['to_deliver'], to: 'to_dispatch' } },
+    isCodOrder: () => false,
+    findLinkedTaskForOrder: async () => null,
+    resolveTechnicianAssignment: async () => ({ assignedTechnicianId: 'tech-1' }),
+    getWorkOrderAppointmentError,
+    HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
+  });
+  await assert.rejects(applyOrderLifecycleAction(order, 'dispatch', { installationDate: '2099-10-17', timeSlot: '9:00 AM - 12:00 PM' }), { status: 400, message: /two calendar years/ });
+  assert.equal(order.workflowStatus, 'to_deliver');
+  assert.equal(order.stockReservationStatus, 'pending');
+});
+
 const recoveryStart = controllerSource.indexOf('const recoverOrder =');
 const recoverySource = controllerSource.slice(recoveryStart, controllerSource.indexOf('\n};', recoveryStart) + 3);
 
@@ -154,16 +170,18 @@ for (const action of ['recreate_task', 'assign_technician']) {
     const recoverOrder = vm.runInNewContext(`${recoverySource}\nrecoverOrder`, {
       getOrderForAdminAction: async () => order,
       findLinkedTaskForOrder: async () => null,
+      getWorkOrderAppointmentError,
       resolveTechnicianAssignment: async () => ({ assignedTechnicianId: 'tech-1', assignedTechnicianName: 'Assigned Technician' }),
       createTaskForOrder: async () => ({ id: 'task-1', status: 'in-progress' }),
       hydrateOrdersWithInventoryQrCodes: async orders => orders,
     });
+    const installationDate = getWorkOrderMaxDateKey();
     await recoverOrder({ authUser: { role: 'admin' }, params: { orderId: 'order-1' }, body: {
-      action, assignedTechnicianId: 'tech-1', installationDate: '2099-10-18', timeSlot: '1:00 PM - 4:00 PM',
+      action, assignedTechnicianId: 'tech-1', installationDate, timeSlot: '1:00 PM - 4:00 PM',
     } }, { status() { return this; }, json(value) { response = value; return this; } });
     assert.equal(order.assignedTechnicianId, 'tech-1');
     assert.equal(order.assignedTechnician, 'Assigned Technician');
-    assert.equal(order.installationDate, '2099-10-18');
+    assert.equal(order.installationDate, installationDate);
     assert.equal(order.installationTimeSlot, '1:00 PM - 4:00 PM');
     assert.equal(saved, 1);
     assert.equal(response.task.id, 'task-1');

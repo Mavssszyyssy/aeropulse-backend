@@ -15,7 +15,7 @@ const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenance
 const { resolveOrderPaymentStatus } = require("../domain/orderPayment");
 const { shouldActivateOrderTask } = require("../domain/orderTaskActivation");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
-const { getScheduledAppointmentError } = require("../utils/scheduling");
+const { getWorkOrderAppointmentError } = require("../utils/scheduling");
 const { ensureSampleInventory } = require("./productController");
 const { canSendEmail, sendEmail } = require("../utils/email");
 const { orderEmail } = require("../services/orderEmailTemplates");
@@ -925,6 +925,13 @@ const orderToResponse = (order) => {
   delete response.__v;
   response.paymentStatus = resolveOrderPaymentStatus(response);
   if (response.receipt) response.receipt = { ...response.receipt, paymentStatus: response.paymentStatus };
+  if (response.paymentProvider === "paymongo" && response.workflowStatus === "to_pay" && ["pending", "failed", "cancelled"].includes(response.paymentStatus)) {
+    const expiresAt = checkoutExpiryAt(response);
+    if (checkoutHasPaymentInFlight(response.paymongo?.raw)) response.paymentCheckoutState = "processing";
+    else if (expiresAt && expiresAt <= new Date()) {
+      response.paymentCheckoutState = "expiring";
+    }
+  }
   return {
     ...response,
     workflowLabel: workflowLabel(response.workflowStatus, response.deliveryStatus),
@@ -1224,19 +1231,27 @@ const verifyPaymongoWebhookSignature = (req) => {
 const extractMoneyAndCurrency = (value = {}) => {
   const attributes =
     value?.data?.attributes || value?.attributes || value || {};
+  const paidPayment = Array.isArray(attributes.payments) ? attributes.payments.find((payment) =>
+    ["paid", "succeeded"].includes(String(payment?.attributes?.status || payment?.status || "").toLowerCase()),
+  ) : null;
+  const payment = paidPayment || attributes.payment;
+  const firstAttempt = attributes.payments?.[0]?.attributes;
+  const intent = attributes.payment_intent?.attributes || {};
   const amountCandidates = [
+    payment?.attributes?.amount,
+    intent.amount,
     attributes.amount_total,
     attributes.amount,
     attributes.total_amount,
-    attributes.payment?.attributes?.amount,
-    attributes.payments?.[0]?.attributes?.amount,
+    firstAttempt?.amount,
   ];
-  const amount = amountCandidates.find((candidate) => Number.isFinite(Number(candidate)));
+  const amount = amountCandidates.find((candidate) => candidate != null && Number.isFinite(Number(candidate)));
   const currency = String(
-    attributes.currency ||
+    payment?.attributes?.currency ||
+      intent.currency ||
+      attributes.currency ||
       attributes.currency_code ||
-      attributes.payment?.attributes?.currency ||
-      attributes.payments?.[0]?.attributes?.currency ||
+      firstAttempt?.currency ||
       "",
   ).toUpperCase();
   return { amount: amount === undefined ? null : Number(amount), currency };
@@ -1466,10 +1481,12 @@ const checkoutSessionLooksPaid = (session = {}) => {
   const attributes = session?.data?.attributes || session?.attributes || {};
   const status = String(attributes.status || "").toLowerCase();
   const paymentStatus = String(attributes.payment_status || "").toLowerCase();
+  const intentStatus = String(attributes.payment_intent?.attributes?.status || attributes.payment_intent?.status || "").toLowerCase();
   const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
   return (
     ["paid", "succeeded"].includes(status) ||
     ["paid", "succeeded"].includes(paymentStatus) ||
+    intentStatus === "succeeded" ||
     payments.some((payment) =>
       ["paid", "succeeded"].includes(
         String(payment?.attributes?.status || payment?.status || "").toLowerCase(),
@@ -1492,9 +1509,14 @@ const buildEventFromCheckoutSession = (session = {}) => {
   const data = session?.data || {};
   const attributes = data.attributes || {};
   const metadata = attributes.metadata || {};
-  const payment = Array.isArray(attributes.payments) ? attributes.payments[0] : null;
+  const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
+  const paidPayment = payments.find((item) => ["paid", "succeeded"].includes(
+    String(item?.attributes?.status || item?.status || "").toLowerCase(),
+  ));
+  const paid = checkoutSessionLooksPaid(session);
+  const payment = paid ? paidPayment : payments[0];
   return {
-    eventType: checkoutSessionLooksPaid(session)
+    eventType: paid
       ? "checkout_session.payment.paid"
       : checkoutSessionLooksClosed(session)
         ? "checkout_session.expired"
@@ -1522,20 +1544,21 @@ const checkoutHasPaymentInFlight = (session = {}) => {
   return statuses.some((status) => ["pending", "processing"].includes(status));
 };
 
-const checkoutExpiryAt = (order = {}) => {
+const checkoutExpiryAt = (order = {}, session = order.paymongo?.raw) => {
   const storedExpiry = order.paymongo?.checkoutExpiresAt;
   if (storedExpiry && Number.isFinite(new Date(storedExpiry).getTime())) return new Date(storedExpiry);
-  const providerCreatedAt = Number(order.paymongo?.raw?.data?.attributes?.created_at);
+  const providerCreatedAt = Number(session?.data?.attributes?.created_at ?? order.paymongo?.raw?.data?.attributes?.created_at);
   return Number.isFinite(providerCreatedAt) && providerCreatedAt > 0
     ? new Date(providerCreatedAt * 1000 + PAYMONGO_CHECKOUT_TIMEOUT_MS)
     : null;
 };
 
 const expireAbandonedCheckoutIfDue = async (order, now = new Date()) => {
+  const status = String(order?.paymentStatus || "").toLowerCase();
   if (
     !order ||
     String(order.paymentProvider || "").toLowerCase() !== "paymongo" ||
-    String(order.paymentStatus || "").toLowerCase() !== "pending" ||
+    !["pending", "failed", "cancelled"].includes(status) ||
     String(order.workflowStatus || "").toLowerCase() !== "to_pay" ||
     order.paymongo?.retryInProgress ||
     !order.paymongo?.checkoutSessionId
@@ -1550,8 +1573,9 @@ const expireAbandonedCheckoutIfDue = async (order, now = new Date()) => {
     _id: order._id,
     customer: order.customer,
     workflowStatus: "to_pay",
-    paymentStatus: "pending",
+    paymentStatus: status,
     "paymongo.checkoutSessionId": sessionId,
+    "paymongo.retryInProgress": { $ne: true },
     $and: [
       { $or: [{ "paymongo.lastExpirationCheckAt": null }, { "paymongo.lastExpirationCheckAt": { $lte: canCheckAgainAt } }] },
       { $or: [
@@ -2396,7 +2420,7 @@ const createOrder = async (req, res) => {
     });
     if (existingOrder) {
       if (isOnlinePaymentMethod(existingOrder.paymentMethod)) {
-        if (!existingOrder.paymongo?.checkoutUrl) {
+        if (!existingOrder.paymongo?.checkoutUrl && !existingOrder.paymongo?.checkoutSessionId && ["pending", "failed"].includes(existingOrder.paymentStatus)) {
           const failedCheckout = existingOrder.workflowStatus === "cancelled" && existingOrder.paymentStatus === "failed";
           return res.status(409).json({
             message: failedCheckout
@@ -2405,13 +2429,11 @@ const createOrder = async (req, res) => {
             code: failedCheckout ? "ORDER_CHECKOUT_FAILED" : "ORDER_CHECKOUT_IN_PROGRESS",
           });
         }
-        if (String(existingOrder.paymentStatus || "").toLowerCase() !== "pending") {
-          return res.status(409).json({
-            message: "This order already exists. Review its payment status before paying again.",
-            code: "ORDER_PAYMENT_RETRY_REQUIRED",
-            orderId: String(existingOrder._id),
-          });
-        }
+        return res.status(409).json({
+          message: "This order already exists. Review its payment status before paying again.",
+          code: "ORDER_PAYMENT_RETRY_REQUIRED",
+          orderId: String(existingOrder._id),
+        });
       }
       const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([existingOrder]);
       return res.status(200).json({
@@ -2952,21 +2974,22 @@ const applyOrderLifecycleAction = async (order, action, options = {}) => {
   if (action === "dispatch" && order.workflowStatus === "to_dispatch" && dispatchAlreadyStarted) {
     throw new HttpError(409, `Order ${order.orderCode} is already dispatched and is in technician fulfillment.`);
   }
+  const requestedInstallationDate = options.installationDate || options.estimatedArrival;
+  if (action === "approve" && requestedInstallationDate) {
+    const dateError = getWorkOrderAppointmentError(requestedInstallationDate, "", "Installation date");
+    if (dateError) throw new HttpError(400, dateError);
+  }
   if (action === "dispatch") {
-    if (!String(options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || "").trim() ||
-        !String(options.timeSlot || order.installationTimeSlot || "").trim() ||
-        String(options.timeSlot || order.installationTimeSlot).trim().toLowerCase() === "tbd") {
+    const scheduledDate = String(requestedInstallationDate || order.installationDate || order.estimatedDelivery || "").trim();
+    const timeSlot = String(options.timeSlot || order.installationTimeSlot || "").trim();
+    if (!scheduledDate || scheduledDate.toLowerCase() === "tbd" || !timeSlot || timeSlot.toLowerCase() === "tbd") {
       throw new HttpError(400, "Choose an installation date and time slot before dispatching this order.");
     }
-    const appointmentError = getScheduledAppointmentError(
-      options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || new Date().toISOString().split("T")[0],
-      options.timeSlot || order.installationTimeSlot,
-      "Installation date",
-    );
+    const appointmentError = getWorkOrderAppointmentError(scheduledDate, timeSlot, "Installation date");
     if (appointmentError) throw new HttpError(400, appointmentError);
     await assertNoTaskScheduleConflict({
-      scheduledDate: options.installationDate || options.estimatedArrival || order.installationDate || order.estimatedDelivery || new Date().toISOString().split("T")[0],
-      timeSlot: options.timeSlot || order.installationTimeSlot || "TBD",
+      scheduledDate,
+      timeSlot,
       participantIds: [assignment.assignedTechnicianId],
       excludeTaskId: linkedTaskBeforeAction?._id,
     });
@@ -3153,7 +3176,7 @@ const listMyOrders = async (req, res) => {
   const dueCheckouts = await Order.find({
     customer: req.authUser._id,
     paymentProvider: "paymongo",
-    paymentStatus: "pending",
+    paymentStatus: { $in: ["pending", "failed", "cancelled"] },
     workflowStatus: "to_pay",
     "paymongo.checkoutSessionId": { $type: "string", $ne: "" },
     "paymongo.retryInProgress": { $ne: true },
@@ -3419,9 +3442,12 @@ const recoverOrder = async (req, res) => {
 
   const action = String(req.body?.action || "").trim().toLowerCase();
   const form = req.body || {};
+  const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
   if (['recreate_task', 'assign_technician'].includes(action) && !['complete', 'cancelled'].includes(order.workflowStatus)) {
     const pendingTask = await findLinkedTaskForOrder(order);
     if (pendingTask?.payload?.visitAttempt?.awaitingAdmin) return res.status(409).json({ message: 'Use Visit follow-up to confirm the next visit before changing this assignment.' });
+    const dateError = getWorkOrderAppointmentError(synchronizedDate || order.estimatedDelivery, form.timeSlot || order.installationTimeSlot, "Installation date");
+    if (dateError) return res.status(400).json({ message: dateError });
   }
 
   // Recovery must not revive cancelled orders or touch their released stock.
@@ -3441,7 +3467,6 @@ const recoverOrder = async (req, res) => {
     if (!technician.assignedTechnicianId) {
       return res.status(400).json({ message: "Select one technician before recreating this work order." });
     }
-    const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
     const task = await createTaskForOrder(order, {
       assignedTechnicianId: technician.assignedTechnicianId,
       assignedTechnicianName: technician.assignedTechnicianName,
@@ -3482,7 +3507,6 @@ const recoverOrder = async (req, res) => {
 
     order.assignedTechnicianId = technician.assignedTechnicianId;
     order.assignedTechnician = technician.assignedTechnicianName;
-    const synchronizedDate = form.installationDate || form.estimatedArrival || order.installationDate || order.estimatedArrival || "";
     if (synchronizedDate) {
       order.estimatedArrival = synchronizedDate;
       order.estimatedDelivery = synchronizedDate;
@@ -3865,11 +3889,15 @@ const retryPaymongoCheckout = async (req, res) => {
         if (checkoutHasPaymentInFlight(session)) {
           return res.status(409).json({ message: "A payment is still processing. Refresh the order and wait for its result before retrying.", code: "PAYMENT_RETRY_PROCESSING" });
         }
+        const expiresAt = checkoutExpiryAt(order, session);
+        if (expiresAt && expiresAt <= new Date()) {
+          return res.status(409).json({ message: "The previous payment link is closing. Check the payment status before trying again.", code: "PAYMENT_CHECKOUT_EXPIRING" });
+        }
         const latestOrder = await Order.findOne({ _id: order._id, customer: req.authUser._id });
         if (!latestOrder || String(latestOrder.workflowStatus || "").toLowerCase() !== "to_pay" ||
             String(latestOrder.paymentStatus || "").toLowerCase() !== "pending" ||
             String(latestOrder.paymongo?.checkoutSessionId || "") !== String(order.paymongo.checkoutSessionId) ||
-            !latestOrder.paymongo?.checkoutUrl) {
+            latestOrder.paymongo?.retryInProgress || !latestOrder.paymongo?.checkoutUrl) {
           return res.status(409).json({ message: "Payment status changed. Refresh your order before trying again.", code: "PAYMENT_RETRY_CHANGED" });
         }
         const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([latestOrder]);
@@ -3910,6 +3938,10 @@ const retryPaymongoCheckout = async (req, res) => {
       if (!checkoutSessionLooksClosed(priorSession)) {
         if (checkoutHasPaymentInFlight(priorSession)) {
           return res.status(409).json({ message: "A payment is still processing. Refresh the order and wait for its result before retrying.", code: "PAYMENT_RETRY_PROCESSING" });
+        }
+        const expiresAt = checkoutExpiryAt(order, priorSession);
+        if (expiresAt && expiresAt <= new Date()) {
+          return res.status(409).json({ message: "The previous payment link is closing. Check the payment status before trying again.", code: "PAYMENT_CHECKOUT_EXPIRING" });
         }
         reusableCheckout = priorSession;
       }
@@ -4111,13 +4143,24 @@ const verifyPaymongoCheckout = async (req, res) => {
         assertPaymongoAmountMatchesOrder(order, session);
       }
       await applyPaymongoEventToOrder(order, event, session);
-    } else {
-      order.paymongo = {
-        ...(order.paymongo?.toObject?.() || order.paymongo || {}),
-        status: session?.data?.attributes?.status || order.paymongo?.status || "",
-        raw: session,
-      };
-      await order.save();
+    } else if (String(order.paymentStatus || "").toLowerCase() !== "paid") {
+      const expiryAt = checkoutExpiryAt(order, session);
+      const refreshed = await Order.findOneAndUpdate({
+        _id: order._id,
+        paymentStatus: order.paymentStatus,
+        "paymongo.checkoutSessionId": checkoutSessionId,
+        "paymongo.retryInProgress": { $ne: true },
+      }, { $set: {
+        "paymongo.status": session?.data?.attributes?.status || order.paymongo?.status || "",
+        "paymongo.raw": session,
+        ...(expiryAt ? { "paymongo.checkoutExpiresAt": expiryAt } : {}),
+      } }, { new: true });
+      // A checkout may have been replaced while the provider was responding.
+      order = refreshed || await Order.findById(order._id);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (refreshed && expiryAt && !checkoutHasPaymentInFlight(session)) {
+        order = await expireAbandonedCheckoutIfDue(order);
+      }
     }
 
     const [hydratedOrder] = await hydrateOrdersWithInventoryQrCodes([order]);

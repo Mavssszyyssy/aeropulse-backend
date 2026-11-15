@@ -1,5 +1,5 @@
 const { hasVerifiedTaskCheckIn } = require('./taskWorkflow');
-const { getScheduledAppointmentError, getServiceAppointmentError } = require('../utils/scheduling');
+const { getWorkOrderAppointmentError, getServiceAppointmentError } = require('../utils/scheduling');
 
 const awaitingVisitFollowUp = task => Boolean(task?.payload?.visitAttempt?.awaitingAdmin);
 const FOLLOW_UP_REQUIRED = 'This visit is closed. Admin must confirm the next visit using Visit follow-up before work can continue.';
@@ -19,7 +19,7 @@ function visitAttemptError(task, input = {}) {
 function nextVisitError(input = {}, { service = false, now = new Date() } = {}) {
   if (!input.scheduledDate || input.scheduledDate === 'TBD') return 'Choose the next visit date.';
   if (!VISIT_TIME_SLOTS.includes(input.timeSlot)) return 'Choose a valid time slot.';
-  return (service ? getServiceAppointmentError : getScheduledAppointmentError)(input.scheduledDate, input.timeSlot, 'Next visit date', now);
+  return (service ? getServiceAppointmentError : getWorkOrderAppointmentError)(input.scheduledDate, input.timeSlot, 'Next visit date', now);
 }
 
 module.exports = { awaitingVisitFollowUp, FOLLOW_UP_REQUIRED, VISIT_TIME_SLOTS, visitAttemptError, nextVisitError };

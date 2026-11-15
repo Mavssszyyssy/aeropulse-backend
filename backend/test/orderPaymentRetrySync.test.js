@@ -21,6 +21,8 @@ const loadRetry = (context) => {
   const httpError = source.slice(httpErrorStart, source.indexOf('\n}', httpErrorStart) + 2);
   return vm.runInNewContext(`${httpError}\n${helperSource}\nretryPaymongoCheckout`, {
     PaymongoError: class extends Error {},
+    PAYMONGO_CHECKOUT_TIMEOUT_MS: 30 * 60 * 1000,
+    PAYMONGO_EXPIRY_RECHECK_MS: 5 * 60 * 1000,
     console,
     ...context,
   });
@@ -193,6 +195,35 @@ test('a provider-confirmed expired session updates the order before allowing any
   assert.equal(applied, 1);
 });
 
+for (const paymentStatus of ['pending', 'failed']) {
+  test(`an overdue ${paymentStatus} session is not reopened when PayMongo has not confirmed expiry`, async () => {
+    const order = { _id: 'order-overdue', customer: 'customer-1', paymentProvider: 'paymongo',
+      paymentMethod: 'card', workflowStatus: 'to_pay', paymentStatus,
+      paymongo: { checkoutSessionId: 'old-session', checkoutUrl: 'https://checkout.example/old', checkoutExpiresAt: new Date(0) } };
+    const queries = [];
+    let expireCalls = 0;
+    let newSessions = 0;
+    const retry = loadRetry({
+      Order: { findOne: async () => order, findOneAndUpdate: async (query) => { queries.push(query); return order; } },
+      isOnlinePaymentMethod: () => true,
+      getCheckoutSession: async () => ({ data: { attributes: { status: 'active' } } }),
+      checkoutSessionLooksPaid: () => false,
+      checkoutSessionLooksClosed: () => false,
+      expireCheckoutSession: async () => { expireCalls += 1; return { data: { attributes: { status: 'active' } } }; },
+      attachPaymongoCheckout: async () => { newSessions += 1; },
+    });
+    const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+    await retry({ params: { orderId: order._id }, authUser: { _id: order.customer } }, res);
+    assert.equal(res.code, 409);
+    assert.equal(res.body.code, 'PAYMENT_CHECKOUT_EXPIRING');
+    assert.equal(res.body.payment, undefined);
+    assert.equal(expireCalls, 1);
+    assert.equal(newSessions, 0);
+    assert.equal(queries[0].paymentStatus, paymentStatus);
+    assert.equal(queries[0]['paymongo.retryInProgress'].$ne, true);
+  });
+}
+
 test('a locally failed order safely reuses its still-active PayMongo checkout', async () => {
   const order = {
     _id: 'order-failed-active', customer: 'customer-1', paymentMethod: 'card',
@@ -267,12 +298,12 @@ test('cancelled orders cannot resume an old checkout link', async () => {
   assert.match(body.message, /no longer awaiting payment/);
 });
 
-test('idempotent replay of a failed payment sends the customer to the existing order', async () => {
+for (const paymentStatus of ['pending', 'failed', 'paid']) test(`idempotent replay of a ${paymentStatus} payment sends the customer to the existing order`, async () => {
   const createStart = source.indexOf('const createOrder =');
   const createSource = source.slice(createStart, source.indexOf('\n};', createStart) + 3);
   const create = vm.runInNewContext(`${createSource}; createOrder`, {
     Order: { findOne: async () => ({
-      _id: 'existing-order', paymentMethod: 'gcash', paymentStatus: 'failed',
+      _id: 'existing-order', paymentMethod: 'gcash', paymentStatus,
       paymongo: { checkoutUrl: 'https://checkout.example/expired' },
     }) },
     isOnlinePaymentMethod: () => true,
@@ -287,4 +318,5 @@ test('idempotent replay of a failed payment sends the customer to the existing o
   assert.equal(status, 409);
   assert.equal(body.code, 'ORDER_PAYMENT_RETRY_REQUIRED');
   assert.equal(body.orderId, 'existing-order');
+  assert.equal(body.payment, undefined);
 });

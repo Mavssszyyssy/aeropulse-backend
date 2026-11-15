@@ -5,6 +5,7 @@ const {
 	markNotificationRead,
 	markAllNotificationsRead,
 	archiveNotification,
+	archiveAllNotifications,
 	restoreNotification,
 	registerPushToken,
 	unregisterPushToken,
@@ -15,6 +16,7 @@ const router = express.Router();
 router.use(requireAuth);
 router.get("/me", listMyNotifications);
 router.patch("/me/read-all", markAllNotificationsRead);
+router.patch("/me/archive-all", archiveAllNotifications);
 router.post("/read-all", markAllNotificationsRead);
 router.post("/push-token", registerPushToken);
 router.delete("/push-token", unregisterPushToken);

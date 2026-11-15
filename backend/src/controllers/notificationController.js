@@ -4,7 +4,7 @@ const { reconcileRequiredActionsForUser } = require("../services/requiredActionR
 
 const STAFF_ROLES = ["admin", "superadmin", "manager", "owner"];
 
-const technicianDuplicateScope = (notification) => {
+const notificationDuplicateScope = (notification) => {
   if (notification.dedupeKey) return { dedupeKey: notification.dedupeKey };
   return {
     dedupeKey: { $in: [null, ""] },
@@ -136,6 +136,9 @@ const listMyNotifications = async (req, res) => {
   // applying preferences. Otherwise, suppressed alerts in the newest 30 can
   // hide older unread alerts that the user is still meant to see.
   const archivedView = String(req.query?.view || "active").toLowerCase() === "archived";
+  const requestedPage = Number(req.query?.page);
+  const archiveOffset = Number.isSafeInteger(requestedPage) && requestedPage > 1
+    ? (requestedPage - 1) * 30 : 0;
   // The full Superadmin operations inbox paginates its filtered results in the
   // client. The compact notification drawers retain their 30-item response.
   const operationsView = req.query?.scope === "operations"
@@ -157,15 +160,16 @@ const listMyNotifications = async (req, res) => {
     ? { archivedAt: { $ne: null } }
     : { $or: [{ archivedAt: null }, { archivedAt: { $exists: false } }] };
   const notificationFields = "type branch category severity title message route targetId targetType dedupeKey status unread archivedAt createdAt updatedAt";
-  const notificationsQuery = Notification.find({ user: userId, ...archiveScope })
+  const notificationsQuery = () => Notification.find({ user: userId, ...archiveScope })
     .select(notificationFields)
-    .sort({ createdAt: -1 });
-  if (!operationsView && !mobileView) notificationsQuery.limit(100);
-  let notifications = await notificationsQuery.lean();
+    .sort(archivedView ? { createdAt: -1, _id: -1 } : { createdAt: -1 });
+  const inboxQuery = notificationsQuery();
+  let archiveReadLimit = Math.min(500, Math.max(100, archiveOffset + 31));
+  if (archivedView) inboxQuery.limit(archiveReadLimit);
+  else if (!operationsView && !mobileView) inboxQuery.limit(100);
+  let notifications = await inboxQuery.lean();
 
-  const hasAnyStoredNotification = notifications.length > 0
-    || Boolean(await Notification.exists({ user: userId }));
-  if (!hasAnyStoredNotification && !archivedView) {
+  if (!archivedView && !notifications.length && !await Notification.exists({ user: userId })) {
     // Check if this is the user's first login
     const isFirstLogin = !user.lastLogin;
     const role = String(user?.role || "customer").toLowerCase();
@@ -189,9 +193,7 @@ const listMyNotifications = async (req, res) => {
         message: statusMessage,
       },
     ]);
-    const welcomeQuery = Notification.find({ user: userId, ...archiveScope })
-      .select(notificationFields)
-      .sort({ createdAt: -1 });
+    const welcomeQuery = notificationsQuery();
     if (!operationsView && !mobileView) welcomeQuery.limit(100);
     notifications = await welcomeQuery.lean();
   }
@@ -207,12 +209,19 @@ const listMyNotifications = async (req, res) => {
     userNotifications,
   )
     .filter((item) => item.unread || item.status === "unread").length;
-  notifications = applyNotificationPreferences(
-    applyRoleRelevance(notifications, user?.role),
-    userNotifications,
-  );
-  const hasMore = mobileView && notifications.length > mobileLimit;
-  if (mobileView) notifications = notifications.slice(0, mobileLimit);
+  const visible = (items) => applyNotificationPreferences(applyRoleRelevance(items, user?.role), userNotifications);
+  let visibleNotifications = visible(notifications);
+  // Read more only when deduplication or notification preferences leave the requested archive page short.
+  while (archivedView && notifications.length === archiveReadLimit && visibleNotifications.length <= archiveOffset + 30) {
+    archiveReadLimit *= 2;
+    notifications = await notificationsQuery().limit(archiveReadLimit).lean();
+    visibleNotifications = visible(notifications);
+  }
+  notifications = visibleNotifications;
+  const hasMore = archivedView ? notifications.length > archiveOffset + 30
+    : mobileView && notifications.length > mobileLimit;
+  if (archivedView) notifications = notifications.slice(archiveOffset, archiveOffset + 30);
+  else if (mobileView) notifications = notifications.slice(0, mobileLimit);
   else if (!operationsView) notifications = notifications.slice(0, 30);
 
   return res.json({
@@ -222,8 +231,18 @@ const listMyNotifications = async (req, res) => {
   });
 };
 
+const archiveUpdate = () => ({ $set: { archivedAt: new Date(), unread: false, status: "read" } });
+
+const archiveAllNotifications = async (req, res) => {
+  const result = await Notification.updateMany(
+    { user: req.authUser._id, archivedAt: null },
+    archiveUpdate(),
+  );
+  return res.json({ modifiedCount: Number(result.modifiedCount || 0) });
+};
+
 const archiveNotification = async (req, res) => {
-  const archive = { $set: { archivedAt: new Date(), unread: false, status: "read" } };
+  const archive = archiveUpdate();
   const notification = await Notification.findOneAndUpdate(
     { _id: req.params.id, user: req.authUser._id },
     archive,
@@ -233,7 +252,7 @@ const archiveNotification = async (req, res) => {
   if (req.authUser.role === "technician") {
     // The technician inbox renders these duplicate records as one alert.
     await Notification.updateMany(
-      { user: req.authUser._id, archivedAt: null, ...technicianDuplicateScope(notification) },
+      { user: req.authUser._id, archivedAt: null, ...notificationDuplicateScope(notification) },
       archive,
     );
   }
@@ -241,13 +260,14 @@ const archiveNotification = async (req, res) => {
 };
 
 const restoreNotification = async (req, res) => {
-  const notification = await Notification.findOneAndUpdate(
-    { _id: req.params.id, user: req.authUser._id },
-    { $set: { archivedAt: null } },
-    { new: true },
-  );
+  const user = req.authUser._id;
+  const notification = await Notification.findOne({ _id: req.params.id, user });
   if (!notification) return res.status(404).json({ message: "Notification not found" });
-  return res.json({ notification: notification.toJSON() });
+  await Notification.updateMany(
+    { user, archivedAt: { $ne: null }, $or: [{ _id: notification._id }, notificationDuplicateScope(notification)] },
+    { $set: { archivedAt: null } },
+  );
+  return res.json({ notification: { ...notification.toJSON(), archivedAt: null } });
 };
 
 const markNotificationRead = async (req, res) => {
@@ -320,6 +340,7 @@ module.exports = {
   markNotificationRead,
   markAllNotificationsRead,
   archiveNotification,
+  archiveAllNotifications,
   restoreNotification,
   registerPushToken,
   unregisterPushToken,

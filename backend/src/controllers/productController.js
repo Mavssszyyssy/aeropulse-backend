@@ -7,7 +7,7 @@ const InventoryChangeRequest = require("../models/InventoryChangeRequest");
 const AuditLog = require("../models/AuditLog");
 const crypto = require("crypto");
 const { BRANCHES } = require("../domain/branchRouting");
-const { isNonRetailCatalogProduct } = require("../domain/catalogVisibility");
+const { isCustomerCatalogProduct, isNonRetailCatalogProduct } = require("../domain/catalogVisibility");
 const { normalizeCatalogImageUrl } = require("../domain/catalogImageUrl");
 const { validateProductUniqueness } = require("../utils/productValidation");
 const { parsePositiveWholeQuantity, parseNonnegativeWholeQuantity } = require("../domain/quantityValidation");
@@ -383,8 +383,6 @@ let sampleSeedPromise = null;
 let sampleSeedDone = false;
 
 const DISTRIBUTION_FALLBACK_STOCK = 6;
-const isCustomerCatalogProduct = (product = {}) =>
-  product.isActive !== false && !isNonRetailCatalogProduct(product);
 
 const distributeStockToBranches = (total) => {
   const safeTotal = Math.max(0, Number(total) || 0);
@@ -933,9 +931,8 @@ const listProducts = async (req, res) => {
 };
 
 const listPublicProducts = async (req, res) => {
-  // Inventory must never be served from a stale CDN/browser response. Stock
-  // is reserved atomically by order creation, and clients always re-read this
-  // endpoint before checkout.
+  // Keep browser and proxy caches out of inventory validation. Shop screens
+  // may briefly reuse a display snapshot, but stock checks always fetch here.
   res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
   const requestedBranch = String(req.query?.branch || "").trim();

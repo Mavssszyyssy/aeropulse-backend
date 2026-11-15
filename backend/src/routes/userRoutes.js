@@ -24,16 +24,29 @@ const {
 } = require("../controllers/userController");
 
 const { createStaff } = require("../controllers/staffController");
+const { limitTextFields } = require("../middleware/limitTextFields");
+
 const router = express.Router();
+
+const addressText = limitTextFields({
+  label: [80, "Address label"],
+  name: [60, "Recipient name"],
+  street: [180, "Street address"],
+  phone: [20, "Mobile number"],
+});
+const profileText = limitTextFields({
+  address: [220, "Address"],
+  email: [254, "Email address"],
+});
 
 router.use(requireAuth);
 
 // Super Admin: create staff (admin/technician)
-router.post("/staff", allowRoles("superadmin"), createStaff);
+router.post("/staff", allowRoles("superadmin"), limitTextFields({ email: [254, "Email address"] }), createStaff);
 router.get("/profile", getProfile);
-router.patch("/profile", updateProfile);
-router.put("/profile/update", updateProfile);
-router.patch("/location", updateLocation);
+router.patch("/profile", profileText, updateProfile);
+router.put("/profile/update", profileText, updateProfile);
+router.patch("/location", limitTextFields({ "location.address.street": [180, "Street address"] }), updateLocation);
 
 router.patch("/settings", updateSettings);
 router.put("/settings/update", updateSettings);
@@ -43,8 +56,8 @@ router.patch("/privacy", updatePrivacy);
 router.patch("/notifications", updateNotifications);
 
 router.get("/addresses", listAddresses);
-router.post("/addresses", addAddress);
-router.patch("/addresses/:addressId", updateAddress);
+router.post("/addresses", addressText, addAddress);
+router.patch("/addresses/:addressId", addressText, updateAddress);
 router.delete("/addresses/:addressId", deleteAddress);
 router.patch("/addresses/:addressId/default", setDefaultAddress);
 
@@ -54,9 +67,9 @@ router.delete("/me", deleteAccount);
 
 router.get("/", allowRoles("admin", "superadmin"), listUsers);
 router.get("/:id/profile", allowRoles("admin", "superadmin"), getProfileById);
-router.patch("/:id", allowRoles("admin", "superadmin"), updateProfileById);
+router.patch("/:id", allowRoles("admin", "superadmin"), profileText, updateProfileById);
 router.patch("/:id/status", allowRoles("admin", "superadmin"), updateUserStatus);
-router.put("/:id/profile", allowRoles("admin", "superadmin"), updateProfileById);
+router.put("/:id/profile", allowRoles("admin", "superadmin"), profileText, updateProfileById);
 router.delete("/:id", allowRoles("admin", "superadmin"), deleteUserById);
 router.post("/:id/unlock", allowRoles("admin", "superadmin"), unlockUser);
 

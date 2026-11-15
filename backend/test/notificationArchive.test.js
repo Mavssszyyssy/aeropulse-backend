@@ -37,7 +37,14 @@ const loadController = ({ items = null, anyStored = true, role = "admin", archiv
         updates.push({ query, update });
         return item;
       },
-      updateMany: async (query, update) => { updates.push({ query, update }); },
+      findOne: async (query) => {
+        findQueries.push(query);
+        return item;
+      },
+      updateMany: async (query, update) => {
+        updates.push({ query, update });
+        return { modifiedCount: 12 };
+      },
     },
     "../models/User": {
       findById: () => ({ select() { return this; }, lean: async () => user }),
@@ -83,10 +90,40 @@ test("archive and restore are scoped to the signed-in user", async () => {
   assert.equal(fixture.updates[0].update.$set.unread, false);
   assert.equal(fixture.updates[0].update.$set.status, "read");
   assert.ok(fixture.updates[0].update.$set.archivedAt instanceof Date);
-  assert.deepEqual(fixture.updates[1], {
-    query: { _id: "notification-1", user: "user-1" },
-    update: { $set: { archivedAt: null } },
-  });
+  assert.deepEqual(fixture.findQueries[0], { _id: "notification-1", user: "user-1" });
+  assert.equal(fixture.updates[1].query.user, "user-1");
+  assert.deepEqual(fixture.updates[1].query.archivedAt, { $ne: null });
+  assert.deepEqual(fixture.updates[1].query.$or[0], { _id: "notification-1" });
+  assert.deepEqual(fixture.updates[1].query.$or[1].dedupeKey, { $in: [null, ""] });
+  assert.deepEqual(fixture.updates[1].update, { $set: { archivedAt: null } });
+});
+
+test("archive all updates all active alerts for the authenticated account in one write", async () => {
+  const fixture = loadController();
+  const res = response();
+  await fixture.controller.archiveAllNotifications({ authUser: { _id: "self" }, body: { user: "other" } }, res);
+  assert.equal(fixture.updates.length, 1);
+  assert.deepEqual(fixture.updates[0].query, { user: "self", archivedAt: null });
+  assert.ok(fixture.updates[0].update.$set.archivedAt instanceof Date);
+  assert.equal(fixture.updates[0].update.$set.unread, false);
+  assert.equal(fixture.updates[0].update.$set.status, "read");
+  assert.deepEqual(res.data, { modifiedCount: 12 });
+});
+
+test("archived pages include older alerts and deduplicate before slicing", async () => {
+  const items = Array.from({ length: 105 }, (_, index) => ({ _id: `n-${index}`, type: "system", title: `Alert ${index}` }));
+  const fixture = loadController({ items: [items[0], ...items] });
+  const req = { authUser: { _id: "self" } };
+  const first = response();
+  await fixture.controller.listMyNotifications({ ...req, query: { view: "archived" } }, first);
+  assert.equal(first.data.notifications.length, 30);
+  assert.equal(first.data.notifications[29].id, "n-29");
+  assert.equal(first.data.hasMore, true);
+  const last = response();
+  await fixture.controller.listMyNotifications({ ...req, query: { view: "archived", page: "4" } }, last);
+  assert.equal(last.data.notifications[0].id, "n-90");
+  assert.equal(last.data.notifications.at(-1).id, "n-104");
+  assert.equal(last.data.hasMore, false);
 });
 
 test("archiving every notification does not recreate welcome notices", async () => {

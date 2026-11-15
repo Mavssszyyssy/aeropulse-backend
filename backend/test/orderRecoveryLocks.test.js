@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { getWorkOrderAppointmentError, getWorkOrderMaxDateKey } = require('../src/utils/scheduling');
 const source = fs.readFileSync(require.resolve('../src/controllers/orderController'), 'utf8');
 const start = source.indexOf('const recoverOrder =');
 const recoverSource = source.slice(start, source.indexOf('\n};', start) + 3);
@@ -33,6 +34,7 @@ test('completed order does not recreate or reassign technician work', async () =
 
 test('assignment conflict does not partially save the order', async () => {
   let saveCount = 0;
+  const installationDate = getWorkOrderMaxDateKey();
   const conflict = Object.assign(new Error('Technician schedule conflict'), {
     status: 409,
     statusCode: 409,
@@ -44,13 +46,14 @@ test('assignment conflict does not partially save the order', async () => {
     stockSourceBranch: 'Bulacan',
     customerBranch: 'Bulacan',
     assignedTechnician: '',
-    installationDate: '2099-10-01',
+    installationDate,
     installationTimeSlot: '9:00 AM - 12:00 PM',
     async save() { saveCount += 1; },
   };
   const recover = vm.runInNewContext(`${recoverSource}; recoverOrder`, {
     getOrderForAdminAction: async () => order,
     findLinkedTaskForOrder: async () => null,
+    getWorkOrderAppointmentError,
     resolveTechnicianAssignment: async () => ({
       assignedTechnicianId: 'technician-fixture',
       assignedTechnicianName: 'Available Technician',
@@ -65,7 +68,7 @@ test('assignment conflict does not partially save the order', async () => {
       body: {
         action: 'assign_technician',
         assignedTechnicianId: 'technician-fixture',
-        installationDate: '2099-10-01',
+        installationDate,
         timeSlot: '9:00 AM - 12:00 PM',
       },
     }, {

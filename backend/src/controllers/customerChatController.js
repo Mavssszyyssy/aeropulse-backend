@@ -6,7 +6,8 @@ const sendCustomerChatMessage = async (req, res) => {
       message: req.body?.message,
       history: req.body?.history,
       currentPage: req.body?.currentPage,
-      safetyIdentifier: String(req.authUser?._id || "customer"),
+      language: req.body?.language === "Filipino" ? "Filipino" : "English",
+      safetyIdentifier: req.authUser?._id ? String(req.authUser._id) : undefined,
     });
     return res.json(result);
   } catch (error) {

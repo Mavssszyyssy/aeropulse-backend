@@ -216,7 +216,11 @@ test("admin and assigned technician send only matching saved work-order observat
   Task.findById = async () => task;
   Task.findOne = async () => task;
   ServiceRequest.findById = async () => request;
-  ServiceRequest.updateOne = async (_filter, change) => { writes.push(change.$set); };
+  ServiceRequest.updateOne = async (_filter, change) => {
+    writes.push(change.$set);
+    Object.assign(request, change.$set);
+    return { matchedCount: 1 };
+  };
   Unit.findById = () => ({ lean: async () => ({ _id: unitId, brand: "LG", serviceBranch: "Cavite" }) });
   ServiceHistory.find = () => ({ select: () => ({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) }) });
   global.fetch = async (_url, options) => {
@@ -227,19 +231,30 @@ test("admin and assigned technician send only matching saved work-order observat
   try {
     const admin = respond();
     await generateRequestPreAssessment({ authUser: { role: "admin", _id: "admin-1" }, activeBranch: "Cavite", params: { requestId } }, admin);
+    const review = { decision: "accepted", by: "admin-1", at: new Date() };
+    request.aiPreAssessment.review = review;
     const technician = respond();
     await generateTaskPreAssessment({ authUser: { role: "technician", _id: "tech-1" }, activeBranch: "Cavite", params: { taskId } }, technician);
     assert.equal(admin.code, 200);
     assert.equal(technician.code, 200);
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(technician.body.preAssessment.review, review);
+    assert.equal(writes.length, 1);
     for (const payload of sent) {
       assert.match(payload, /May ingay sa fan pero hindi pa nasuri ang motor/);
       assert.match(payload, /Wala pang confirmed na sira/);
       assert.doesNotMatch(payload, /private-contact/);
     }
-    assert.equal(writes.length, 2);
     assert.deepEqual(Object.keys(writes[0]), ["aiPreAssessment"]);
     assert.equal(task.payload.findings, "May ingay sa fan pero hindi pa nasuri ang motor.");
+
+    task.payload.notes = "May bagong obserbasyon tungkol sa aircon.";
+    const changed = respond();
+    await generateTaskPreAssessment({ authUser: { role: "technician", _id: "tech-1" }, activeBranch: "Cavite", params: { taskId } }, changed);
+    assert.equal(changed.code, 200);
+    assert.equal(sent.length, 2);
+    assert.match(sent[1], /May bagong obserbasyon/);
+    assert.equal(changed.body.preAssessment.review.decision, "pending");
 
     request.unitId = "507f1f77bcf86cd799439099";
     const mismatch = respond();

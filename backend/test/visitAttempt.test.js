@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const Module = require('node:module');
 const { visitAttemptError, nextVisitError } = require('../src/domain/visitAttempt');
 const { hasVerifiedTaskCheckIn } = require('../src/domain/taskWorkflow');
-const { getServiceBookingMaxDateKey } = require('../src/utils/scheduling');
+const { getServiceBookingMaxDateKey, getWorkOrderMaxDateKey } = require('../src/utils/scheduling');
 const taskId = '111111111111111111111111';
 const attemptId = '222222222222222222222222';
 const userId = '333333333333333333333333';
@@ -24,7 +24,8 @@ test('unattended visits require active GPS arrival, outcome, note and embedded p
 });
 
 test('new visits require a valid date and dropdown time, never technician free text', () => {
-  assert.equal(nextVisitError({ scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' }), '');
+  assert.match(nextVisitError({ scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' }), /two calendar years/);
+  assert.equal(nextVisitError({ scheduledDate: getWorkOrderMaxDateKey(), timeSlot: '10:00 AM – 12:00 PM' }), '');
   assert.match(nextVisitError({ scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' }, { service: true }), /90 calendar days/);
   assert.equal(nextVisitError({ scheduledDate: getServiceBookingMaxDateKey(), timeSlot: '10:00 AM – 12:00 PM' }, { service: true }), '');
   assert.match(nextVisitError({ scheduledDate: '2026-10-26', timeSlot: '8:00 AM – 10:00 AM' }, { service: true, now: new Date('2026-10-26T04:00:00.000Z') }), /passed/);
@@ -119,8 +120,9 @@ test('delivery attempt preserves payment and fulfillment while syncing next appo
   assert.equal(f.order.visitAttempt.awaitingAdmin, true);
   assert.equal(f.events[0].route, '/admin/services/orders');
   assert.equal(f.events[1].route, '/customer/orders');
-  assert.equal((await f.call('scheduleNextVisit', 'superadmin', { attemptId, scheduledDate: '2099-12-12', timeSlot: '10:00 AM – 12:00 PM' })).statusCode, 200);
-  assert.equal(f.order.installationDate, '2099-12-12');
+  const scheduledDate = getWorkOrderMaxDateKey();
+  assert.equal((await f.call('scheduleNextVisit', 'superadmin', { attemptId, scheduledDate, timeSlot: '10:00 AM – 12:00 PM' })).statusCode, 200);
+  assert.equal(f.order.installationDate, scheduledDate);
   assert.equal(f.order.installationTimeSlot, '10:00 AM – 12:00 PM');
   assert.equal(f.order.workflowStatus, 'to_dispatch');
   assert.equal(f.order.fulfillmentTimeline.length, 2);

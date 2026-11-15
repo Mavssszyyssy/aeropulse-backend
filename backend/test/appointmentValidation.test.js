@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { getScheduledAppointmentError, getServiceAppointmentError, getServiceBookingMaxDateKey } = require("../src/utils/scheduling");
+const { getScheduledAppointmentError, getServiceAppointmentError, getServiceBookingMaxDateKey, getWorkOrderAppointmentError, getWorkOrderMaxDateKey } = require("../src/utils/scheduling");
 
 test("appointment validation uses Manila date and rejects expired or malformed slots", () => {
   const now = new Date("2026-10-26T04:00:00.000Z"); // 12:00 in Manila
@@ -29,4 +29,16 @@ test("Manila midnight rolls the booking window by a local calendar day", () => {
   assert.equal(getServiceBookingMaxDateKey(afterMidnight), "2027-01-25");
   assert.match(getServiceAppointmentError("2026-10-26", "11:00 PM - 11:30 PM", "Service date", afterMidnight), /past/);
   assert.equal(getServiceAppointmentError("2027-01-25", "9:00 AM - 11:00 AM", "Service date", afterMidnight), "");
+});
+
+test("work orders allow today and the two-year boundary using the Manila calendar", () => {
+  const now = new Date("2026-12-31T16:00:00Z");
+  const slot = "9:00 AM - 11:00 AM";
+  assert.equal(getWorkOrderMaxDateKey(new Date(now.getTime() - 1)), "2028-12-31");
+  assert.equal(getWorkOrderMaxDateKey(now), "2029-01-01");
+  assert.match(getWorkOrderAppointmentError("2026-12-31", slot, "Scheduled date", now), /past/);
+  assert.equal(getWorkOrderAppointmentError("2027-01-01", slot, "Scheduled date", now), "");
+  assert.equal(getWorkOrderAppointmentError("2029-01-01", slot, "Scheduled date", now), "");
+  assert.match(getWorkOrderAppointmentError("2029-01-02", slot, "Scheduled date", now), /two calendar years/);
+  assert.equal(getWorkOrderMaxDateKey(new Date("2028-02-29T00:00:00Z")), "2030-02-28");
 });

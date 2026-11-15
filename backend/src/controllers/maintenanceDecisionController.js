@@ -3,7 +3,47 @@ const ServiceRequest = require("../models/ServiceRequest");
 const ServiceHistory = require("../models/ServiceHistory");
 const Task = require("../models/Task");
 const Unit = require("../models/Unit");
-const { generateMaintenanceAssessment } = require("../services/maintenanceDecisionAiService");
+const env = require("../config/env");
+const { generateMaintenanceAssessment, validAssessment } = require("../services/maintenanceDecisionAiService");
+const { createRequestCache } = require("../services/requestCache");
+
+const shareAssessment = createRequestCache({ ttlMs: 0, maxEntries: 128 });
+
+function matchesAssessment(kind, saved, evidence) {
+  return saved?.status === "completed" && saved.model === env.openAiModel
+    && Array.isArray(saved.evidence) && saved.evidence.length === evidence.length
+    && evidence.every(({ id, label, text }, index) => {
+      const old = saved.evidence[index];
+      return old?.id === id && old.label === label && old.text === text;
+    })
+    && validAssessment(kind, saved.assessment, evidence);
+}
+
+async function getOrGenerateAssessment({ kind, model, record, field, evidence, actorId }) {
+  const prior = record[field];
+  if (matchesAssessment(kind, prior, evidence)) return { result: prior, saved: prior };
+
+  const key = JSON.stringify([kind, String(record._id), evidence, env.openAiModel]);
+  return shareAssessment(key, async () => {
+    const result = await generateMaintenanceAssessment({ kind, evidence, actorId });
+    const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
+    if (result.status === "completed" || prior?.status !== "completed") {
+      // A different server instance may already have saved a newer result or review.
+      const update = await model.updateOne({
+        _id: record._id,
+        [`${field}.generatedAt`]: prior?.generatedAt ?? null,
+        [`${field}.review.at`]: prior?.review?.at ?? null,
+      }, { $set: { [field]: saved } });
+      if (update?.matchedCount === 0) {
+        const latest = (await model.findById(record._id).select(field).lean())?.[field];
+        if (matchesAssessment(kind, latest, evidence)) return { result: latest, saved: latest };
+        const error = "The assessment changed while this request was running. Refresh and try again.";
+        return { result: { status: "conflict", error }, saved: latest || null };
+      }
+    }
+    return { result, saved: result.status !== "completed" && prior?.status === "completed" ? prior : saved };
+  });
+}
 
 const clean = (value, max = 500) => String(value || "").trim().slice(0, max);
 const id = (value) => mongoose.isValidObjectId(value) ? String(value) : "";
@@ -119,19 +159,20 @@ async function makePreAssessment(req, res, request, assignedTask = null) {
   if (!taskMatchesRequest(task, request)) task = null;
   const evidence = buildEvidence({ kind: "pre", request, task, unit, prior: await priorVisits(unit?._id) });
   if (!requestIssue(request) || requestIssue(request).length < 10) return res.status(422).json({ message: "Add more detail about the reported symptoms before generating an AI assessment." });
-  const result = await generateMaintenanceAssessment({ kind: "pre", evidence, actorId: req.authUser._id });
-  const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
-  if (result.status === "completed" || request.aiPreAssessment?.status !== "completed") {
-    await ServiceRequest.updateOne({ _id: request._id }, { $set: { aiPreAssessment: saved } });
-  }
-  return res.status(result.status === "completed" ? 200 : 424).json({ preAssessment: result.status === "completed" ? saved : request.aiPreAssessment?.status === "completed" ? request.aiPreAssessment : saved, message: result.error || "Pre-maintenance assessment saved." });
+  const { result, saved } = await getOrGenerateAssessment({
+    kind: "pre", model: ServiceRequest, record: request, field: "aiPreAssessment",
+    evidence, actorId: req.authUser._id,
+  });
+  return res.status(assessmentStatus(result)).json({ preAssessment: saved, message: result.error || "Pre-maintenance assessment saved." });
 }
+
+const assessmentStatus = ({ status }) => ({ completed: 200, conflict: 409 }[status] || 424);
 
 const generateRequestPreAssessment = async (req, res) => {
   try {
     const request = await findRequest(req, req.params.requestId);
     if (!request) return res.status(404).json({ message: "Service request not found." });
-    return makePreAssessment(req, res, request);
+    return await makePreAssessment(req, res, request);
   } catch (error) { console.error("Pre-maintenance assessment failed", error); return res.status(500).json({ message: "Unable to generate the assessment." }); }
 };
 
@@ -142,7 +183,7 @@ const generateTaskPreAssessment = async (req, res) => {
     const request = await findRequest(req, task.payload?.requestId);
     if (!request) return res.status(409).json({ message: "This work order has no linked service request." });
     if (!taskMatchesRequest(task, request)) return res.status(409).json({ message: "This work order does not match its service request." });
-    return makePreAssessment(req, res, request, task);
+    return await makePreAssessment(req, res, request, task);
   } catch (error) { console.error("Task pre-maintenance assessment failed", error); return res.status(500).json({ message: "Unable to generate the assessment." }); }
 };
 
@@ -175,12 +216,11 @@ const generateFuturePrediction = async (req, res) => {
       await ServiceHistory.updateOne({ _id: history._id }, { $set: { aiFuturePrediction: saved } });
       return res.status(422).json({ futurePrediction: saved, message: saved.error });
     }
-    const result = await generateMaintenanceAssessment({ kind: "post", evidence, actorId: req.authUser._id });
-    const saved = { ...result, evidence, review: { decision: "pending", by: "", at: null } };
-    if (result.status === "completed" || history.aiFuturePrediction?.status !== "completed") {
-      await ServiceHistory.updateOne({ _id: history._id }, { $set: { aiFuturePrediction: saved } });
-    }
-    return res.status(result.status === "completed" ? 200 : 424).json({ futurePrediction: result.status === "completed" ? saved : history.aiFuturePrediction?.status === "completed" ? history.aiFuturePrediction : saved, message: result.error || "Future-issue assessment saved." });
+    const { result, saved } = await getOrGenerateAssessment({
+      kind: "post", model: ServiceHistory, record: history, field: "aiFuturePrediction",
+      evidence, actorId: req.authUser._id,
+    });
+    return res.status(assessmentStatus(result)).json({ futurePrediction: saved, message: result.error || "Future-issue assessment saved." });
   } catch (error) { console.error("Future-issue assessment failed", error); return res.status(500).json({ message: "Unable to generate the prediction." }); }
 };
 

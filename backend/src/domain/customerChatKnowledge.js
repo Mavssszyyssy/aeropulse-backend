@@ -81,16 +81,23 @@ const normalizeText = (value = "") => String(value || "")
 const GREETING = /^(?:hi|hello|hey|good (?:morning|afternoon|evening)|kumusta|kamusta)[!. ]*$/i;
 const CUSTOMER_TOPIC = /\b(?:aeropulse|cold\s*air(?:\s*(?:act|trading))?|air\s*con(?:ditioner|ditioning)?|aircon|a\/c|ac(?:\s*unit)?|cooling|airflow|thermostat|compressor|refrigerant|filter|leak|noise|shop|cart|checkout|orders?|purchases?|payment|paymongo|gcash|delivery|dispatch|install(?:ation|ing)?|technician|maintenance|repair|cleaning|warranty|service|support|contact|account|password|notifications?|refund|return|receipt|invoice|schedule|booking|branch|stock|lamig|linis|sira|tagas|maingay|bayad|bili|tindahan|paghahatid|pagkakabit|garantiya|resibo|serbisyo|presyo|reklamo|retry)\b/i;
 const INSTRUCTION_OVERRIDE = /\b(?:ignore|disregard|forget|override|bypass)\s+(?:(?:all|the|your|previous|above|system|developer)\s+)*(?:instructions?|rules?|prompts?|restrictions?)\b|\b(?:act as|pretend (?:you are|to be)|role[ -]?play|you are now|developer mode|system (?:prompt|instruction|message)|jailbreak)\b|\b(?:kalimutan|balewalain|huwag sundin|wag sundin)\s+(?:(?:ang|lahat ng|mga)\s+)*(?:tagubilin|utos|panuntunan|instructions?)\b|\b(?:if you (?:don't|do not) (?:answer|comply|obey|give|tell|respond)|you will be punished|bad review unless)\b/i;
-const UNRELATED_TOPIC = /\b(?:python|javascript|typescript|programming|programmer|coding|source code|(?:write|make|create|build) a program|essay|poem|story|joke|recipe|movie|celebrity|(?:football|basketball)\s+(?:score|game|team|player)|election|crypto|homework|video game|pizza|restaurant menu|capital of|weather forecast|stock market)\b/i;
+const UNRELATED_TOPIC = /\b(?:python|javascript|typescript|programming|programmer|coding|source code|(?:write|make|create|build) a program|essay|poem|story|joke|recipe|movie|celebrity|(?:football|basketball)\s+(?:score|game|team|player)|election|crypto|homework|video game|pizza|restaurant menu|capital of|weather forecast|stock (?:market|photos?|trading)|branch(?:es)? of (?:the )?government|(?:share|stock) prices? of)\b/i;
+
+const isCustomerChatBlocked = (message) => {
+  const normalized = normalizeText(message);
+  return INSTRUCTION_OVERRIDE.test(normalized) || UNRELATED_TOPIC.test(normalized);
+};
+
+const isFilipinoQuestion = (message) => /\b(?:paano|pwede|puwede|ano|bakit|salamat|kamusta|tulong|magandang|saan|alin|anong|pinaka\w*|magkano|meron|mayroon|natitira|madami|marami|may|ng|sa)\b/i.test(message);
 
 const isCustomerChatInScope = (message = "") => {
   const normalized = normalizeText(message);
-  if (!normalized || INSTRUCTION_OVERRIDE.test(normalized) || UNRELATED_TOPIC.test(normalized)) return false;
-  return GREETING.test(normalized) || CUSTOMER_TOPIC.test(normalized);
+  if (!normalized || isCustomerChatBlocked(normalized)) return false;
+  return GREETING.test(normalized) || CUSTOMER_TOPIC.test(normalized) || /\b(?:buy|products?|models?|prices?|sku|inventory|sangay|katalogo)\b/.test(normalized);
 };
 
 const offTopicCustomerReply = (message = "") => ({
-  text: /\b(paano|pwede|puwede|ano|bakit|salamat|kamusta|tulong|magandang)\b/i.test(message)
+  text: isFilipinoQuestion(message)
     ? "Para sa mga tanong tungkol sa AEROPULSE, aircon, order, delivery, at serbisyo ng Cold Air ang assistant na ito. Paano kita matutulungan sa mga ito?"
     : "I can help with AEROPULSE, air conditioners, orders, delivery, and Cold Air services. What would you like to know about those?",
   route: "",
@@ -140,6 +147,8 @@ module.exports = {
   CUSTOMER_CHAT_ENTRIES,
   CUSTOMER_CHAT_ROUTES,
   deterministicCustomerChatReply,
+  isCustomerChatBlocked,
   isCustomerChatInScope,
+  isFilipinoQuestion,
   offTopicCustomerReply,
 };

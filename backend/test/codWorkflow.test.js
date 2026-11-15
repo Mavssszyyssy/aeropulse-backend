@@ -9,7 +9,7 @@ const actions = vm.runInNewContext(extract("const lifecycleActions =", "const re
 const noop = async () => {};
 const buildAction = (state) => vm.runInNewContext(extract("const applyOrderLifecycleAction =", "const approveOrder") + "; applyOrderLifecycleAction", {
   ...cod, lifecycleActions: actions, HttpError: class extends Error { constructor(status, message) { super(message); this.status = status; } },
-  getScheduledAppointmentError: () => null,
+  getWorkOrderAppointmentError: () => null,
   workflowLabel: s => s, findLinkedTaskForOrder: async () => null,
   resolveTechnicianAssignment: async options => ({ assignedTechnicianId: options.assignedTechnicianId || "", assignedTechnicianName: "Tech" }),
   assertNoTaskScheduleConflict: noop,

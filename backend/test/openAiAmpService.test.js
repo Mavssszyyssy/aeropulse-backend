@@ -3,6 +3,40 @@ const assert = require("node:assert/strict");
 const env = require("../src/config/env");
 const { callStructuredAmpAnalysis, validateAmpInsight, resolveBusinessIntelligence, validBusinessIntelligenceSelection } = require("../src/services/openAiAmpService");
 
+test("operational report interpretations reuse the authorized snapshot and reject provider figures", async (t) => {
+  const originalKey = env.openAiApiKey;
+  env.openAiApiKey = "mock-report-key";
+  t.after(() => { env.openAiApiKey = originalKey; });
+
+  const insight = { summary: "Low stock is visible in the selected inventory.", review_action: "Verify quantities against the branch stock register." };
+  let responseInsight = insight;
+  const fetch = t.mock.method(global, "fetch", async () => ({
+    ok: true,
+    headers: { get: () => null },
+    text: async () => JSON.stringify({ output_text: JSON.stringify(responseInsight) }),
+  }));
+  const input = {
+    safetyIdentifier: "mock-viewer",
+    reportInterpretation: {
+      report: "inventory", language: "English", scope: { branch: "Cavite", stockFilter: "all" },
+      statistics: { productLines: 4, lowStockItems: 2, outOfStockItems: 0 },
+    },
+  };
+  const result = await callStructuredAmpAnalysis(input);
+  assert.equal(result.provider, "openai");
+  assert.deepEqual(result.insight, insight);
+  assert.equal((await callStructuredAmpAnalysis(input)).cached, true);
+  assert.equal(fetch.mock.callCount(), 1);
+  const body = JSON.parse(fetch.mock.calls[0].arguments[1].body);
+  assert.deepEqual(JSON.parse(body.input[1].content[0].text), input.reportInterpretation);
+  assert.equal(body.store, false);
+
+  responseInsight = { ...insight, summary: "There are 200 units left." };
+  const wrongFigures = await callStructuredAmpAnalysis({ ...input, safetyIdentifier: "another-viewer" });
+  assert.equal(wrongFigures.provider, "system-fallback");
+  assert.equal(wrongFigures.insight, null);
+});
+
 test("AMP uses the deterministic fallback when no provider key exists", async () => {
   const originalKey = env.openAiApiKey;
   env.openAiApiKey = "";

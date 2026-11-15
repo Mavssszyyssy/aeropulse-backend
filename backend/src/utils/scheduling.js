@@ -15,7 +15,13 @@ const addCalendarDays = (dateKey, days) => {
 };
 const getServiceBookingMaxDateKey = (now = new Date()) => addCalendarDays(getManilaDateKey(now), 90);
 
-const getScheduledDateError = (value, label = "Scheduled date", now = new Date(), { maxCalendarDays } = {}) => {
+const getWorkOrderMaxDateKey = (now = new Date()) => {
+  const [year, month, day] = getManilaDateKey(now).split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year + 2, month, 0)).getUTCDate();
+  return new Date(Date.UTC(year + 2, month - 1, Math.min(day, lastDay))).toISOString().slice(0, 10);
+};
+
+const getScheduledDateError = (value, label = "Scheduled date", now = new Date(), { maxCalendarDays, workOrder = false } = {}) => {
   const date = String(value || "").trim();
   if (!date || date.toLowerCase() === "tbd") return "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -29,6 +35,9 @@ const getScheduledDateError = (value, label = "Scheduled date", now = new Date()
   if (date < getManilaDateKey(now)) return `${label} cannot be in the past.`;
   if (Number.isInteger(maxCalendarDays) && date > addCalendarDays(getManilaDateKey(now), maxCalendarDays)) {
     return `${label} must be within ${maxCalendarDays} calendar days from today.`;
+  }
+  if (workOrder && date > getWorkOrderMaxDateKey(now)) {
+    return "Choose a work order date within two calendar years from today.";
   }
   return "";
 };
@@ -53,5 +62,7 @@ const getServiceDateError = (value, label = "Service date", now = new Date()) =>
   getScheduledDateError(value, label, now, { maxCalendarDays: 90 });
 const getServiceAppointmentError = (date, slot, label = "Service date", now = new Date()) =>
   getScheduledAppointmentError(date, slot, label, now, { maxCalendarDays: 90 });
+const getWorkOrderAppointmentError = (date, slot, label = "Scheduled date", now = new Date()) =>
+  getScheduledAppointmentError(date, slot, label, now, { workOrder: true });
 
-module.exports = { getManilaDateKey, getServiceBookingMaxDateKey, getScheduledDateError, getScheduledAppointmentError, getServiceDateError, getServiceAppointmentError };
+module.exports = { getManilaDateKey, getServiceBookingMaxDateKey, getWorkOrderMaxDateKey, getScheduledDateError, getScheduledAppointmentError, getServiceDateError, getServiceAppointmentError, getWorkOrderAppointmentError };

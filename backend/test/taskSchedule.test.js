@@ -75,7 +75,7 @@ test("superadmin work orders require a valid branch before any account is assign
   const createTask = vm.runInNewContext(`${source}\ncreateTask`, {
     withoutObsoleteTeamAssignment: (value) => value,
     parseTaskPriority: (value) => ["urgent", "high", "medium", "normal", "low"].includes(String(value).trim().toLowerCase()) ? String(value).trim().toLowerCase() : null,
-    getScheduledAppointmentError: () => "",
+    getWorkOrderAppointmentError: () => "",
     getServiceAppointmentError: () => "",
     normalizeStatus: (status) => status || "pending",
     BRANCHES: ["Bulacan", "Cavite"],

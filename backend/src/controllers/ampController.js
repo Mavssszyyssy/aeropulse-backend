@@ -5,6 +5,7 @@ const ServiceHistory = require("../models/ServiceHistory");
 const ServiceRequest = require("../models/ServiceRequest");
 const Task = require("../models/Task");
 const Order = require("../models/Order");
+const User = require("../models/User");
 const { calculateMaintenanceRecommendation } = require("../domain/ampMaintenanceService");
 const { getManagerServicePipeline, getOwnerServiceForecast, UNASSIGNED_BRANCH } = require("../domain/ampDashboardService");
 const { assessServiceEvidence, serviceLabel, serviceTypeFor } = require("../domain/serviceEvidence");
@@ -111,7 +112,23 @@ const completeUnitHistory = (json, history = []) => {
   return serviceRows.sort((left, right) => new Date(right.date || 0) - new Date(left.date || 0));
 };
 
-const serializeCustomerUnit = (unit, history = [], recommendation = null, product = null, sourceOrder = null) => {
+const orderItemSerials = (item) => [
+  ...(item.serialNumbers || []),
+  ...(item.serialUnits || []).map((entry) => entry?.serialNumber),
+].map((serial) => String(serial || "").trim());
+
+const purchaseBranchFor = (unit, sourceOrder) => {
+  if (!sourceOrder) return "";
+  const items = sourceOrder.items || [];
+  const serial = String(unit.serialNumber || "").trim();
+  const matchedItem = serial && items.find((item) => orderItemSerials(item).includes(serial));
+  if (matchedItem?.sourceBranch) return matchedItem.sourceBranch;
+  if (items.length === 1) return items[0].sourceBranch || sourceOrder.stockSourceBranch || "";
+  // An order's stock branch can represent the last line of a multi-branch order.
+  return items.some((item) => item.sourceBranch) ? "" : sourceOrder.stockSourceBranch || "";
+};
+
+const serializeCustomerUnit = (unit, history = [], recommendation = null, product = null, sourceOrder = null, installingTechnician = "") => {
   const json = unit.toJSON ? unit.toJSON() : unit;
   const productJson = product?.toJSON ? product.toJSON() : product || {};
   const productId = String(json.productId || productJson.id || productJson._id || "");
@@ -129,6 +146,8 @@ const serializeCustomerUnit = (unit, history = [], recommendation = null, produc
     capacityHp: Number(json.capacityHp || 0), roomSizeSqm: json.roomSizeSqm || null,
     serialNumber: json.serialNumber || "", qrCode: json.qrCode || "", qrUnitId: json.qrUnitId || "",
     orderCode: sourceOrder?.orderCode || "", purchaseDate: sourceOrder?.createdAt || "",
+    purchaseBranch: purchaseBranchFor(json, sourceOrder),
+    installingTechnician,
     serviceBranch: json.serviceBranch || "",
     status: json.status === "on_hold" ? "On Hold" : json.status === "retired" ? "Retired" : (recommendation ? recommendation.overdue : json.status === "service_due") ? "Service Due" : "Active",
     installationDate: json.installation?.installedAt ? formatDateKeyInTimeZone(json.installation.installedAt) : "",
@@ -237,23 +256,36 @@ const listMyUnits = async (req, res) => {
             { "items.serialUnits.serialNumber": { $in: serialNumbers } },
             ...(assignedOrderCodes.length ? [{ orderCode: { $in: assignedOrderCodes } }] : []),
           ],
-        }).select("orderCode items.serialNumbers items.serialUnits.serialNumber createdAt").sort({ createdAt: -1 })
+        }).select("orderCode stockSourceBranch items.sourceBranch items.serialNumbers items.serialUnits.serialNumber createdAt").sort({ createdAt: -1 })
       : [];
     const orderBySerial = new Map();
-    sourceOrders.forEach((order) => {
-      const itemSerials = (order.items || []).flatMap((item) => [
-        ...(item.serialNumbers || []),
-        ...(item.serialUnits || []).map((serialUnit) => serialUnit?.serialNumber),
-      ]).map((serial) => String(serial || "").trim()).filter(Boolean);
-      serialNumbers.forEach((serial) => {
-        const matchesItems = itemSerials.includes(serial);
-        const matchesAssignment = orderCodeBySerial.get(serial) === String(order.orderCode || "");
-        if ((matchesItems || matchesAssignment) && !orderBySerial.has(serial)) orderBySerial.set(serial, order);
-      });
-    });
+    const ownedSerials = new Set(serialNumbers);
+    for (const order of sourceOrders) {
+      for (const serial of (order.items || []).flatMap(orderItemSerials)) {
+        if (ownedSerials.has(serial) && !orderBySerial.has(serial)) orderBySerial.set(serial, order);
+      }
+    }
+    const orderByCode = new Map(sourceOrders.map((order) => [String(order.orderCode), order]));
+    for (const serial of ownedSerials) {
+      const assignedOrder = orderByCode.get(orderCodeBySerial.get(serial));
+      if (assignedOrder && !orderBySerial.has(serial)) orderBySerial.set(serial, assignedOrder);
+    }
     const histories = units.length ? await ServiceHistory.find({ unit: { $in: units.map((unit) => unit._id) } }).sort({ serviceDate: -1 }).lean() : [];
     const historyByUnit = new Map();
     histories.forEach((item) => historyByUnit.set(String(item.unit), [...(historyByUnit.get(String(item.unit)) || []), item]));
+    const installerRefsByUnit = new Map(units.map((unit) => {
+      const unitId = String(unit._id);
+      const installation = historyByUnit.get(unitId)?.find((entry) => entry.technician && serviceTypeFor(entry) === "installation");
+      return [unitId, [String(unit.installation?.installedBy || ""), String(installation?.technician || "")]];
+    }));
+    const installerIds = [...new Set([...installerRefsByUnit.values()].flat())]
+      .filter((id) => mongoose.isValidObjectId(id));
+    const installers = installerIds.length
+      ? await User.find({ _id: { $in: installerIds } }).select("name name_first name_last").lean()
+      : [];
+    const installerNames = new Map(installers.map((installer) => [String(installer._id),
+      installer.name || [installer.name_first, installer.name_last].filter(Boolean).join(" "),
+    ]));
     const unitIds = units.map((unit) => String(unit._id));
     const serviceRequests = unitIds.length
       ? await ServiceRequest.find({ unitId: { $in: unitIds }, status: { $ne: "Cancelled" } })
@@ -283,7 +315,8 @@ const listMyUnits = async (req, res) => {
         historyByUnit.get(String(unit._id)) || [],
         recommendations[index],
         productById.get(String(unit.productId || "")) || null,
-        orderBySerial.get(String(unit.serialNumber || "")) || null,
+        orderBySerial.get(String(unit.serialNumber || "").trim()) || null,
+        installerRefsByUnit.get(String(unit._id)).map((id) => installerNames.get(id)).find(Boolean) || "",
       )),
     });
   } catch (error) {

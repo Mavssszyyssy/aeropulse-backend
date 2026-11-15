@@ -9,12 +9,22 @@ const {
   cancelRestockOrder,
 } = require("../controllers/restockOrderController");
 
+const { limitTextFields } = require("../middleware/limitTextFields");
+
 const router = express.Router();
+
+const restockText = limitTextFields({
+  "supplier.name": [120, "Supplier name"],
+  "supplier.contact": [120, "Supplier contact"],
+  "supplier.email": [254, "Email address"],
+  "supplier.phone": [30, "Phone number"],
+  notes: [1000, "Notes"],
+});
 
 router.use(requireAuth);
 
 // Owner creates a restock order
-router.post("/", allowRoles("superadmin"), createRestockOrder);
+router.post("/", allowRoles("superadmin"), restockText, createRestockOrder);
 
 // Get restock orders (filtered by status, branch, etc.)
 router.get("/", allowRoles("admin", "superadmin"), getRestockOrders);
@@ -29,6 +39,6 @@ router.patch("/:id/receive", allowRoles("superadmin"), markRestockReceived);
 router.patch("/:id/signal", allowRoles("superadmin"), signalRestockOrder);
 
 // Owner cancels a restock order
-router.patch("/:id/cancel", allowRoles("superadmin"), cancelRestockOrder);
+router.patch("/:id/cancel", allowRoles("superadmin"), limitTextFields({ reason: [1000, "Cancellation reason"] }), cancelRestockOrder);
 
 module.exports = router;

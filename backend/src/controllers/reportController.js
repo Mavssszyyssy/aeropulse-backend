@@ -22,6 +22,23 @@ const {
 const { buildBusinessIntelligence } = require("../domain/businessIntelligence");
 const { callStructuredAmpAnalysis, resolveBusinessIntelligence } = require("../services/openAiAmpService");
 
+const interpretReport = async (req, report, statistics, hasRecords, scope) => {
+  if (req.query.interpretation !== "1") return undefined;
+  if (!hasRecords) return { status: "empty" };
+  const { insight } = await callStructuredAmpAnalysis({
+    safetyIdentifier: String(req.authUser?._id || ""),
+    reportInterpretation: {
+      report,
+      language: req.query.language === "filipino" ? "Filipino" : "English",
+      scope,
+      statistics,
+    },
+  });
+  return insight
+    ? { status: "ready", summary: insight.summary.trim(), reviewAction: insight.review_action.trim() }
+    : { status: "unavailable" };
+};
+
 const reportTextFilter = (value, { label = "Report filter", maxLength = 100 } = {}) => {
   const text = String(value || "").trim();
   if (text.length > maxLength) {
@@ -142,6 +159,20 @@ const getSalesReport = async (req, res) => {
     }));
     const filteredOrders = filterSalesOrders(ordersWithSkus, { paymentMethod, search, sku, customer });
     const report = summarizeSalesOrders(filteredOrders, { status, interval, from, to });
+    const paidRevenue = status === "cancelled" ? 0 : report.summary.amountCollected;
+    const summary = { ...report.summary, paidRevenue };
+    const updatedAt = new Date().toISOString();
+    const interpretation = await interpretReport(req, "sales", {
+      orders: summary.transactionCount,
+      paidOrders: report.transactions.filter((row) => row.paymentStatus === "Paid").length,
+      unitsOrdered: summary.unitsSold,
+      paidRevenue,
+      orderValue: summary.totalOrderValue,
+      recordedCollections: summary.amountCollected,
+    }, summary.transactionCount > 0, {
+      branch: activeBranch || "all", status, paymentMethod, from, to,
+      hasAdditionalFilters: Boolean(search || sku || customer),
+    });
     return res.json({
       interval: report.interval,
       status: report.status,
@@ -152,11 +183,12 @@ const getSalesReport = async (req, res) => {
       from: from.toISOString(),
       to: to.toISOString(),
       branch: activeBranch || "all",
-      updatedAt: new Date().toISOString(),
+      updatedAt,
       basis: status === "paid" || status === "complete"
         ? "Stored, non-cancelled paid transactions dated by confirmed payment; legacy paid records without a payment timestamp use their recorded order date."
         : "Stored orders dated by their recorded order date. Paid and unpaid amounts remain separate.",
-      summary: report.summary,
+      summary,
+      interpretation,
       series: report.series,
       products: report.products.slice(0, topN),
       topProducts: report.products.slice(0, topN),
@@ -203,6 +235,12 @@ const getInventoryReport = async (req, res) => {
       return stockMatches && searchMatches;
     });
     const rows = filterInventoryRows(stockRows, { category, brand, sku });
+    const summary = inventorySummary(rows);
+    const updatedAt = new Date().toISOString();
+    const interpretation = await interpretReport(req, "inventory", summary, rows.length > 0, {
+      branch: activeBranch || "all", stockFilter,
+      hasAdditionalFilters: Boolean(search || brand || sku || category !== "all"),
+    });
     return res.json({
       branch: activeBranch || "all",
       stockFilter,
@@ -210,9 +248,10 @@ const getInventoryReport = async (req, res) => {
       category,
       brand,
       sku,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
       basis: "Current stock and available serial/QR unit records for the selected branch.",
-      summary: inventorySummary(rows),
+      summary,
+      interpretation,
       rows,
     });
   } catch (error) {

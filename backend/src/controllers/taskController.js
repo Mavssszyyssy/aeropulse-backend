@@ -10,6 +10,7 @@ const Unit = require("../models/Unit");
 const ServiceRequest = require("../models/ServiceRequest");
 const { servicePaymentSummary, servicePaymentBlocker, servicePaymentRecord } = require("../domain/servicePayment");
 const { serviceCosts, validateServiceCosts } = require("../domain/serviceCosts");
+const { changedServiceLogTextError } = require("../middleware/workOrderText");
 const { resolveServiceVisitBranch } = require("../domain/serviceVisitBranch");
 const { buildOrderPaymentSnapshot } = require("../domain/orderPayment");
 const Notification = require("../models/Notification");
@@ -24,7 +25,7 @@ const { assessServiceEvidence, serviceTypeFor } = require("../domain/serviceEvid
 const { formatDateKeyInTimeZone, parseInstallationDateTime } = require("../utils/dateTime");
 const { buildTaskScheduleDetails, normalizeTaskSchedule } = require("../domain/taskSchedule");
 const { assertNoTaskScheduleConflict } = require("../domain/taskScheduleConflict");
-const { getScheduledAppointmentError, getServiceAppointmentError } = require("../utils/scheduling");
+const { getWorkOrderAppointmentError, getServiceAppointmentError } = require("../utils/scheduling");
 const { parseTaskPriority } = require("../domain/taskPriority");
 const {
   getTaskMutationBlocker,
@@ -1212,7 +1213,7 @@ const createTask = async (req, res) => {
     const payload = withoutObsoleteTeamAssignment(req.body || {});
     const priority = payload.priority == null ? "medium" : parseTaskPriority(payload.priority);
     if (!priority) return res.status(400).json({ message: "Choose a valid work-order priority." });
-    const appointmentValidator = payload.requestId || payload.serviceRequestId ? getServiceAppointmentError : getScheduledAppointmentError;
+    const appointmentValidator = payload.requestId || payload.serviceRequestId ? getServiceAppointmentError : getWorkOrderAppointmentError;
     const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
     const nowIso = new Date().toISOString();
@@ -1284,12 +1285,14 @@ const updateTask = async (req, res) => {
     if (req.authUser.role !== "technician" && payload.priority != null && !parseTaskPriority(payload.priority)) {
       return res.status(400).json({ message: "Choose a valid work-order priority." });
     }
-    const appointmentValidator = payload.requestId || payload.serviceRequestId || task.requestId || task.payload?.requestId ? getServiceAppointmentError : getScheduledAppointmentError;
+    const appointmentValidator = payload.requestId || payload.serviceRequestId || task.requestId || task.payload?.requestId || task.payload?.serviceRequestId ? getServiceAppointmentError : getWorkOrderAppointmentError;
     const dateError = appointmentValidator(payload.scheduledDate || payload.preferredDate, payload.timeSlot || payload.preferredSchedule, "Scheduled date");
     if (dateError) return res.status(400).json({ message: dateError });
     const requestedStatus = parseTaskStatus(payload.status);
     const costError = validateServiceCosts(payload);
     if (costError) return res.status(400).json({ message: costError });
+    const logError = changedServiceLogTextError(payload.serviceLogs, task.payload?.serviceLogs);
+    if (logError) return res.status(400).json({ message: logError });
     const costMutationError = await serviceCostMutationBlocker(task, payload);
     if (costMutationError) return res.status(409).json({ message: costMutationError });
     if (normalizeStatus(task.status) === "completed" && requestedStatus === "completed") {
@@ -2027,6 +2030,8 @@ const updateTaskStatus = async (req, res) => {
     const payload = req.body || {};
     const costError = validateServiceCosts(payload);
     if (costError) return res.status(400).json({ message: costError });
+    const logError = changedServiceLogTextError(payload.serviceLogs, task.payload?.serviceLogs);
+    if (logError) return res.status(400).json({ message: logError });
     const costMutationError = await serviceCostMutationBlocker(task, payload);
     if (costMutationError) return res.status(409).json({ message: costMutationError });
     const proof = buildTaskProof({ task, payload, req, nextStatus: status });

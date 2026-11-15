@@ -47,6 +47,7 @@ test("a completed checkout session is not enough to confirm payment", () => {
   const checkoutSessionLooksPaid = vm.runInNewContext(functionSource);
 
   assert.equal(checkoutSessionLooksPaid({ data: { attributes: { status: "completed" } } }), false);
+  assert.equal(checkoutSessionLooksPaid({ data: { attributes: { status: "active", payment_intent: { attributes: { status: "succeeded" } } } } }), true);
   assert.equal(
     checkoutSessionLooksPaid({ data: { attributes: { payment_status: "paid" } } }),
     true,
