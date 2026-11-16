@@ -96,7 +96,7 @@ const authenticate = async (req, res, next, options = {}) => {
         });
       }
       const effectiveBranch = storedBranch;
-      if (options.requireBranch === false) {
+      if (options.requireBranch === false && user.role !== "admin") {
         req.activeBranch = BRANCHES.includes(effectiveBranch) ? effectiveBranch : "";
         return next();
       }

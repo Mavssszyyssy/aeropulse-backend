@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const ContactMessage = require("../models/ContactMessage");
 const User = require("../models/User");
 const { buildOperationalContactFilter } = require("../domain/operationalContactMessages");
+const { validateContactInquiry } = require("../domain/contactInquiryValidation.mjs");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 const {
   createDedupedNotification,
@@ -62,20 +63,10 @@ const createContactMessage = async (req, res) => {
     const payload = req.body || {};
     const category = clean(payload.category, 30);
     if (!VALID_CATEGORIES.has(category)) return res.status(400).json({ message: "Choose a valid support topic." });
-    if (typeof payload.subject !== "string" || typeof payload.message !== "string") {
-      return res.status(400).json({ message: "Subject and message are required." });
-    }
-    if (payload.subject.trim().length > 160) return res.status(400).json({ message: "Subject must be 160 characters or fewer." });
-    if (payload.message.trim().length > 3000) return res.status(400).json({ message: "Message must be 3000 characters or fewer." });
-    const subject = clean(payload.subject, 160);
-    const message = clean(payload.message, 3000);
-    if (!subject || !message) {
-      return res.status(400).json({ message: "Subject and message are required." });
-    }
-    if (subject.length < 3) return res.status(400).json({ message: "Subject must be at least 3 characters." });
-    if (message.length < 10) {
-      return res.status(400).json({ message: "Please add a little more detail so the support team can help." });
-    }
+    const inquiryError = validateContactInquiry(payload);
+    if (inquiryError) return res.status(400).json({ message: inquiryError });
+    const subject = payload.subject.trim().replace(/\s+/g, " ");
+    const message = payload.message.trim().replace(/\s+/g, " ");
     const submittedEmail = clean(req.body.email, 180) || clean(user.email, 180);
     const emailValidation = await validateEmailAddress(submittedEmail);
     if (!emailValidation.ok) {

@@ -618,6 +618,30 @@ const updateProfileById = async (req, res) => {
     });
   }
 
+  if (req.body?.unassignBranch !== undefined) {
+    if (req.authUser.role !== "superadmin" || target.role !== "admin") {
+      return res.status(403).json({ message: "Only SuperAdmin can remove branch assignments." });
+    }
+    const expectedBranch = req.body.unassignBranch;
+    if (!BRANCHES.includes(expectedBranch) || Object.keys(req.body).length !== 1) {
+      return res.status(400).json({ message: "Select one valid branch assignment to remove." });
+    }
+    if ((BRANCHES.includes(target.activeBranch) ? target.activeBranch : target.assignedBranch) !== expectedBranch) {
+      return res.status(409).json({ message: "This branch assignment changed. Refresh the branch directory and try again." });
+    }
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: target._id, role: "admin", isDeleted: { $ne: true }, accountStatus: { $ne: "deleted" },
+        assignedBranch: target.assignedBranch ?? null, activeBranch: target.activeBranch ?? null,
+      },
+      { $set: { assignedBranch: "", activeBranch: "" }, $inc: { "security.sessionVersion": 1 } },
+      { returnDocument: "after" },
+    );
+    if (!updated) return res.status(409).json({ message: "This branch assignment changed. Refresh the branch directory and try again." });
+    invalidateAuthCache(target.id);
+    return res.json({ user: updated.toJSON() });
+  }
+
   if (req.body?.assignedBranch !== undefined || req.body?.activeBranch !== undefined) {
     if (req.authUser.role !== "superadmin" || target.role !== "admin") {
       return res.status(403).json({ message: "Only SuperAdmin can assign branch administrators." });
