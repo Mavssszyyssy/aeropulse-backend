@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const ContactMessage = require("../models/ContactMessage");
 const User = require("../models/User");
 const { buildOperationalContactFilter } = require("../domain/operationalContactMessages");
-const { validateContactInquiry } = require("../domain/contactInquiryValidation.mjs");
+const { validateContactInquiry } = require("../domain/contactInquiryValidation");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 const {
   createDedupedNotification,

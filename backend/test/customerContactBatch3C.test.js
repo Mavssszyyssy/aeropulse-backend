@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const mongoose = require("mongoose");
 const ContactMessage = require("../src/models/ContactMessage");
-const { countInquiryWords, validateContactInquiry } = require("../src/domain/contactInquiryValidation.mjs");
+const { countInquiryWords, validateContactInquiry } = require("../src/domain/contactInquiryValidation");
 const { createContactMessage, listMyContactMessages, getMyContactMessage } = require("../src/controllers/contactMessageController");
 
 const respond = () => {

@@ -1,13 +1,13 @@
 // Source for the web and mobile copies. Run node scripts/sync-contact-inquiry-validation.mjs after editing.
-export const SUBJECT_MAX_CHARACTERS = 160;
-export const SUBJECT_MAX_WORDS = 20;
-export const MESSAGE_MAX_CHARACTERS = 3000;
-export const MESSAGE_MAX_WORDS = 400;
+const SUBJECT_MAX_CHARACTERS = 160;
+const SUBJECT_MAX_WORDS = 20;
+const MESSAGE_MAX_CHARACTERS = 3000;
+const MESSAGE_MAX_WORDS = 400;
 
 const wordsOf = (text) => text.normalize("NFKC").replace(/\p{Cf}/gu, "")
   .match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*(?:[-'’][\p{L}\p{N}][\p{L}\p{M}\p{N}]*)*/gu) || [];
 
-export const countInquiryWords = (text) => wordsOf(text).length;
+const countInquiryWords = (text) => wordsOf(text).length;
 
 const PLACEHOLDER = /^(?:lorem ipsum|dolor sit amet|consectetur adipiscing elit)\b|\blorem ipsum dolor sit amet\b|^(?:test(?:ing)?|sample|dummy|placeholder)(?: (?:only|message|text|data))?$/;
 
@@ -30,7 +30,7 @@ function hasInquiryContent(words) {
 }
 
 // Return an English translation key so every surface shows the same reason.
-export function validateContactInquiry({ subject, message }) {
+function validateContactInquiry({ subject, message }) {
   if (typeof subject !== "string" || typeof message !== "string" || !subject.trim() || !message.trim()) {
     return "Subject and message are required.";
   }
@@ -48,3 +48,12 @@ export function validateContactInquiry({ subject, message }) {
   if (messageWords.length < 2) return "Please add a little more detail so the support team can help.";
   return "";
 }
+
+module.exports = {
+  SUBJECT_MAX_CHARACTERS,
+  SUBJECT_MAX_WORDS,
+  MESSAGE_MAX_CHARACTERS,
+  MESSAGE_MAX_WORDS,
+  countInquiryWords,
+  validateContactInquiry,
+};
