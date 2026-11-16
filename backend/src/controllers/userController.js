@@ -695,6 +695,11 @@ const listAddresses = async (req, res) => {
     addresses = req.authUser.addresses || [];
   }
 
+  if (req.query?.resolveDeliveryBranch === "true") {
+    const address = addresses.find((item) => item.isDefault) || addresses[0];
+    const branch = address ? await resolveConfiguredBranch(address) : null;
+    return res.json({ addresses, deliveryBranch: branch?.name || "" });
+  }
   return res.json({ addresses });
 };
 
