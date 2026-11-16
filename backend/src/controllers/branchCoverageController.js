@@ -1,5 +1,6 @@
 const BranchCoverage = require("../models/BranchCoverage");
 const { BRANCHES, setConfiguredBranches } = require("../domain/branchRouting");
+const { validateBranchName, validateServiceAreas } = require("../domain/branchInputValidation");
 const {
   DEFAULT_BRANCH_COVERAGE,
   clearBranchCoverageCache,
@@ -9,20 +10,8 @@ const {
   uniqueValues,
 } = require("../services/branchCoverageService");
 
-const normalizeCoverageAreas = (value) => {
-  const entries = Array.isArray(value) ? value : String(value || "").split(",");
-  if (!entries.length || entries.some((entry) => !String(entry || "").trim())) return { error: "Separate every service area with a comma; remove empty entries." };
-  const normalized = entries.map((entry) => String(entry).trim().replace(/\s+/g, " ").toLowerCase());
-  if (normalized.some((entry) => entry.length > 80 || !/^[\p{L}\p{M}0-9 .'-]+$/u.test(entry))) return { error: "Each service area must be a valid location name of 80 characters or fewer." };
-  if (uniqueValues(normalized).length !== normalized.length) return { error: "Remove duplicate service areas." };
-  const known = uniqueValues(DEFAULT_BRANCH_COVERAGE.flatMap((branch) => [branch.name, ...branch.coverageAreas])).map((item) => item.toLowerCase());
-  for (const entry of normalized) {
-    if (known.includes(entry)) continue;
-    const matches = known.filter((name) => new RegExp(`(^|\\s)${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$)`, "u").test(entry));
-    if (matches.length >= 2) return { error: `"${entry}" looks like multiple locations. Separate them with commas.` };
-  }
-  return { coverageAreas: normalized };
-};
+const configuredLocations = DEFAULT_BRANCH_COVERAGE.flatMap((branch) => [branch.name, ...branch.coverageAreas]);
+const normalizeCoverageAreas = (value) => validateServiceAreas(value, configuredLocations);
 
 const listBranchCoverage = async (_req, res) => {
   try {
@@ -36,13 +25,9 @@ const listBranchCoverage = async (_req, res) => {
 
 const createBranchCoverage = async (req, res) => {
   try {
-    const rawName = String(req.body?.name || "").trim().replace(/\s+/g, " ");
-    // Dots cannot be used in branch names: inventory stores each name as a
-    // MongoDB map key and stock reservations address it through a field path.
-    if (rawName.length < 2 || rawName.length > 80 || !/^[\p{L}\p{M}0-9 '-]+$/u.test(rawName)) {
-      return res.status(400).json({ message: "Enter a valid branch name of 2 to 80 characters." });
-    }
-    const name = rawName.toLocaleLowerCase("en").replace(/(^|[\s'-])\p{L}/gu, (part) => part.toLocaleUpperCase("en"));
+    const nameValidation = validateBranchName(req.body?.name);
+    if (nameValidation.error) return res.status(400).json({ message: nameValidation.error });
+    const name = nameValidation.name.toLocaleLowerCase("en").replace(/(^|[\s'-])\p{L}/gu, (part) => part.toLocaleUpperCase("en"));
     const validation = normalizeCoverageAreas(req.body?.coverageAreas);
     if (validation.error || !validation.coverageAreas.length) {
       return res.status(400).json({ message: validation.error || "Enter at least one service area." });

@@ -38,6 +38,23 @@ const {
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 
+const respondWithLoginLockout = (res, lockoutUntil) => res.status(429).json({
+  code: "LOGIN_LOCKED",
+  message: "Too many failed attempts. Try again later.",
+  retryAfterSeconds: Math.max(1, Math.ceil((lockoutUntil.getTime() - Date.now()) / 1000)),
+});
+
+const recordFailedLogin = async (user) => {
+  user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
+  const isLocked = user.failedLoginAttempts >= LOGIN_MAX_ATTEMPTS;
+  if (isLocked) {
+    user.lockoutUntil = new Date(Date.now() + LOGIN_LOCKOUT_MS);
+    user.failedLoginAttempts = 0;
+  }
+  await user.save();
+  return isLocked;
+};
+
 const isReservedSharedDemoEmail = (email = "") => normalizeEmail(email) === SHARED_DEMO_EMAIL;
 const normalizeIdentifier = (value = "") => String(value).trim().toLowerCase();
 const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
@@ -448,7 +465,7 @@ const login = async (req, res) => {
     const user = account.user;
 
     if (user?.lockoutUntil && user.lockoutUntil > new Date()) {
-      return res.status(429).json({ message: "Too many failed attempts. Try again later." });
+      return respondWithLoginLockout(res, user.lockoutUntil);
     }
     if (
       user &&
@@ -461,13 +478,8 @@ const login = async (req, res) => {
       && await bcrypt.compare(String(password || ""), user.passwordHash),
     );
     if (!passwordMatches) {
-      if (user) {
-        user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
-        if (user.failedLoginAttempts >= LOGIN_MAX_ATTEMPTS) {
-          user.lockoutUntil = new Date(Date.now() + LOGIN_LOCKOUT_MS);
-          user.failedLoginAttempts = 0;
-        }
-        await user.save();
+      if (user && await recordFailedLogin(user)) {
+        return respondWithLoginLockout(res, user.lockoutUntil);
       }
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -537,7 +549,7 @@ const verifyLoginEmail = async (req, res) => {
       return res.status(401).json({ message: "The sign-in verification has expired. Sign in again." });
     }
     if (user.lockoutUntil && user.lockoutUntil > new Date()) {
-      return res.status(429).json({ message: "Too many failed attempts. Try again later." });
+      return respondWithLoginLockout(res, user.lockoutUntil);
     }
     const verification = await verifyEmailCode({
       accountId: user.id,
@@ -547,12 +559,9 @@ const verifyLoginEmail = async (req, res) => {
       code: req.body?.code,
     });
     if (!verification.ok) {
-      user.failedLoginAttempts = Number(user.failedLoginAttempts || 0) + 1;
-      if (user.failedLoginAttempts >= LOGIN_MAX_ATTEMPTS) {
-        user.lockoutUntil = new Date(Date.now() + LOGIN_LOCKOUT_MS);
-        user.failedLoginAttempts = 0;
+      if (await recordFailedLogin(user)) {
+        return respondWithLoginLockout(res, user.lockoutUntil);
       }
-      await user.save();
       return res.status(401).json({
         message: verification.reason === "locked"
           ? "Too many incorrect codes. Sign in again to request a new code."
@@ -585,6 +594,9 @@ const resendLoginEmail = async (req, res) => {
     }
     if (user.isDeleted || ["disabled", "deleted"].includes(String(user.accountStatus || ""))) {
       return res.status(403).json({ message: "This account is not active." });
+    }
+    if (user.lockoutUntil && user.lockoutUntil > new Date()) {
+      return respondWithLoginLockout(res, user.lockoutUntil);
     }
     const { otpRequest } = await createEmailVerification({
       accountId: user.id,
