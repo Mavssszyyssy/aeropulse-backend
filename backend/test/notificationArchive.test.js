@@ -110,6 +110,34 @@ test("archive all updates all active alerts for the authenticated account in one
   assert.deepEqual(res.data, { modifiedCount: 12 });
 });
 
+test("archive selected updates only the requested active IDs for the authenticated account", async () => {
+  const fixture = loadController();
+  const first = "507f1f77bcf86cd799439011";
+  const second = "507f1f77bcf86cd799439012";
+  const res = response();
+  await fixture.controller.archiveSelectedNotifications({
+    authUser: { _id: "self" },
+    body: { user: "another-account", ids: [first, second, first] },
+  }, res);
+  assert.equal(fixture.updates.length, 1);
+  assert.deepEqual(fixture.updates[0].query, { user: "self", archivedAt: null, _id: { $in: [first, second] } });
+  assert.equal(fixture.updates[0].update.$set.unread, false);
+  assert.equal(fixture.updates[0].update.$set.status, "read");
+  assert.ok(fixture.updates[0].update.$set.archivedAt instanceof Date);
+  assert.equal(res.statusCode, 200);
+});
+
+test("archive selected validates an entire batch before attempting any write", async () => {
+  const fixture = loadController();
+  const valid = "507f1f77bcf86cd799439011";
+  for (const ids of [undefined, [], valid, [valid, "invalid"], [{ $ne: null }], Array(31).fill(valid)]) {
+    const res = response();
+    await fixture.controller.archiveSelectedNotifications({ authUser: { _id: "self" }, body: { ids } }, res);
+    assert.equal(res.statusCode, 400);
+  }
+  assert.equal(fixture.updates.length, 0);
+});
+
 test("archived pages include older alerts and deduplicate before slicing", async () => {
   const items = Array.from({ length: 105 }, (_, index) => ({ _id: `n-${index}`, type: "system", title: `Alert ${index}` }));
   const fixture = loadController({ items: [items[0], ...items] });

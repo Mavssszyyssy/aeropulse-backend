@@ -6,6 +6,7 @@ const {
 	markAllNotificationsRead,
 	archiveNotification,
 	archiveAllNotifications,
+	archiveSelectedNotifications,
 	restoreNotification,
 	registerPushToken,
 	unregisterPushToken,
@@ -17,6 +18,7 @@ router.use(requireAuth);
 router.get("/me", listMyNotifications);
 router.patch("/me/read-all", markAllNotificationsRead);
 router.patch("/me/archive-all", archiveAllNotifications);
+router.patch("/me/archive-selected", archiveSelectedNotifications);
 router.post("/read-all", markAllNotificationsRead);
 router.post("/push-token", registerPushToken);
 router.delete("/push-token", unregisterPushToken);

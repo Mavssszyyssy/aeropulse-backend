@@ -1,5 +1,6 @@
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const { isObjectIdOrHexString } = require("mongoose");
 const { reconcileRequiredActionsForUser } = require("../services/requiredActionReminderService");
 
 const STAFF_ROLES = ["admin", "superadmin", "manager", "owner"];
@@ -241,6 +242,19 @@ const archiveAllNotifications = async (req, res) => {
   return res.json({ modifiedCount: Number(result.modifiedCount || 0) });
 };
 
+const archiveSelectedNotifications = async (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 30
+    || ids.some((id) => typeof id !== "string" || !isObjectIdOrHexString(id))) {
+    return res.status(400).json({ message: "Select between 1 and 30 valid alerts." });
+  }
+  const result = await Notification.updateMany(
+    { user: req.authUser._id, archivedAt: null, _id: { $in: [...new Set(ids)] } },
+    archiveUpdate(),
+  );
+  return res.json({ modifiedCount: Number(result.modifiedCount || 0) });
+};
+
 const archiveNotification = async (req, res) => {
   const archive = archiveUpdate();
   const notification = await Notification.findOneAndUpdate(
@@ -341,6 +355,7 @@ module.exports = {
   markAllNotificationsRead,
   archiveNotification,
   archiveAllNotifications,
+  archiveSelectedNotifications,
   restoreNotification,
   registerPushToken,
   unregisterPushToken,
