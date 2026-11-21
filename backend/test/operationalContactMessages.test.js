@@ -77,3 +77,25 @@ test("branch admin without a valid active branch cannot list or update messages"
   await updateContactMessage({ authUser: { role: "admin" }, activeBranch: "", params: { id: "message-id" }, body: {} }, update.response);
   assert.equal(update.result.code, 403);
 });
+
+test("admin and superadmin replies reject invalid content before changing status or saving", async (t) => {
+  t.mock.method(User, "distinct", async () => []);
+  const item = { status: "new", adminReply: "", timeline: [], save: t.mock.fn(async () => {}) };
+  t.mock.method(ContactMessage, "findOne", async () => item);
+  for (const role of ["admin", "superadmin"]) {
+    for (const adminReply of ["jhjhjh", "Jshshshshshsh", "Lorem ipsum dolor sit amet", "help ".repeat(151),
+      "Please inspect this AC unit. ".repeat(50), { text: "Please inspect this AC unit." }]) {
+      const { response, result } = reply();
+      await updateContactMessage({ authUser: { role }, activeBranch: "Bulacan", params: { id: "message-id" }, body: { adminReply, status: "in_progress" } }, response);
+      assert.equal(result.code, 400, String(adminReply));
+      assert.equal(item.status, "new");
+      assert.equal(item.adminReply, "");
+    }
+  }
+  assert.equal(item.save.mock.callCount(), 0);
+  assert.deepEqual(item.timeline, []);
+  const unchanged = reply();
+  await updateContactMessage({ authUser: { role: "superadmin" }, params: { id: "message-id" }, body: { status: "new" } }, unchanged.response);
+  assert.equal(unchanged.result.code, 200);
+  assert.equal(item.save.mock.callCount(), 1);
+});

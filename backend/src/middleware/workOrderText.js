@@ -1,4 +1,5 @@
 const { limitTextFields, textFieldError } = require("./limitTextFields");
+const { validateHumanText, validateTextRequest } = require("../domain/textFieldValidation");
 
 const workOrderText = limitTextFields({
   title: [160, "Work order title"],
@@ -37,9 +38,12 @@ function changedServiceLogTextError(incoming, stored) {
     const previous = log?.id ? previousById.get(String(log.id)) : undefined;
     for (const [field, [max, label]] of Object.entries(serviceLogFields)) {
       if (log?.[field] === previous?.[field]) continue;
-      const error = textFieldError(log?.[field], max, label);
+      const error = textFieldError(log?.[field], max, label) || validateHumanText(log?.[field], { max, label });
       if (error) return error;
     }
+    const changed = Object.fromEntries(Object.entries(log || {}).filter(([field, value]) => value !== previous?.[field]));
+    const validation = validateTextRequest("/tasks/service-note", "PATCH", changed);
+    if (validation) return validation.message;
   }
   return "";
 }

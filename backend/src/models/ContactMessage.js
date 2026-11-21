@@ -1,4 +1,12 @@
 const mongoose = require("mongoose");
+const { validateContactInquiry, validateContactReply, validateContactName } = require("../domain/contactInquiryValidation");
+
+// Validate new/edited fields without blocking staff from handling older tickets
+// whose original text predates the tighter limits. Never truncate those records.
+const changedText = (path, validate) => ({
+  validator(value) { return (!this.isNew && !this.isModified(path)) || !validate(value); },
+  message: "Enter clear support text within the character and word limits.",
+});
 
 const timelineEventSchema = new mongoose.Schema(
   {
@@ -17,7 +25,7 @@ const contactMessageSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     // Retained for restricted audit purposes, never shown in the staff inbox.
     hiddenFromOperationalInbox: { type: Boolean, default: false, index: true },
-    customerName: { type: String, required: true, trim: true, maxlength: 120 },
+    customerName: { type: String, required: true, trim: true, validate: changedText("customerName", validateContactName) },
     email: { type: String, default: "", trim: true, lowercase: true, maxlength: 180 },
     phone: { type: String, default: "", trim: true, maxlength: 30 },
     category: {
@@ -26,8 +34,8 @@ const contactMessageSchema = new mongoose.Schema(
       default: "general",
       index: true,
     },
-    subject: { type: String, required: true, trim: true, maxlength: 160 },
-    message: { type: String, required: true, trim: true, maxlength: 3000 },
+    subject: { type: String, required: true, trim: true, validate: changedText("subject", (subject) => validateContactInquiry({ subject, message: "Please check my AC unit." })) },
+    message: { type: String, required: true, trim: true, validate: changedText("message", (message) => validateContactInquiry({ subject: "Support", message })) },
     branch: { type: String, default: "", trim: true, index: true },
     source: { type: String, enum: ["web", "mobile"], default: "web" },
     status: {
@@ -36,7 +44,7 @@ const contactMessageSchema = new mongoose.Schema(
       default: "new",
       index: true,
     },
-    adminReply: { type: String, default: "", trim: true, maxlength: 3000 },
+    adminReply: { type: String, default: "", trim: true, validate: changedText("adminReply", (reply) => reply ? validateContactReply(reply) : "") },
     repliedAt: { type: Date, default: null },
     resolvedAt: { type: Date, default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },

@@ -35,13 +35,13 @@ test('technician alias cannot shadow another account username', async (t) => {
 test('shared phone parsing does not allow invalid customer identities or make phone mandatory at signup', async () => {
   for (const phone of ['abc09123456789', '091234567890', '+659123456789']) {
     const res = response();
-    await register({ body: { name_first: 'Test', name_last: 'Customer', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
+    await register({ body: { name_first: 'Ana', name_last: 'Santos', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
     assert.equal(res.statusCode, 400);
     assert.match(res.body.message, /mobile number/);
   }
   for (const phone of ['', undefined, '09123456789', '+63 912 345 6789']) {
     const res = response();
-    await register({ body: { name_first: 'Test', name_last: 'Customer', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
+    await register({ body: { name_first: 'Ana', name_last: 'Santos', email: 'fixture@gmail.com', password: 'TestPass1#', phone } }, res);
     assert.equal(res.statusCode, 403); // passes optional-phone validation, still requires email verification
     assert.match(res.body.message, /Verify your email/);
   }

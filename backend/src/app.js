@@ -13,6 +13,7 @@ const { getResendEmailConfiguration } = require("./utils/email");
 const { createMemoryRateLimit } = require("./middleware/requestRateLimit");
 const { httpErrorHandler } = require("./middleware/httpErrorHandler");
 const { createPerformanceTiming } = require("./middleware/performanceTiming");
+const { requestTextValidation } = require("./middleware/requestTextValidation");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -106,6 +107,8 @@ app.use(
     },
   }),
 );
+
+app.use("/api", requestTextValidation);
 
 app.get("/api/health", (_req, res) => {
   res.set("Cache-Control", "no-store");

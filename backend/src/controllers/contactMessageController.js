@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const ContactMessage = require("../models/ContactMessage");
 const User = require("../models/User");
 const { buildOperationalContactFilter } = require("../domain/operationalContactMessages");
-const { validateContactInquiry } = require("../domain/contactInquiryValidation");
+const { validateContactInquiry, validateContactReply, validateContactName } = require("../domain/contactInquiryValidation");
 const { resolvePreferredBranch } = require("../domain/branchRouting");
 const {
   createDedupedNotification,
@@ -65,6 +65,9 @@ const createContactMessage = async (req, res) => {
     if (!VALID_CATEGORIES.has(category)) return res.status(400).json({ message: "Choose a valid support topic." });
     const inquiryError = validateContactInquiry(payload);
     if (inquiryError) return res.status(400).json({ message: inquiryError });
+    const customerName = payload.customerName ?? displayName(user);
+    const nameError = validateContactName(customerName);
+    if (nameError) return res.status(400).json({ message: nameError });
     const subject = payload.subject.trim().replace(/\s+/g, " ");
     const message = payload.message.trim().replace(/\s+/g, " ");
     const submittedEmail = clean(req.body.email, 180) || clean(user.email, 180);
@@ -86,7 +89,7 @@ const createContactMessage = async (req, res) => {
     const item = await ContactMessage.create({
       ticketCode: ticketCode(),
       customer: user._id,
-      customerName: clean(req.body.customerName, 120) || displayName(user),
+      customerName: customerName.trim().replace(/\s+/g, " "),
       email: emailValidation.email,
       phone: clean(req.body.phone, 30) || clean(user.phone, 30),
       category,
@@ -247,10 +250,9 @@ const updateContactMessage = async (req, res) => {
     const requestedStatus = clean(req.body.status, 30);
     const nextStatus = VALID_STATUSES.has(requestedStatus) ? requestedStatus : item.status;
     const replyProvided = Object.prototype.hasOwnProperty.call(req.body, "adminReply");
-    const reply = replyProvided ? clean(req.body.adminReply, 3000) : item.adminReply;
-    if (replyProvided && !reply) {
-      return res.status(400).json({ message: "Write a reply before sending it to the customer." });
-    }
+    const replyError = replyProvided ? validateContactReply(req.body.adminReply) : "";
+    if (replyError) return res.status(400).json({ message: replyError });
+    const reply = replyProvided ? req.body.adminReply.trim().replace(/\s+/g, " ") : item.adminReply;
 
     const actor = displayName(req.authUser);
     const statusChanged = nextStatus !== item.status;

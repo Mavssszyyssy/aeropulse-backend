@@ -48,7 +48,7 @@ test('duplicate name or overlapping service area is rejected before writing', as
   t.mock.method(BranchCoverage, 'exists', async ({ name }) => name.test('Bulacan'));
   t.mock.method(BranchCoverage, 'create', async () => { creates += 1; });
   const duplicate = response();
-  await createBranchCoverage({ body: { name: 'bulacan', coverageAreas: 'new place' } }, duplicate);
+  await createBranchCoverage({ body: { name: 'bulacan', coverageAreas: 'Malolos' } }, duplicate);
   assert.equal(duplicate.statusCode, 409);
   assert.equal(creates, 0);
   const unsafeMapKey = response();

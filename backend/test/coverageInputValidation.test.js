@@ -16,9 +16,11 @@ test("branch inputs reject repeated filler while preserving accented names and n
   assert.match(validateBranchName(12345).error, /valid branch name/i);
   assert.match(validateBranchName("....").error, /valid branch name/i);
   assert.deepEqual(validateBranchName("  Biñan   North  "), { name: "Biñan North" });
+  assert.deepEqual(validateBranchName("SM"), { name: "SM" });
   assert.match(normalizeCoverageAreas("Cavite, sssssssssssss").error, /repeated characters/i);
   assert.match(normalizeCoverageAreas("Cavite, ...").error, /valid location/i);
-  assert.deepEqual(normalizeCoverageAreas("Sto. Niño, District 2"), { coverageAreas: ["sto. niño", "district 2"] });
+  assert.deepEqual(normalizeCoverageAreas("Sto. Niño, Barangay 1"), { coverageAreas: ["sto. niño", "barangay 1"] });
+  assert.match(normalizeCoverageAreas("District 2").error, /recognized/);
 });
 
 test("the create endpoint rejects invalid branch input before database work", async () => {
