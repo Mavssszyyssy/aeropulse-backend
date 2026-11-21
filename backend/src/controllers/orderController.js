@@ -1683,8 +1683,8 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
   if (orderIds.length > 0) {
     serialUnitMatches.push({ $in: ["$$unit.assignedOrderId", orderIds] });
   }
-  const products = inventoryQueries.length
-    ? await Product.aggregate([
+  const productsRequest = inventoryQueries.length
+    ? Product.aggregate([
       { $match: { $or: inventoryQueries } },
       {
         $project: {
@@ -1701,6 +1701,22 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
       },
     ])
     : [];
+  const customerIds = [...new Set(responses.map((order) => String(order.customer || "").trim())
+    .filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+  // Inventory, task metadata and customer billing identities are independent.
+  // Start the three reads together rather than adding a network round trip for
+  // each stage of every Orders/receipt navigation.
+  const [products, tasks, customers] = await Promise.all([
+    productsRequest,
+    includeTaskDetails && orderCodes.length
+      ? Task.find({ "payload.orderCode": { $in: orderCodes } })
+        .select("taskCode status assignedTechnicianName completedAt updatedAt proof payload")
+        .sort({ updatedAt: -1 }).lean()
+      : [],
+    customerIds.length
+      ? User.find({ _id: { $in: customerIds } }).select("name email phone mobileNumber billingAddress").lean()
+      : [],
+  ]);
 
   const inventoryUnitBySerial = new Map();
   const assignedInventoryUnits = new Map();
@@ -1832,24 +1848,12 @@ const hydrateOrdersWithInventoryQrCodes = async (orders = [], options = {}) => {
     });
   });
 
-  const tasks = includeTaskDetails && orderCodes.length
-    ? await Task.find({ "payload.orderCode": { $in: orderCodes } })
-      .select("taskCode status assignedTechnicianName completedAt updatedAt proof payload")
-      .sort({ updatedAt: -1 })
-      .lean()
-    : [];
   const taskByOrderCode = new Map();
   tasks.forEach((task) => {
     const orderCode = String(task?.payload?.orderCode || "").trim();
     if (orderCode && !taskByOrderCode.has(orderCode)) taskByOrderCode.set(orderCode, task);
   });
 
-  const customerIds = responses
-    .map((order) => String(order.customer || "").trim())
-    .filter((id) => mongoose.Types.ObjectId.isValid(id));
-  const customers = customerIds.length
-    ? await User.find({ _id: { $in: customerIds } }).select("name email phone mobileNumber billingAddress").lean()
-    : [];
   const customerById = new Map(customers.map((customer) => [String(customer._id), customer]));
 
   responses.forEach((order) => {

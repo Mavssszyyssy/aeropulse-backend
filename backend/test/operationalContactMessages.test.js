@@ -32,26 +32,29 @@ test("staff list applies one operational scope to search, pagination and every s
     assert.deepEqual(query.$or, [{ isDeleted: true }, { accountStatus: "deleted" }]);
     return ["deleted-id"];
   });
-  t.mock.method(ContactMessage, "find", (filter) => {
-    filters.push(filter);
-    return { sort() { return this; }, skip(value) { assert.equal(value, 20); return this; }, limit(value) { assert.equal(value, 20); return Promise.resolve([{ ticketCode: "MSG-1" }]); } };
+  t.mock.method(ContactMessage, "aggregate", async (pipeline) => {
+    filters.push(pipeline[0].$match, pipeline[1].$facet.messages[0].$match);
+    assert.deepEqual(pipeline[1].$facet.messages[2], { $skip: 20 });
+    assert.deepEqual(pipeline[1].$facet.messages[3], { $limit: 20 });
+    assert.deepEqual(pipeline[1].$facet.total[0].$match, pipeline[1].$facet.messages[0].$match);
+    assert.deepEqual(pipeline[1].$facet.statuses, [{ $group: { _id: "$status", value: { $sum: 1 } } }]);
+    return [{ messages: [], total: [{ value: 1 }], statuses: [{ _id: "new", value: 1 }, { _id: "in_progress", value: 1 }, { _id: "resolved", value: 1 }, { _id: "closed", value: 1 }] }];
   });
-  t.mock.method(ContactMessage, "countDocuments", async (filter) => {
-    filters.push(filter);
-    return 1;
-  });
+  t.mock.method(ContactMessage, "find", () => assert.fail("No separate list query"));
+  t.mock.method(ContactMessage, "countDocuments", () => assert.fail("No separate status-count queries"));
   const { response, result } = reply();
   await listContactMessages({ authUser: { role: "admin" }, activeBranch: "Bulacan", query: { page: "2", status: "in_progress", search: "A+B" } }, response);
   assert.equal(result.code, 200);
   assert.equal(result.body.pagination.page, 2);
   assert.equal(result.body.counts.active, 1);
   assert.equal(result.body.counts.resolved, 2);
-  assert.equal(filters.length, 7);
+  assert.equal(filters.length, 2);
+  assert.equal(result.body.counts.total, 4);
   for (const filter of filters) {
     assert.deepEqual(filter.$and[1], { customer: { $nin: ["deleted-id"] } });
     assert.deepEqual(filter.$and[3], { $or: [{ branch: "Bulacan" }, { branch: "" }] });
   }
-  const search = filters[0].$and.at(-1).$or[0].ticketCode;
+  const search = filters[1].$and.at(-1).$or[0].ticketCode;
   assert.equal(search.test("A+B"), true);
   assert.equal(search.test("AAAB"), false);
 });

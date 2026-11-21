@@ -170,20 +170,23 @@ const listContactMessages = async (req, res) => {
       status: VALID_STATUSES.has(status) ? status : "",
       search: req.query.search,
     });
-    const messages = await ContactMessage.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit);
-    const [total, all, needsReview, inProgress, resolved, closed] = await Promise.all([
-      ContactMessage.countDocuments(filter),
-      ContactMessage.countDocuments(buildOperationalContactFilter(base)),
-      ...["new", "in_progress", "resolved", "closed"].map((item) =>
-        ContactMessage.countDocuments(buildOperationalContactFilter({ ...base, status: item }))),
+    // One scoped read returns the page and all status totals. Previously a
+    // navigation performed one list query followed by six separate counts.
+    const [result = {}] = await ContactMessage.aggregate([
+      { $match: buildOperationalContactFilter(base) },
+      { $facet: {
+        messages: [{ $match: filter }, { $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
+        total: [{ $match: filter }, { $count: "value" }],
+        statuses: [{ $group: { _id: "$status", value: { $sum: 1 } } }],
+      } },
     ]);
+    const messages = (result.messages || []).map((message) => ContactMessage.hydrate(message).toJSON());
+    const counts = Object.fromEntries((result.statuses || []).map((row) => [row._id, row.value]));
+    const total = Number(result.total?.[0]?.value || 0);
     return res.json({
       messages,
       pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
-      counts: { total: all, new: needsReview, active: inProgress, resolved: resolved + closed },
+      counts: { total: Object.values(counts).reduce((sum, value) => sum + value, 0), new: counts.new || 0, active: counts.in_progress || 0, resolved: (counts.resolved || 0) + (counts.closed || 0) },
     });
   } catch (error) {
     console.error("Failed to list contact messages:", error);

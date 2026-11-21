@@ -16,10 +16,14 @@ const uniqueValues = (values = []) => Array.from(new Set(
 
 let coverageCache = null;
 let coverageCacheExpiresAt = 0;
+let coverageRequest = null;
+let coverageRevision = 0;
 
 const clearBranchCoverageCache = () => {
   coverageCache = null;
   coverageCacheExpiresAt = 0;
+  coverageRevision += 1;
+  coverageRequest = null;
 };
 
 const ensureDefaultBranchCoverage = async () => {
@@ -41,22 +45,30 @@ const getBranchCoverage = async ({ forceRefresh = false } = {}) => {
   if (!forceRefresh && coverageCache && Date.now() < coverageCacheExpiresAt) {
     return coverageCache;
   }
-
-  await ensureDefaultBranchCoverage();
-  const branches = await BranchCoverage.find({ active: true })
-    .select("name active coverageAreas nearbyBranches")
-    .sort({ name: 1 })
-    .lean();
-  coverageCache = branches.map((branch) => ({
-    ...branch,
-    coverageAreas: uniqueValues(branch.coverageAreas).map(normalize).filter(Boolean),
-    nearbyBranches: uniqueValues(branch.nearbyBranches),
-  }));
-  // Refresh the shared branch registry for auth, inventory and reports in this
-  // serverless instance. The cache is refreshed on authenticated requests.
-  require("../domain/branchRouting").setConfiguredBranches(coverageCache.map((branch) => branch.name));
-  coverageCacheExpiresAt = Date.now() + 60 * 1000;
-  return coverageCache;
+  if (coverageRequest) return coverageRequest;
+  const revision = coverageRevision;
+  const request = (async () => {
+    await ensureDefaultBranchCoverage();
+    const branches = await BranchCoverage.find({ active: true })
+      .select("name active coverageAreas nearbyBranches")
+      .sort({ name: 1 })
+      .lean();
+    const nextCoverage = branches.map((branch) => ({
+      ...branch,
+      coverageAreas: uniqueValues(branch.coverageAreas).map(normalize).filter(Boolean),
+      nearbyBranches: uniqueValues(branch.nearbyBranches),
+    }));
+    if (revision !== coverageRevision) return nextCoverage;
+    coverageCache = nextCoverage;
+    // Refresh the shared branch registry for auth, inventory and reports in this
+    // serverless instance. The cache is refreshed on authenticated requests.
+    require("../domain/branchRouting").setConfiguredBranches(coverageCache.map((branch) => branch.name));
+    coverageCacheExpiresAt = Date.now() + 60 * 1000;
+    return coverageCache;
+  })();
+  coverageRequest = request;
+  try { return await request; }
+  finally { if (coverageRequest === request) coverageRequest = null; }
 };
 
 const getAddressLookupKeys = (address = {}) => uniqueValues([

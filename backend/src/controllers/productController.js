@@ -920,11 +920,14 @@ const listProducts = async (req, res) => {
   res.set("Cache-Control", "no-store");
   await ensureSampleInventory();
   const includeArchived = req.authUser?.role === "superadmin" && req.query?.includeArchived === "true";
+  const inventoryView = req.query?.view === "inventory";
   const products = await Product.find(includeArchived ? {} : { isActive: { $ne: false } })
-    .select("-imageData")
+    .select(inventoryView
+      ? "name sku brand category description specs features image price stock branchStock threshold branchThresholds isActive createdAt updatedAt"
+      : "-imageData")
     .sort({ createdAt: -1 });
   const visibleProducts = products.filter((product) => includeArchived || !isNonRetailCatalogProduct(product));
-  await ensureSerialUnitsForProducts(visibleProducts.filter((product) => product.isActive !== false));
+  if (!inventoryView) await ensureSerialUnitsForProducts(visibleProducts.filter((product) => product.isActive !== false));
   return res.json({
     products: visibleProducts.map((p) => toRoleAwareProduct(p, req)),
   });

@@ -3,6 +3,9 @@ const Product = require("../models/Product");
 const { notifyOperationalStaff } = require("../services/operationalNotificationService");
 const { BRANCHES } = require("../domain/branchRouting");
 const { ensureProductSerialUnits } = require("./productController");
+// Reorder cards need product identity and stock, not image bytes or every unit's
+// QR/registration history. Mutating approval still loads the full product below.
+const REORDER_PRODUCT_FIELDS = "name sku brand specs category price image stock branchStock isActive";
 
 const requireAdmin = (req, res) => {
   if (!["admin", "superadmin"].includes(req.authUser.role)) {
@@ -95,7 +98,7 @@ const listReorders = async (req, res) => {
   if (["submitted", "approved", "rejected"].includes(status)) query.status = status;
 
   const reorders = await ReorderRequest.find(query)
-    .populate("product")
+    .populate("product", REORDER_PRODUCT_FIELDS)
     .populate("requestedBy", "name name_first name_last email")
     .populate("reviewedBy", "name name_first name_last email")
     .sort({ createdAt: -1 })
@@ -107,7 +110,7 @@ const listMyReorders = async (req, res) => {
   if (!requireAdmin(req, res)) return null;
   const query = { ...getBranchScope(req), requestedBy: req.authUser._id };
   const reorders = await ReorderRequest.find(query)
-    .populate("product")
+    .populate("product", REORDER_PRODUCT_FIELDS)
     .populate("requestedBy", "name name_first name_last email")
     .populate("reviewedBy", "name name_first name_last email")
     .sort({ createdAt: -1 })
