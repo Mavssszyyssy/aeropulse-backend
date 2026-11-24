@@ -11,6 +11,7 @@ const mongoose = require("mongoose");
 const env = require("./config/env");
 const { getResendEmailConfiguration } = require("./utils/email");
 const { createMemoryRateLimit } = require("./middleware/requestRateLimit");
+const { createAuthRateLimit, createAuthSessionMiddleware } = require("./middleware/authRequestPolicy");
 const { httpErrorHandler } = require("./middleware/httpErrorHandler");
 const { createPerformanceTiming } = require("./middleware/performanceTiming");
 const { requestTextValidation } = require("./middleware/requestTextValidation");
@@ -66,9 +67,9 @@ app.use("/api", (_req, res, next) => {
   next();
 });
 
-// Only registration and recovery endpoints use server-side session data.
-// Keeping this store off ordinary token-authenticated API requests prevents a
-// stale session-store socket from delaying Admin, order, and catalog screens.
+// Registration drafts and the web cart use cookie-session data. Token login,
+// recovery and /auth/me skip the store so another device's session activity
+// cannot delay their account checks.
 const authSession = session({
   name: "aeropulse.sid",
   secret: env.jwtSecret,
@@ -133,13 +134,8 @@ app.use("/api/cron", cronRoutes);
 
 app.use(
   "/api/auth",
-  createMemoryRateLimit({
-    scope: "auth",
-    windowMs: 15 * 60 * 1000,
-    max: 60,
-    message: "Too many authentication requests. Please wait and try again.",
-  }),
-  authSession,
+  createAuthRateLimit(),
+  createAuthSessionMiddleware(authSession),
   authRoutes,
 );
 app.use("/api/users", userRoutes);

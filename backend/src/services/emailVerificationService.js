@@ -8,6 +8,7 @@ const OTP_TTL_MINUTES = Math.max(3, Math.min(15, Number(env.otpTtlMinutes || 5))
 const OTP_RESEND_COOLDOWN_SECONDS = Math.max(30, Math.min(300, Number(env.otpResendCooldownSeconds || 60)));
 const OTP_REQUEST_WINDOW_MINUTES = Math.max(5, Math.min(60, Number(env.otpRequestWindowMinutes || 15)));
 const OTP_MAX_REQUESTS_PER_WINDOW = Math.max(2, Math.min(10, Number(env.otpMaxRequestsPerWindow || 5)));
+const LOGIN_EMAIL_MAX_REQUESTS_PER_WINDOW = 30;
 const OTP_MAX_ATTEMPTS = Math.max(3, Math.min(10, Number(env.otpMaxAttempts || 5)));
 const OTP_ACTION_CHANNELS = Object.freeze({
   register_email: ["email"],
@@ -67,7 +68,12 @@ const createEmailVerification = async ({ accountId = "", challengeId = "", email
     ...(normalizedAccountId ? { accountId: normalizedAccountId } : {}),
   };
   const now = new Date();
-  const latest = await OtpRequest.findOne(rateLimitQuery).sort({ requestedAt: -1 });
+  // Each device gets a different signed challenge. A new device must not be
+  // forced to wait for another device's resend timer or invalidate its code.
+  const cooldownQuery = action === "login_verification"
+    ? { ...rateLimitQuery, challengeId: normalizedChallengeId }
+    : rateLimitQuery;
+  const latest = await OtpRequest.findOne(cooldownQuery).sort({ requestedAt: -1 });
   if (latest?.requestedAt) {
     const retryAfterSeconds = Math.ceil(
       (latest.requestedAt.getTime() + OTP_RESEND_COOLDOWN_SECONDS * 1000 - now.getTime()) / 1000,
@@ -81,8 +87,13 @@ const createEmailVerification = async ({ accountId = "", challengeId = "", email
   }
 
   const windowStart = new Date(now.getTime() - OTP_REQUEST_WINDOW_MINUTES * 60 * 1000);
-  const requestCount = await OtpRequest.countDocuments({ ...rateLimitQuery, requestedAt: { $gte: windowStart } });
-  if (requestCount >= OTP_MAX_REQUESTS_PER_WINDOW) {
+  const windowQuery = { requestedAt: { $gte: windowStart } };
+  const challengeRequestCount = await OtpRequest.countDocuments({ ...cooldownQuery, ...windowQuery });
+  const accountRequestCount = action === "login_verification"
+    ? await OtpRequest.countDocuments({ ...rateLimitQuery, ...windowQuery })
+    : challengeRequestCount;
+  if (challengeRequestCount >= OTP_MAX_REQUESTS_PER_WINDOW
+    || (action === "login_verification" && accountRequestCount >= LOGIN_EMAIL_MAX_REQUESTS_PER_WINDOW)) {
     const error = new Error("Too many verification requests. Please try again later.");
     error.status = 429;
     error.retryAfterSeconds = OTP_REQUEST_WINDOW_MINUTES * 60;

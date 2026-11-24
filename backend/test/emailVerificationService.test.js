@@ -226,7 +226,50 @@ test("email verification resend cooldown is enforced before another email is sen
     action: "login_verification",
     channel: "email",
     email: "person@example.com",
+    challengeId: "cooldown-challenge",
   });
   assert.equal(count.mock.callCount(), 0);
+  assert.equal(send.mock.callCount(), 0);
+});
+
+test("one account can request independent device codes immediately and verify both", async (t) => {
+  const records = [];
+  const codes = [];
+  t.mock.method(emailService, "canSendEmail", () => true);
+  t.mock.method(emailService, "sendEmail", async ({ text }) => { codes.push(text.match(/Verification code: (\d{6})/)[1]); });
+  t.mock.method(OtpRequest, "findOne", query => ({
+    sort: async () => records.filter(item => Object.entries(query).every(([key, value]) => item[key] === value)).at(-1) || null,
+  }));
+  t.mock.method(OtpRequest, "countDocuments", async query => records.filter(item => (
+    Object.entries(query).every(([key, value]) => key === "requestedAt" ? item[key] >= value.$gte : item[key] === value)
+  )).length);
+  t.mock.method(OtpRequest, "create", async record => {
+    const item = { ...record, _id: String(records.length), attempts: 0, lockedAt: null, verifiedAt: null, save: async () => {} };
+    records.push(item);
+    return item;
+  });
+  t.mock.method(OtpRequest, "findOneAndUpdate", async (query, update) => {
+    const item = records.find(record => record._id === query._id);
+    if (!item || item.verifiedAt || item.codeHash !== query.codeHash) return null;
+    item.verifiedAt = update.$set.verifiedAt;
+    return item;
+  });
+  const scope = { accountId: "concurrent-account", email: "person@example.com", action: "login_verification" };
+  for (let i = 0; i < 8; i += 1) await createEmailVerification({ ...scope, challengeId: `device-${i}` });
+  assert.equal(records.length, 8);
+  await assert.rejects(createEmailVerification({ ...scope, challengeId: "device-0" }), error => error.status === 429);
+  for (let i = 0; i < 8; i += 1) {
+    assert.equal((await verifyEmailCode({ ...scope, challengeId: `device-${i}`, code: codes[i] })).ok, true);
+  }
+});
+
+test("separate login challenges cannot bypass the account email-send budget", async (t) => {
+  t.mock.method(emailService, "canSendEmail", () => true);
+  const send = t.mock.method(emailService, "sendEmail", async () => {});
+  t.mock.method(OtpRequest, "findOne", () => ({ sort: async () => null }));
+  t.mock.method(OtpRequest, "countDocuments", async query => query.challengeId ? 0 : 30);
+  await assert.rejects(createEmailVerification({
+    accountId: "bounded-account", email: "person@example.com", action: "login_verification", challengeId: "new-device",
+  }), error => error.status === 429 && error.retryAfterSeconds > 0);
   assert.equal(send.mock.callCount(), 0);
 });

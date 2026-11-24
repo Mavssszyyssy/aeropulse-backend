@@ -1,13 +1,14 @@
 const buckets = new Map();
 
 const requestKey = (req, scope) => {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return `${scope}:${forwarded || req.ip || req.socket?.remoteAddress || "unknown"}`;
+  // Express resolves forwarded addresses using the application's trusted proxy
+  // configuration. Do not let a caller pick a bucket with a forged header.
+  return `${scope}:${req.ip || req.socket?.remoteAddress || "unknown"}`;
 };
 
-const createMemoryRateLimit = ({ scope, windowMs, max, message }) => (req, res, next) => {
+const createMemoryRateLimit = ({ scope, windowMs, max, message, keyGenerator }) => (req, res, next) => {
   const now = Date.now();
-  const key = requestKey(req, scope);
+  const key = keyGenerator ? `${scope}:${keyGenerator(req)}` : requestKey(req, scope);
   const current = buckets.get(key);
   const bucket = !current || current.resetAt <= now
     ? { count: 0, resetAt: now + windowMs }
@@ -25,8 +26,9 @@ const createMemoryRateLimit = ({ scope, windowMs, max, message }) => (req, res, 
   res.set("RateLimit-Remaining", String(Math.max(0, max - bucket.count)));
   res.set("RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
   if (bucket.count > max) {
-    res.set("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-    return res.status(429).json({ message });
+    const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(429).json({ message, retryAfterSeconds });
   }
   return next();
 };

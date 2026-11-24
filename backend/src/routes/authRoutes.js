@@ -46,12 +46,6 @@ router.post("/register", registrationText, registrationAddresses, register);
 router.post("/login", limitTextFields({ identifier: [254, "Account login"], password: [128, "Password"] }), login);
 router.post(
   "/login/verify-email",
-  require("../middleware/requestRateLimit").createMemoryRateLimit({
-    scope: "login-email-verification",
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    message: "Too many verification attempts. Please wait and sign in again.",
-  }),
   verifyLoginEmail,
 );
 router.post("/login/resend-email", resendLoginEmail);
