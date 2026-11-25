@@ -1039,6 +1039,7 @@ const attachPaymongoCheckout = async (order, options = {}) => {
   const { successUrl, cancelUrl } = buildPaymentReturnUrls(order, options);
   const checkout = await createCheckoutSession({
     order,
+    customer: options.req?.authUser,
     successUrl,
     cancelUrl,
   });

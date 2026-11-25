@@ -1,4 +1,5 @@
 const env = require("../config/env");
+const { canonicalizePhMobile, isValidPhMobile } = require("../utils/phMobile");
 
 class PaymongoError extends Error {
   constructor(message, { status = 500, details = null } = {}) {
@@ -123,7 +124,33 @@ const sumLineItems = (items = []) =>
     0,
   );
 
-const createCheckoutSession = async ({ order, successUrl, cancelUrl }) => {
+const buildCheckoutBilling = (order, customer = {}) => {
+  // Use the server-authenticated payer, not an arbitrary request-body identity
+  // or the delivery recipient (who may be a different person).
+  const name = String(customer.name || [customer.name_first, customer.name_last, customer.suffix]
+    .filter(Boolean).join(" ") || order.customerName || "").trim();
+  const email = String(customer.email || "").trim().toLowerCase();
+  const phone = canonicalizePhMobile(customer.phone || "");
+  const billing = {
+    ...(name ? { name: name.slice(0, 255) } : {}),
+    ...(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? { email } : {}),
+    ...(isValidPhMobile(phone) ? { phone: `+63${phone.slice(1)}` } : {}),
+  };
+  const address = customer.billingAddress?.toObject?.() || customer.billingAddress || {};
+  if (address.street && address.city && address.province && /^\d{4}$/.test(String(address.postalCode || ""))) {
+    billing.address = {
+      line1: String(address.street).trim(),
+      ...(address.barangay ? { line2: String(address.barangay).trim() } : {}),
+      city: String(address.city).trim(),
+      state: String(address.province).trim(),
+      postal_code: String(address.postalCode),
+      country: "PH",
+    };
+  }
+  return billing;
+};
+
+const createCheckoutSession = async ({ order, customer, successUrl, cancelUrl }) => {
   let lineItems = (order.items || []).map((item) => ({
     currency: "PHP",
     amount: toCentavos(item.price),
@@ -179,6 +206,7 @@ const createCheckoutSession = async ({ order, successUrl, cancelUrl }) => {
   const payload = {
     data: {
       attributes: {
+        billing: buildCheckoutBilling(order, customer),
         line_items: lineItems.length
           ? lineItems
           : [
