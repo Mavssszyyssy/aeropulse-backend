@@ -234,7 +234,9 @@ const createCheckoutSession = async ({ order, customer, successUrl, cancelUrl })
     },
   };
 
-  const session = await requestPaymongo("/v1/checkout_sessions", {
+  // V2 creates the Payment Intent when the customer pays. Retrieval and
+  // expiration continue using the shared V1 endpoints for existing sessions.
+  const session = await requestPaymongo("/v2/checkout_sessions", {
     method: "POST",
     body: payload,
   });

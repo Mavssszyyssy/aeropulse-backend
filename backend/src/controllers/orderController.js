@@ -1118,12 +1118,16 @@ const collectPaymongoIdentifiers = (value, result = {}) => {
 };
 
 const extractPaymongoEvent = (payload = {}) => {
-  const eventType = String(payload?.data?.attributes?.type || payload?.type || "").trim();
-  const resource = payload?.data?.attributes?.data || payload?.data || {};
+  const deliveryEvent = payload.event_type === "send.webhook" ? payload.data : null;
+  const eventType = String(deliveryEvent?.type || payload?.data?.attributes?.type || payload?.type || "").trim();
+  const resource = deliveryEvent?.data || payload?.data?.attributes?.data || payload?.data || {};
   const resourceId = String(resource?.id || "").trim();
   const resourceType = String(resource?.type || "").trim();
   const attributes = resource?.attributes || {};
   const metadata = attributes.metadata || {};
+  const paidPayment = Array.isArray(attributes.payments) ? attributes.payments.find((payment) =>
+    ["paid", "succeeded"].includes(String(payment?.attributes?.status || payment?.status || "").toLowerCase()),
+  ) : null;
   const paymentIntent =
     attributes.payment_intent ||
     attributes.payment_intent_id ||
@@ -1142,13 +1146,13 @@ const extractPaymongoEvent = (payload = {}) => {
     resourceType,
     attributes,
     metadata,
-    paymentId: resourceType === "payment" ? resourceId : String(attributes.payment_id || identifiers.paymentId || ""),
+    paymentId: resourceType === "payment" ? resourceId : String(attributes.payment_id || paidPayment?.id || identifiers.paymentId || ""),
     paymentIntentId:
       typeof paymentIntent === "string"
         ? paymentIntent || identifiers.paymentIntentId || ""
         : String(paymentIntent?.id || identifiers.paymentIntentId || ""),
     checkoutSessionId:
-      typeof checkoutSession === "string"
+      resourceType === "checkout_session" ? resourceId : typeof checkoutSession === "string"
         ? checkoutSession || identifiers.checkoutSessionId || ""
         : String(checkoutSession?.id || identifiers.checkoutSessionId || ""),
     orderId: String(metadata.order_id || attributes.order_id || identifiers.orderId || "").trim(),

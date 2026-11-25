@@ -43,6 +43,7 @@ test("checkout prefills authenticated payer details without changing totals, met
   const a = requests[0].body.data.attributes;
   assert.equal(requests.length, 1);
   assert.equal(requests[0].method, "POST");
+  assert.equal(requests[0].url, `${env.paymongoApiBaseUrl}/v2/checkout_sessions`);
   assert.deepEqual(a.billing, {
     name: "Maria Santos Jr.", email: "maria@example.com", phone: "+639171234567",
     address: { line1: "Billing street", line2: "Central", city: "Plaridel", state: "Bulacan", postal_code: "3004", country: "PH" },
