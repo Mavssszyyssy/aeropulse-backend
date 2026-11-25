@@ -682,7 +682,10 @@ const updateRegistrationProgress = async (req, res) => {
 
 const updateCart = async (req, res) => {
   req.session.cart = req.body.cart;
-  return res.json({ success: true });
+  return req.session.save((error) => {
+    if (error) return res.status(500).json({ message: "Unable to save your cart." });
+    return res.json({ success: true });
+  });
 };
 
 const me = async (req, res) => {
